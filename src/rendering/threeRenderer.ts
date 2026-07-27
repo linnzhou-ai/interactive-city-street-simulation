@@ -1,19 +1,39 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { SimulationState } from "../models/types";
+import type { SimulationState, Vehicle } from "../models/types";
 
 const ROAD_WIDTH = 8;
 const ROUTE_LENGTH = 36;
+const VEHICLE_COLORS = ["#ef5a45", "#2f75c9", "#e2ad3c", "#2f956f", "#865fb0"] as const;
+
+interface SignalLampMaterials {
+  red: THREE.MeshStandardMaterial;
+  green: THREE.MeshStandardMaterial;
+}
 
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 120);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
-  private readonly vehicle = new THREE.Group();
   private readonly pedestrian = new THREE.Group();
-  private readonly vehicleSignals: THREE.MeshStandardMaterial[] = [];
-  private readonly pedestrianSignals: THREE.MeshStandardMaterial[] = [];
+  private readonly vehicles = new Map<string, THREE.Group>();
+  private readonly vehicleSignals: SignalLampMaterials[] = [];
+  private readonly pedestrianSignals: SignalLampMaterials[] = [];
+  private readonly sharedVehicleBodyGeometry = new THREE.BoxGeometry(2.6, 0.72, 1.25);
+  private readonly sharedVehicleCabinGeometry = new THREE.BoxGeometry(1.25, 0.58, 1.08);
+  private readonly sharedVehicleWheelGeometry = new THREE.CylinderGeometry(0.27, 0.27, 0.18, 16);
+  private readonly sharedVehicleBodyMaterials = VEHICLE_COLORS.map(
+    (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.08 }),
+  );
+  private readonly sharedVehicleCabinMaterial = new THREE.MeshStandardMaterial({
+    color: "#bdd9df",
+    roughness: 0.18,
+  });
+  private readonly sharedVehicleWheelMaterial = new THREE.MeshStandardMaterial({
+    color: "#151a1c",
+    roughness: 0.8,
+  });
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -42,7 +62,6 @@ export class ThreeRenderer {
 
     this.buildLighting();
     this.buildCity();
-    this.buildVehicle();
     this.buildPedestrian();
   }
 
@@ -54,17 +73,15 @@ export class ThreeRenderer {
   }
 
   render(state: Readonly<SimulationState>): void {
-    this.vehicle.position.x = -ROUTE_LENGTH / 2 + state.vehicle.progress * ROUTE_LENGTH;
+    this.syncVehicles(state.vehicles);
     this.pedestrian.position.z = -5.6 + state.pedestrian.progress * 11.2;
 
     const vehiclesGo = state.signalPhase === "vehicles";
-    for (const material of this.vehicleSignals) {
-      material.color.set(vehiclesGo ? "#55df88" : "#ff5e57");
-      material.emissive.set(vehiclesGo ? "#168b47" : "#a52424");
+    for (const lamps of this.vehicleSignals) {
+      this.setSignalLamps(lamps, vehiclesGo);
     }
-    for (const material of this.pedestrianSignals) {
-      material.color.set(vehiclesGo ? "#ff5e57" : "#55df88");
-      material.emissive.set(vehiclesGo ? "#a52424" : "#168b47");
+    for (const lamps of this.pedestrianSignals) {
+      this.setSignalLamps(lamps, !vehiclesGo);
     }
 
     this.controls.update();
@@ -199,53 +216,86 @@ export class ThreeRenderer {
     x: number,
     y: number,
     z: number,
-    materials: THREE.MeshStandardMaterial[],
+    materials: SignalLampMaterials[],
     radius = 0.28,
   ): void {
     const housing = this.addBox(x, y, z, 0.72, 1.05, 0.5, "#162126");
     housing.castShadow = true;
-    const material = new THREE.MeshStandardMaterial({
-      color: "#ff5e57",
-      emissive: "#a52424",
-      emissiveIntensity: 1.2,
+    const red = new THREE.MeshStandardMaterial({
+      color: "#601f1f",
+      emissive: "#ff413b",
+      emissiveIntensity: 1.8,
     });
-    const lamp = mesh(new THREE.SphereGeometry(radius, 18, 14), material);
-    lamp.position.set(x, y, z + (z < 0 ? 0.28 : -0.28));
-    this.scene.add(lamp);
-    materials.push(material);
+    const green = new THREE.MeshStandardMaterial({
+      color: "#1d5635",
+      emissive: "#39df78",
+      emissiveIntensity: 0.08,
+    });
+    const geometry = new THREE.SphereGeometry(radius, 18, 14);
+    const lampZ = z + (z < 0 ? 0.28 : -0.28);
+    const redLamp = mesh(geometry, red);
+    redLamp.position.set(x, y + 0.24, lampZ);
+    const greenLamp = mesh(geometry, green);
+    greenLamp.position.set(x, y - 0.24, lampZ);
+    this.scene.add(redLamp, greenLamp);
+    materials.push({ red, green });
   }
 
-  private buildVehicle(): void {
-    const bodyMaterial = new THREE.MeshStandardMaterial({
-      color: "#ef5a45",
-      roughness: 0.35,
-      metalness: 0.08,
-    });
-    const body = mesh(new THREE.BoxGeometry(2.6, 0.72, 1.25), bodyMaterial);
+  private setSignalLamps(lamps: SignalLampMaterials, canGo: boolean): void {
+    lamps.red.emissiveIntensity = canGo ? 0.08 : 1.8;
+    lamps.green.emissiveIntensity = canGo ? 1.8 : 0.08;
+  }
+
+  private syncVehicles(vehicleStates: readonly Vehicle[]): void {
+    const activeIds = new Set<string>();
+
+    for (const vehicleState of vehicleStates) {
+      if (vehicleState.completed) continue;
+
+      activeIds.add(vehicleState.id);
+      const vehicle = this.vehicles.get(vehicleState.id) ?? this.addVehicle(vehicleState.id);
+      const eastbound = vehicleState.direction === "eastbound";
+      const x = eastbound
+        ? -ROUTE_LENGTH / 2 + vehicleState.progress * ROUTE_LENGTH
+        : ROUTE_LENGTH / 2 - vehicleState.progress * ROUTE_LENGTH;
+      vehicle.position.set(x, 0.12, eastbound ? 1.75 : -1.75);
+      vehicle.rotation.y = eastbound ? 0 : Math.PI;
+    }
+
+    for (const [id, vehicle] of this.vehicles) {
+      if (activeIds.has(id)) continue;
+
+      // Mesh resources are renderer-owned and shared, so removal only detaches the group.
+      this.scene.remove(vehicle);
+      this.vehicles.delete(id);
+    }
+  }
+
+  private addVehicle(id: string): THREE.Group {
+    const vehicle = new THREE.Group();
+    const bodyMaterial = this.sharedVehicleBodyMaterials[vehiclePaletteIndex(id)];
+    const body = mesh(this.sharedVehicleBodyGeometry, bodyMaterial);
     body.position.y = 0.65;
     body.castShadow = true;
-    this.vehicle.add(body);
+    vehicle.add(body);
 
-    const cabin = mesh(
-      new THREE.BoxGeometry(1.25, 0.58, 1.08),
-      new THREE.MeshStandardMaterial({ color: "#bdd9df", roughness: 0.18 }),
-    );
+    const cabin = mesh(this.sharedVehicleCabinGeometry, this.sharedVehicleCabinMaterial);
     cabin.position.set(-0.15, 1.26, 0);
     cabin.castShadow = true;
-    this.vehicle.add(cabin);
+    vehicle.add(cabin);
 
-    const wheelMaterial = new THREE.MeshStandardMaterial({ color: "#151a1c", roughness: 0.8 });
     for (const x of [-0.85, 0.85]) {
       for (const z of [-0.68, 0.68]) {
-        const wheel = mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.18, 16), wheelMaterial);
+        const wheel = mesh(this.sharedVehicleWheelGeometry, this.sharedVehicleWheelMaterial);
         wheel.rotation.x = Math.PI / 2;
         wheel.position.set(x, 0.34, z);
-        this.vehicle.add(wheel);
+        vehicle.add(wheel);
       }
     }
 
-    this.vehicle.position.set(-ROUTE_LENGTH / 2, 0.12, 1.75);
-    this.scene.add(this.vehicle);
+    this.vehicles.set(id, vehicle);
+    this.scene.add(vehicle);
+    return vehicle;
   }
 
   private buildPedestrian(): void {
@@ -293,4 +343,12 @@ function mesh<TGeometry extends THREE.BufferGeometry, TMaterial extends THREE.Ma
   material: TMaterial,
 ): THREE.Mesh<TGeometry, TMaterial> {
   return new THREE.Mesh(geometry, material);
+}
+
+function vehiclePaletteIndex(id: string): number {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (hash * 31 + id.charCodeAt(index)) >>> 0;
+  }
+  return hash % VEHICLE_COLORS.length;
 }

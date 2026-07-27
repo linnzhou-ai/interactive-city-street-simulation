@@ -8,15 +8,24 @@ const pauseButton = requireElement<HTMLButtonElement>("pause-button");
 const resetButton = requireElement<HTMLButtonElement>("reset-button");
 const speedControl = requireElement<HTMLInputElement>("speed-control");
 const speedOutput = requireElement<HTMLOutputElement>("speed-output");
+const vehicleVolumeControl = requireElement<HTMLInputElement>("vehicle-volume-control");
+const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
+const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
+const speedLimitOutput = requireElement<HTMLOutputElement>("speed-limit-output");
+const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
+const signalCycleOutput = requireElement<HTMLOutputElement>("signal-cycle-output");
 const statusPill = requireElement<HTMLSpanElement>("status-pill");
-const vehicleTime = requireElement<HTMLElement>("vehicle-time");
+const signalPhase = requireElement<HTMLElement>("signal-phase");
+const signalTimeRemaining = requireElement<HTMLElement>("signal-time-remaining");
+const averageTravel = requireElement<HTMLElement>("average-travel");
 const congestion = requireElement<HTMLElement>("congestion");
-const pedestrianWait = requireElement<HTMLElement>("pedestrian-wait");
-const conflicts = requireElement<HTMLElement>("conflicts");
+const trafficFlow = requireElement<HTMLElement>("traffic-flow");
+const completedVehicles = requireElement<HTMLElement>("completed-vehicles");
 
 const simulation = new Simulation();
 const renderer = new ThreeRenderer(canvas);
 let previousTimestamp = performance.now();
+const settings = simulation.getSettings();
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -33,11 +42,37 @@ resetButton.addEventListener("click", () => {
   updateInterface();
 });
 
-speedControl.addEventListener("input", () => {
-  const speed = Number(speedControl.value);
-  simulation.setSimulationSpeed(speed);
-  speedOutput.value = `${speed.toFixed(1)}×`;
-});
+bindRangeControl(
+  speedControl,
+  speedOutput,
+  settings.simulationSpeed,
+  (value) => `${value.toFixed(1)}×`,
+  (value) => simulation.setSimulationSpeed(value),
+);
+
+bindRangeControl(
+  vehicleVolumeControl,
+  vehicleVolumeOutput,
+  settings.vehicleVolume,
+  (value) => `${value} ${value === 1 ? "vehicle" : "vehicles"}/min`,
+  (value) => simulation.setVehicleVolume(value),
+);
+
+bindRangeControl(
+  speedLimitControl,
+  speedLimitOutput,
+  settings.speedLimitMph,
+  (value) => `${value} mph`,
+  (value) => simulation.setSpeedLimitMph(value),
+);
+
+bindRangeControl(
+  signalCycleControl,
+  signalCycleOutput,
+  settings.signalCycleSeconds,
+  (value) => `${value} s`,
+  (value) => simulation.setSignalCycleSeconds(value),
+);
 
 window.addEventListener("resize", () => {
   renderer.resize();
@@ -68,11 +103,54 @@ function updateInterface(): void {
 }
 
 function updateMetrics(): void {
-  const metrics = simulation.getState().metrics;
-  vehicleTime.textContent = `${metrics.vehicleTravelSeconds.toFixed(1)} s`;
-  congestion.textContent = String(metrics.congestion);
-  pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
-  conflicts.textContent = String(metrics.potentialConflicts);
+  const state = simulation.getState();
+
+  signalPhase.textContent = formatSignalPhase(state.signalPhase);
+  signalTimeRemaining.textContent = state.signalPhaseRemainingSeconds.toFixed(1);
+  averageTravel.textContent = formatMetric(
+    state.metrics.averageVehicleTravelSeconds,
+    (value) => `${value.toFixed(1)} s`,
+  );
+  congestion.textContent = formatMetric(
+    state.metrics.congestionPercent,
+    (value) => `${Math.round(value)}%`,
+  );
+  trafficFlow.textContent = formatMetric(
+    state.metrics.trafficFlowPerMinute,
+    (value) => `${value.toFixed(1)}/min`,
+  );
+  completedVehicles.textContent = formatMetric(
+    state.metrics.completedVehicles,
+    (value) => String(Math.round(value)),
+  );
+}
+
+function bindRangeControl(
+  control: HTMLInputElement,
+  output: HTMLOutputElement,
+  initialValue: number,
+  formatValue: (value: number) => string,
+  applyValue: (value: number) => void,
+): void {
+  const update = (): void => {
+    const value = Number(control.value);
+    output.value = formatValue(value);
+    applyValue(value);
+  };
+
+  control.value = String(initialValue);
+  output.value = formatValue(initialValue);
+  control.addEventListener("input", update);
+}
+
+function formatSignalPhase(phase: string): string {
+  if (phase === "vehicles") return "Vehicles";
+  if (phase === "pedestrians") return "Pedestrians";
+  return phase.replaceAll("_", " ");
+}
+
+function formatMetric(value: number | undefined, formatter: (value: number) => string): string {
+  return value !== undefined && Number.isFinite(value) ? formatter(value) : "--";
 }
 
 function requireElement<T extends HTMLElement>(id: string): T {

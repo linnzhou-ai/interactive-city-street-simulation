@@ -66,28 +66,69 @@
           <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
         </div>
 
-        <label class="control-row" for="speed-control">
-          <span>Simulation speed</span>
-          <output id="speed-output" for="speed-control">1.0×</output>
-        </label>
-        <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
+        <div class="scenario-controls">
+          <div class="range-control">
+            <div class="control-row">
+              <label for="speed-control">Simulation speed</label>
+              <output id="speed-output" for="speed-control">1.0×</output>
+            </div>
+            <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
+          </div>
 
-        <div class="control-summary">
+          <div class="range-control">
+            <div class="control-row">
+              <label for="vehicle-volume-control">Vehicle volume</label>
+              <output id="vehicle-volume-output" for="vehicle-volume-control">12 vehicles/min</output>
+            </div>
+            <input
+              id="vehicle-volume-control"
+              type="range"
+              min="4"
+              max="30"
+              step="1"
+              value="12"
+            />
+          </div>
+
+          <div class="range-control">
+            <div class="control-row">
+              <label for="speed-limit-control">Speed limit</label>
+              <output id="speed-limit-output" for="speed-limit-control">25 mph</output>
+            </div>
+            <input
+              id="speed-limit-control"
+              type="range"
+              min="10"
+              max="45"
+              step="5"
+              value="25"
+            />
+          </div>
+
+          <div class="range-control">
+            <div class="control-row">
+              <label for="signal-cycle-control">Signal cycle</label>
+              <output id="signal-cycle-output" for="signal-cycle-control">12 s</output>
+            </div>
+            <input
+              id="signal-cycle-control"
+              type="range"
+              min="6"
+              max="40"
+              step="2"
+              value="12"
+            />
+          </div>
+        </div>
+
+        <div class="signal-summary" aria-label="Current traffic signal status">
           <div>
-            <span>Vehicle volume</span>
-            <strong>Low</strong>
+            <span>Signal phase</span>
+            <strong id="signal-phase">Vehicles</strong>
           </div>
           <div>
-            <span>Pedestrians</span>
-            <strong>Low</strong>
-          </div>
-          <div>
-            <span>Speed limit</span>
-            <strong>25 mph</strong>
-          </div>
-          <div>
-            <span>Signal cycle</span>
-            <strong>12 sec</strong>
+            <span>Time remaining</span>
+            <strong><span id="signal-time-remaining">6.0</span> s</strong>
           </div>
         </div>
       </aside>
@@ -99,24 +140,24 @@
         </div>
         <div class="metric-grid">
           <article class="metric-card">
-            <span>Vehicle time</span>
-            <strong id="vehicle-time">0.0 s</strong>
-            <small>Elapsed route time</small>
+            <span>Average travel</span>
+            <strong id="average-travel">--</strong>
+            <small>Seconds per vehicle</small>
           </article>
           <article class="metric-card">
             <span>Congestion</span>
-            <strong id="congestion">0</strong>
-            <small>Active vehicles</small>
+            <strong id="congestion">--</strong>
+            <small>Vehicles below half speed</small>
           </article>
           <article class="metric-card">
-            <span>Pedestrian wait</span>
-            <strong id="pedestrian-wait">0.0 s</strong>
-            <small>Time stopped at signal</small>
+            <span>Traffic flow</span>
+            <strong id="traffic-flow">--</strong>
+            <small>Vehicles per minute</small>
           </article>
           <article class="metric-card">
-            <span>Potential conflicts</span>
-            <strong id="conflicts">0</strong>
-            <small>Foundation placeholder</small>
+            <span>Vehicles completed</span>
+            <strong id="completed-vehicles">--</strong>
+            <small>Finished trips</small>
           </article>
         </div>
       </section>

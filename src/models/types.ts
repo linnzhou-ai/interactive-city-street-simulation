@@ -9,6 +9,9 @@ export interface MovingAgent {
 
 export interface Vehicle extends MovingAgent {
   kind: "vehicle";
+  direction: "eastbound" | "westbound";
+  waitingSeconds: number;
+  currentSpeedMph: number;
 }
 
 export interface Pedestrian extends MovingAgent {
@@ -25,17 +28,20 @@ export interface ScenarioSettings {
 }
 
 export interface SimulationMetrics {
-  vehicleTravelSeconds: number;
-  congestion: number;
+  averageVehicleTravelSeconds: number;
+  congestionPercent: number;
   pedestrianWaitSeconds: number;
   potentialConflicts: number;
+  completedVehicles: number;
+  trafficFlowPerMinute: number;
 }
 
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
   signalPhase: SignalPhase;
-  vehicle: Vehicle;
+  signalPhaseRemainingSeconds: number;
+  vehicles: Vehicle[];
   pedestrian: Pedestrian;
   metrics: SimulationMetrics;
 }
