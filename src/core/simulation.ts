@@ -76,6 +76,36 @@ export class Simulation {
     };
   }
 
+  setVehicleVolume(volume: number): void {
+    this.settings = {
+      ...this.settings,
+      vehicleVolume: Math.round(Math.min(3, Math.max(1, volume))),
+    };
+    this.updateMetrics();
+  }
+
+  setPedestrianVolume(volume: number): void {
+    this.settings = {
+      ...this.settings,
+      pedestrianVolume: Math.round(Math.min(3, Math.max(1, volume))),
+    };
+    this.updateMetrics();
+  }
+
+  setSpeedLimit(speedLimitMph: number): void {
+    this.settings = {
+      ...this.settings,
+      speedLimitMph: Math.min(120, Math.max(5, speedLimitMph)),
+    };
+  }
+
+  setSignalCycle(signalCycleSeconds: number): void {
+    this.settings = {
+      ...this.settings,
+      signalCycleSeconds: Math.min(300, Math.max(2, signalCycleSeconds)),
+    };
+  }
+
   update(deltaSeconds: number): void {
     if (!this.state.running || deltaSeconds <= 0) {
       return;
@@ -104,7 +134,8 @@ export class Simulation {
 
     vehicle.elapsedSeconds += step;
     if (this.state.signalPhase === "vehicles" || vehicle.progress < 0.42 || vehicle.progress > 0.58) {
-      vehicle.progress = Math.min(1, vehicle.progress + step / 10);
+      const routeDuration = 10 * (DEFAULT_SETTINGS.speedLimitMph / this.settings.speedLimitMph);
+      vehicle.progress = Math.min(1, vehicle.progress + step / routeDuration);
     }
     vehicle.completed = vehicle.progress >= 1;
   }
@@ -130,8 +161,8 @@ export class Simulation {
     const { vehicle, pedestrian } = this.state;
     this.state.metrics = {
       vehicleTravelSeconds: vehicle.elapsedSeconds,
-      congestion: vehicle.completed ? 0 : 1,
-      pedestrianWaitSeconds: pedestrian.waitSeconds,
+      congestion: vehicle.completed ? 0 : this.settings.vehicleVolume,
+      pedestrianWaitSeconds: pedestrian.waitSeconds * this.settings.pedestrianVolume,
       potentialConflicts: 0,
     };
   }

@@ -1,4 +1,29 @@
 export type SignalPhase = "vehicles" | "pedestrians";
+export const BUILD_GRID_SIZE = 12;
+export const BUILD_CELL_SIZE = 4;
+
+export type DesignElement =
+  | "lane"
+  | "white-lane"
+  | "asphalt"
+  | "sidewalk"
+  | "crosswalk"
+  | "signal";
+export type IntersectionLayout = "four-way" | "t-junction" | "straight";
+export type BuildTool = DesignElement | "erase";
+
+export interface GridCellDesign {
+  row: number;
+  column: number;
+  element: DesignElement;
+  rotation: number;
+}
+
+export interface GridSignalDesign {
+  row: number;
+  column: number;
+  rotation: number;
+}
 
 export interface MovingAgent {
   id: string;

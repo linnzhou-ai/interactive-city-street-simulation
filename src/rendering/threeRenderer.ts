@@ -1,9 +1,17 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { SimulationState } from "../models/types";
+import type {
+  DesignElement,
+  GridCellDesign,
+  GridSignalDesign,
+  IntersectionLayout,
+  SimulationState,
+} from "../models/types";
+import { BUILD_CELL_SIZE, BUILD_GRID_SIZE } from "../models/types";
 
 const ROAD_WIDTH = 8;
 const ROUTE_LENGTH = 36;
+type RoadArm = "north" | "east" | "south" | "west";
 
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
@@ -14,6 +22,25 @@ export class ThreeRenderer {
   private readonly pedestrian = new THREE.Group();
   private readonly vehicleSignals: THREE.MeshStandardMaterial[] = [];
   private readonly pedestrianSignals: THREE.MeshStandardMaterial[] = [];
+  private readonly designGroups: Record<DesignElement, THREE.Group> = {
+    lane: new THREE.Group(),
+    "white-lane": new THREE.Group(),
+    asphalt: new THREE.Group(),
+    sidewalk: new THREE.Group(),
+    crosswalk: new THREE.Group(),
+    signal: new THREE.Group(),
+  };
+  private readonly roadArms = createRoadArmGroups();
+  private readonly crosswalkArms = createRoadArmGroups();
+  private readonly buildGridGroup = new THREE.Group();
+  private readonly buildGridHelper = new THREE.GridHelper(
+    BUILD_GRID_SIZE * BUILD_CELL_SIZE,
+    BUILD_GRID_SIZE,
+    "#75e4c4",
+    "#8aa99c",
+  );
+  private intersectionLayout: IntersectionLayout = "four-way";
+  private layoutRotation = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -37,13 +64,52 @@ export class ThreeRenderer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
     this.controls.minDistance = 12;
-    this.controls.maxDistance = 42;
+    this.controls.maxDistance = 64;
     this.controls.maxPolarAngle = Math.PI / 2.08;
 
     this.buildLighting();
     this.buildCity();
     this.buildVehicle();
     this.buildPedestrian();
+  }
+
+  setDesignElementVisible(element: DesignElement, visible: boolean): void {
+    this.designGroups[element].visible = visible;
+  }
+
+  setBuildMode(enabled: boolean): void {
+    this.buildGridHelper.visible = enabled;
+    this.vehicle.visible = !enabled;
+    this.pedestrian.visible = !enabled;
+  }
+
+  setGridDesign(
+    cells: readonly GridCellDesign[],
+    signals: readonly GridSignalDesign[] = [],
+  ): void {
+    this.clearBuildGrid();
+    for (const group of Object.values(this.designGroups)) {
+      group.visible = false;
+    }
+
+    for (const cell of cells) {
+      this.buildGridCell(cell);
+    }
+    this.addAutomaticStopLines(cells);
+    for (const signal of signals) {
+      this.buildGridSignal(signal);
+    }
+  }
+
+  setIntersectionLayout(layout: IntersectionLayout): void {
+    this.intersectionLayout = layout;
+    this.layoutRotation = 0;
+    this.updateIntersectionLayout();
+  }
+
+  rotateIntersection(): void {
+    this.layoutRotation = (this.layoutRotation + 1) % 4;
+    this.updateIntersectionLayout();
   }
 
   resize(): void {
@@ -95,8 +161,26 @@ export class ThreeRenderer {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    this.addBox(0, 0.04, 0, 80, 0.08, ROAD_WIDTH, "#29343a");
-    this.addBox(0, 0.05, 0, ROAD_WIDTH, 0.1, 80, "#29343a");
+    for (const group of Object.values(this.designGroups)) {
+      this.scene.add(group);
+    }
+    this.buildGridHelper.position.y = 0.58;
+    this.buildGridHelper.visible = false;
+    this.scene.add(this.buildGridHelper);
+    this.scene.add(this.buildGridGroup);
+
+    for (const group of Object.values(this.roadArms)) {
+      this.designGroups.lane.add(group);
+    }
+    for (const group of Object.values(this.crosswalkArms)) {
+      this.designGroups.crosswalk.add(group);
+    }
+
+    this.addBox(0, 0.05, 0, ROAD_WIDTH, 0.1, ROAD_WIDTH, "#29343a", true, this.designGroups.lane);
+    this.addBox(0, 0.05, -22, ROAD_WIDTH, 0.1, 36, "#29343a", true, this.roadArms.north);
+    this.addBox(22, 0.05, 0, 36, 0.1, ROAD_WIDTH, "#29343a", true, this.roadArms.east);
+    this.addBox(0, 0.05, 22, ROAD_WIDTH, 0.1, 36, "#29343a", true, this.roadArms.south);
+    this.addBox(-22, 0.05, 0, 36, 0.1, ROAD_WIDTH, "#29343a", true, this.roadArms.west);
 
     this.addSidewalk(-13, -13, 16, 16);
     this.addSidewalk(13, -13, 16, 16);
@@ -106,27 +190,285 @@ export class ThreeRenderer {
     this.addCrosswalks();
     this.addBuildings();
     this.addSignals();
+    this.updateIntersectionLayout();
   }
 
   private addSidewalk(x: number, z: number, width: number, depth: number): void {
-    this.addBox(x, 0.18, z, width, 0.36, depth, "#c7c8be");
-    this.addBox(x, 0.39, z, width - 0.8, 0.08, depth - 0.8, "#93af82");
+    this.addBox(x, 0.18, z, width, 0.36, depth, "#c7c8be", true, this.designGroups.sidewalk);
+    this.addBox(
+      x,
+      0.39,
+      z,
+      width - 0.8,
+      0.08,
+      depth - 0.8,
+      "#93af82",
+      true,
+      this.designGroups.sidewalk,
+    );
   }
 
   private addRoadMarkings(): void {
     for (let offset = -36; offset <= 36; offset += 4) {
       if (Math.abs(offset) < 5) continue;
-      this.addBox(offset, 0.12, 0, 2, 0.03, 0.12, "#f6ca55", false);
-      this.addBox(0, 0.12, offset, 0.12, 0.03, 2, "#f6ca55", false);
+      const horizontalArm = offset < 0 ? this.roadArms.west : this.roadArms.east;
+      const verticalArm = offset < 0 ? this.roadArms.north : this.roadArms.south;
+      this.addBox(
+        offset,
+        0.12,
+        0,
+        2,
+        0.03,
+        0.12,
+        "#f6ca55",
+        false,
+        horizontalArm,
+      );
+      this.addBox(
+        0,
+        0.12,
+        offset,
+        0.12,
+        0.03,
+        2,
+        "#f6ca55",
+        false,
+        verticalArm,
+      );
     }
   }
 
   private addCrosswalks(): void {
     for (let index = -4; index <= 4; index += 1) {
-      this.addBox(index * 0.78, 0.13, -5.2, 0.44, 0.025, 1.8, "#f2efe6", false);
-      this.addBox(index * 0.78, 0.13, 5.2, 0.44, 0.025, 1.8, "#f2efe6", false);
-      this.addBox(-5.2, 0.13, index * 0.78, 1.8, 0.025, 0.44, "#f2efe6", false);
-      this.addBox(5.2, 0.13, index * 0.78, 1.8, 0.025, 0.44, "#f2efe6", false);
+      this.addBox(
+        index * 0.78,
+        0.13,
+        -5.2,
+        0.44,
+        0.025,
+        1.8,
+        "#f2efe6",
+        false,
+        this.crosswalkArms.north,
+      );
+      this.addBox(
+        index * 0.78,
+        0.13,
+        5.2,
+        0.44,
+        0.025,
+        1.8,
+        "#f2efe6",
+        false,
+        this.crosswalkArms.south,
+      );
+      this.addBox(
+        -5.2,
+        0.13,
+        index * 0.78,
+        1.8,
+        0.025,
+        0.44,
+        "#f2efe6",
+        false,
+        this.crosswalkArms.west,
+      );
+      this.addBox(
+        5.2,
+        0.13,
+        index * 0.78,
+        1.8,
+        0.025,
+        0.44,
+        "#f2efe6",
+        false,
+        this.crosswalkArms.east,
+      );
+    }
+  }
+
+  private updateIntersectionLayout(): void {
+    const visibleArms = new Set<RoadArm>();
+
+    if (this.intersectionLayout === "four-way") {
+      for (const arm of roadArmNames) visibleArms.add(arm);
+    } else if (this.intersectionLayout === "t-junction") {
+      const missingArms: RoadArm[] = ["south", "west", "north", "east"];
+      const missingArm = missingArms[this.layoutRotation];
+      for (const arm of roadArmNames) {
+        if (arm !== missingArm) visibleArms.add(arm);
+      }
+    } else if (this.layoutRotation % 2 === 0) {
+      visibleArms.add("east");
+      visibleArms.add("west");
+    } else {
+      visibleArms.add("north");
+      visibleArms.add("south");
+    }
+
+    for (const arm of roadArmNames) {
+      const visible = visibleArms.has(arm);
+      this.roadArms[arm].visible = visible;
+      this.crosswalkArms[arm].visible = visible;
+    }
+  }
+
+  private buildGridCell(cell: GridCellDesign): void {
+    const { x, z } = this.getBuildCellPosition(cell.row, cell.column);
+    const tileSize = BUILD_CELL_SIZE - 0.18;
+
+    if (cell.element === "lane" || cell.element === "white-lane") {
+      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#29343a", false, this.buildGridGroup);
+      const horizontal = cell.rotation % 2 === 1;
+      this.addBox(
+        x,
+        0.61,
+        z,
+        horizontal ? tileSize - 0.3 : 0.12,
+        0.035,
+        horizontal ? 0.12 : tileSize - 0.3,
+        cell.element === "lane" ? "#f6ca55" : "#f4f5f2",
+        false,
+        this.buildGridGroup,
+      );
+      return;
+    }
+
+    if (cell.element === "asphalt") {
+      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#20292d", false, this.buildGridGroup);
+      return;
+    }
+
+    if (cell.element === "sidewalk") {
+      this.addBox(x, 0.57, z, tileSize, 0.3, tileSize, "#c7c8be", true, this.buildGridGroup);
+      this.addBox(
+        x,
+        0.75,
+        z,
+        tileSize - 0.45,
+        0.06,
+        tileSize - 0.45,
+        "#93af82",
+        false,
+        this.buildGridGroup,
+      );
+      return;
+    }
+
+    if (cell.element === "crosswalk") {
+      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#29343a", false, this.buildGridGroup);
+      for (let stripe = -2; stripe <= 2; stripe += 1) {
+        const horizontal = cell.rotation % 2 === 1;
+        this.addBox(
+          x + (horizontal ? 0 : stripe * 0.65),
+          0.6,
+          z + (horizontal ? stripe * 0.65 : 0),
+          horizontal ? tileSize - 0.55 : 0.38,
+          0.04,
+          horizontal ? 0.38 : tileSize - 0.55,
+          "#f2efe6",
+          false,
+          this.buildGridGroup,
+        );
+      }
+      return;
+    }
+
+    this.buildGridSignal(cell);
+  }
+
+  private buildGridSignal(signal: GridSignalDesign): void {
+    const { x, z } = this.getBuildCellPosition(signal.row, signal.column);
+    const pole = mesh(
+      new THREE.CylinderGeometry(0.12, 0.16, 3, 12),
+      new THREE.MeshStandardMaterial({ color: "#263238", metalness: 0.35 }),
+    );
+    pole.position.set(x, 2, z);
+    pole.castShadow = true;
+    this.buildGridGroup.add(pole);
+
+    const housing = this.addBox(
+      x,
+      3.35,
+      z,
+      0.72,
+      1.05,
+      0.5,
+      "#162126",
+      true,
+      this.buildGridGroup,
+    );
+    housing.rotation.y = signal.rotation * (Math.PI / 2);
+    housing.castShadow = true;
+    const lampOffsets = [
+      [0, 0.28],
+      [0.28, 0],
+      [0, -0.28],
+      [-0.28, 0],
+    ] as const;
+    const [lampX, lampZ] = lampOffsets[signal.rotation % 4] ?? lampOffsets[0];
+    for (const [index, color] of ["#ff5e57", "#f6ca55", "#55df88"].entries()) {
+      const lamp = mesh(
+        new THREE.SphereGeometry(0.15, 12, 10),
+        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 }),
+      );
+      lamp.position.set(x + lampX, 3.68 - index * 0.32, z + lampZ);
+      this.buildGridGroup.add(lamp);
+    }
+  }
+
+  private addAutomaticStopLines(cells: readonly GridCellDesign[]): void {
+    const cellMap = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]));
+    const tileSize = BUILD_CELL_SIZE - 0.18;
+    const approaches = [
+      { row: -1, column: 0, edgeX: 0, edgeZ: 1 },
+      { row: 1, column: 0, edgeX: 0, edgeZ: -1 },
+      { row: 0, column: -1, edgeX: 1, edgeZ: 0 },
+      { row: 0, column: 1, edgeX: -1, edgeZ: 0 },
+    ] as const;
+
+    for (const intersection of cells) {
+      if (intersection.element !== "asphalt") continue;
+      for (const approach of approaches) {
+        const row = intersection.row + approach.row;
+        const column = intersection.column + approach.column;
+        const road = cellMap.get(`${row}:${column}`);
+        if (!road || (road.element !== "lane" && road.element !== "white-lane")) continue;
+
+        const { x, z } = this.getBuildCellPosition(row, column);
+        const lineRunsEastWest = approach.row !== 0;
+        this.addBox(
+          x + approach.edgeX * (tileSize / 2 - 0.32),
+          0.65,
+          z + approach.edgeZ * (tileSize / 2 - 0.32),
+          lineRunsEastWest ? tileSize - 0.45 : 0.18,
+          0.045,
+          lineRunsEastWest ? 0.18 : tileSize - 0.45,
+          "#ffffff",
+          false,
+          this.buildGridGroup,
+        );
+      }
+    }
+  }
+
+  private getBuildCellPosition(row: number, column: number): { x: number; z: number } {
+    const offset = (BUILD_GRID_SIZE - 1) / 2;
+    return {
+      x: (column - offset) * BUILD_CELL_SIZE,
+      z: (row - offset) * BUILD_CELL_SIZE,
+    };
+  }
+
+  private clearBuildGrid(): void {
+    for (const child of [...this.buildGridGroup.children]) {
+      child.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        object.geometry.dispose();
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) material.dispose();
+      });
+      this.buildGridGroup.remove(child);
     }
   }
 
@@ -188,9 +530,9 @@ export class ThreeRenderer {
       );
       pole.position.set(x, 1.9, z);
       pole.castShadow = true;
-      this.scene.add(pole);
+      this.designGroups.signal.add(pole);
 
-      this.addSignalLight(x, 3.35, z, this.vehicleSignals);
+      this.addSignalLight(x, 3.35, z, this.vehicleSignals, 0.28);
       this.addSignalLight(x + (x < 0 ? 0.5 : -0.5), 2.45, z, this.pedestrianSignals, 0.2);
     }
   }
@@ -202,7 +544,17 @@ export class ThreeRenderer {
     materials: THREE.MeshStandardMaterial[],
     radius = 0.28,
   ): void {
-    const housing = this.addBox(x, y, z, 0.72, 1.05, 0.5, "#162126");
+    const housing = this.addBox(
+      x,
+      y,
+      z,
+      0.72,
+      1.05,
+      0.5,
+      "#162126",
+      true,
+      this.designGroups.signal,
+    );
     housing.castShadow = true;
     const material = new THREE.MeshStandardMaterial({
       color: "#ff5e57",
@@ -211,7 +563,7 @@ export class ThreeRenderer {
     });
     const lamp = mesh(new THREE.SphereGeometry(radius, 18, 14), material);
     lamp.position.set(x, y, z + (z < 0 ? 0.28 : -0.28));
-    this.scene.add(lamp);
+    this.designGroups.signal.add(lamp);
     materials.push(material);
   }
 
@@ -275,6 +627,7 @@ export class ThreeRenderer {
     depth: number,
     color: string,
     shadows = true,
+    parent: THREE.Object3D = this.scene,
   ): THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial> {
     const object = mesh(
       new THREE.BoxGeometry(width, height, depth),
@@ -283,7 +636,7 @@ export class ThreeRenderer {
     object.position.set(x, y, z);
     object.castShadow = shadows;
     object.receiveShadow = shadows;
-    this.scene.add(object);
+    parent.add(object);
     return object;
   }
 }
@@ -293,4 +646,15 @@ function mesh<TGeometry extends THREE.BufferGeometry, TMaterial extends THREE.Ma
   material: TMaterial,
 ): THREE.Mesh<TGeometry, TMaterial> {
   return new THREE.Mesh(geometry, material);
+}
+
+const roadArmNames: RoadArm[] = ["north", "east", "south", "west"];
+
+function createRoadArmGroups(): Record<RoadArm, THREE.Group> {
+  return {
+    north: new THREE.Group(),
+    east: new THREE.Group(),
+    south: new THREE.Group(),
+    west: new THREE.Group(),
+  };
 }

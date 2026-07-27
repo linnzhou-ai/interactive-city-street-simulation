@@ -39,4 +39,29 @@ describe("Simulation", () => {
     simulation.setSimulationSpeed(0);
     expect(simulation.getSettings().simulationSpeed).toBe(0.5);
   });
+
+  it("updates and clamps all scenario controls", () => {
+    const simulation = new Simulation();
+
+    simulation.setVehicleVolume(10);
+    simulation.setPedestrianVolume(2);
+    simulation.setSpeedLimit(100);
+    simulation.setSignalCycle(1);
+
+    expect(simulation.getSettings()).toMatchObject({
+      vehicleVolume: 3,
+      pedestrianVolume: 2,
+      speedLimitMph: 100,
+      signalCycleSeconds: 2,
+    });
+  });
+
+  it("uses vehicle volume in the live congestion metric", () => {
+    const simulation = new Simulation();
+    simulation.setVehicleVolume(3);
+    simulation.start();
+    simulation.update(0.1);
+
+    expect(simulation.getState().metrics.congestion).toBe(3);
+  });
 });

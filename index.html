@@ -25,6 +25,10 @@
           <p class="eyebrow">Urban Systems Lab</p>
           <h1>Interactive City Street Simulation</h1>
         </div>
+        <div class="mode-switch" aria-label="Application mode">
+          <button id="build-mode-button" type="button" aria-pressed="true">Build</button>
+          <button id="simulate-mode-button" type="button" aria-pressed="false">Simulate</button>
+        </div>
         <div class="simulation-actions" aria-label="Simulation controls">
           <button id="run-button" class="primary-button" type="button">Run</button>
           <button id="pause-button" type="button">Pause</button>
@@ -34,27 +38,110 @@
 
       <aside class="panel tools-panel hud-panel" aria-labelledby="tools-title">
         <div class="panel-heading">
-          <p class="panel-kicker">Design</p>
-          <h2 id="tools-title">Street tools</h2>
+          <div>
+            <p class="panel-kicker">Build mode</p>
+            <h2 id="tools-title">Intersection editor</h2>
+          </div>
+          <span class="build-badge">Live</span>
         </div>
-        <div class="tool-list" aria-label="Planned street tools">
-          <button class="tool-button" type="button" disabled>
+        <p class="panel-help">Choose a road shape, rotate it, and add or remove street elements.</p>
+        <div class="layout-picker" aria-label="Intersection shape">
+          <button
+            class="layout-button"
+            type="button"
+            data-intersection-layout="four-way"
+            aria-pressed="true"
+          >
+            <span class="layout-preview layout-preview-four"></span>
+            <span>4-way</span>
+          </button>
+          <button
+            class="layout-button"
+            type="button"
+            data-intersection-layout="t-junction"
+            aria-pressed="false"
+          >
+            <span class="layout-preview layout-preview-t"></span>
+            <span>T-junction</span>
+          </button>
+          <button
+            class="layout-button"
+            type="button"
+            data-intersection-layout="straight"
+            aria-pressed="false"
+          >
+            <span class="layout-preview layout-preview-straight"></span>
+            <span>Straight</span>
+          </button>
+        </div>
+        <button id="rotate-layout-button" class="rotate-layout-button" type="button">
+          ↻ Rotate intersection
+        </button>
+        <p class="tool-section-label">Street elements</p>
+        <div class="tool-list" aria-label="Street design tools">
+          <button class="tool-button" type="button" data-design-tool="lane" aria-pressed="true">
             <span class="tool-icon road-icon"></span>
-            Lane
+            <span>Yellow lane</span>
+            <small data-tool-status>Selected</small>
           </button>
-          <button class="tool-button" type="button" disabled>
+          <button
+            class="tool-button"
+            type="button"
+            data-design-tool="white-lane"
+            aria-pressed="false"
+          >
+            <span class="tool-icon white-road-icon"></span>
+            <span>White lane</span>
+            <small data-tool-status>Place</small>
+          </button>
+          <button
+            class="tool-button"
+            type="button"
+            data-design-tool="asphalt"
+            aria-pressed="false"
+          >
+            <span class="tool-icon asphalt-icon"></span>
+            <span>Intersection tile</span>
+            <small data-tool-status>Place</small>
+          </button>
+          <button class="tool-button" type="button" data-design-tool="sidewalk" aria-pressed="false">
             <span class="tool-icon sidewalk-icon"></span>
-            Sidewalk
+            <span>Sidewalk</span>
+            <small data-tool-status>Place</small>
           </button>
-          <button class="tool-button" type="button" disabled>
+          <button class="tool-button" type="button" data-design-tool="crosswalk" aria-pressed="false">
             <span class="tool-icon crossing-icon"></span>
-            Crosswalk
+            <span>Crosswalk</span>
+            <small data-tool-status>Place</small>
           </button>
-          <button class="tool-button" type="button" disabled>
+          <button class="tool-button" type="button" data-design-tool="signal" aria-pressed="false">
             <span class="tool-icon signal-icon"></span>
-            Signal
+            <span>Traffic signal</span>
+            <small data-tool-status>Place</small>
+          </button>
+          <button class="tool-button" type="button" data-build-tool="erase" aria-pressed="false">
+            <span class="tool-icon erase-icon"></span>
+            <span>Bulldoze</span>
+            <small>Erase</small>
           </button>
         </div>
+        <button id="reset-design-button" class="reset-design-button" type="button">Clear build grid</button>
+      </aside>
+
+      <aside class="build-grid-panel hud-panel" aria-labelledby="build-grid-title">
+        <div>
+          <p class="panel-kicker">Editable city</p>
+          <h2 id="build-grid-title">12 × 12 city grid</h2>
+        </div>
+        <p>
+          Selected:
+          <strong id="selected-build-tool">Yellow lane</strong>
+        </p>
+        <div id="build-grid" class="build-grid" aria-label="Street construction grid"></div>
+        <small>
+          Roads generate stop lines at intersections. Signals are placed as a separate layer. Press R
+          to rotate.
+        </small>
       </aside>
 
       <aside class="panel controls-panel hud-panel" aria-labelledby="scenario-title">
@@ -72,22 +159,46 @@
         </label>
         <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
 
-        <div class="control-summary">
-          <div>
-            <span>Vehicle volume</span>
-            <strong>Low</strong>
+        <div class="scenario-control-list">
+          <div class="scenario-control">
+            <label for="vehicle-volume-control">
+              <span>Vehicle volume</span>
+              <output id="vehicle-volume-output" for="vehicle-volume-control">Low</output>
+            </label>
+            <input id="vehicle-volume-control" type="range" min="1" max="3" step="1" value="1" />
           </div>
-          <div>
-            <span>Pedestrians</span>
-            <strong>Low</strong>
+          <div class="scenario-control">
+            <label for="pedestrian-volume-control">
+              <span>Pedestrians</span>
+              <output id="pedestrian-volume-output" for="pedestrian-volume-control">Low</output>
+            </label>
+            <input id="pedestrian-volume-control" type="range" min="1" max="3" step="1" value="1" />
           </div>
-          <div>
-            <span>Speed limit</span>
-            <strong>25 mph</strong>
+          <div class="scenario-control">
+            <label for="speed-limit-control">
+              <span>Speed limit</span>
+              <span class="number-input-wrap">
+                <input id="speed-limit-control" type="number" min="5" max="120" step="1" value="25" />
+                <span>mph</span>
+              </span>
+            </label>
           </div>
+          <div class="scenario-control">
+            <label for="signal-cycle-control">
+              <span>Signal cycle</span>
+              <span class="number-input-wrap">
+                <input id="signal-cycle-control" type="number" min="2" max="300" step="1" value="12" />
+                <span>sec</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="scenario-presets" aria-label="Example scenarios">
+          <p>Example scenarios</p>
           <div>
-            <span>Signal cycle</span>
-            <strong>12 sec</strong>
+            <button id="rush-hour-button" type="button">Rush hour</button>
+            <button id="school-arrival-button" type="button">School arrival</button>
           </div>
         </div>
       </aside>
