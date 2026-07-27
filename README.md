@@ -12,3 +12,22 @@ The project’s core workflow is:
 
 See [PROJECT_PROPOSAL.md](PROJECT_PROPOSAL.md) for the full scope, milestones,
 team responsibilities, success criteria, and fallback plan.
+
+## Development
+
+Install a supported Node.js version, then run:
+
+```bash
+npm install
+npm run dev
+```
+
+Before opening a pull request, verify the complete foundation:
+
+```bash
+npm run check
+```
+
+The initial application uses Vite, TypeScript, Canvas 2D, Vitest, and ESLint.
+See [docs/architecture.md](docs/architecture.md) for subsystem boundaries and
+team ownership.
