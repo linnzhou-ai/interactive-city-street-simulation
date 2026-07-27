@@ -28,6 +28,6 @@ Before opening a pull request, verify the complete foundation:
 npm run check
 ```
 
-The initial application uses Vite, TypeScript, Canvas 2D, Vitest, and ESLint.
+The application uses Vite, TypeScript, Three.js, Vitest, and ESLint.
 See [docs/architecture.md](docs/architecture.md) for subsystem boundaries and
 team ownership.
