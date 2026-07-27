@@ -1,10 +1,5 @@
 export type SignalPhase = "vehicles" | "pedestrians";
 
-export interface Point {
-  x: number;
-  y: number;
-}
-
 export interface MovingAgent {
   id: string;
   progress: number;
