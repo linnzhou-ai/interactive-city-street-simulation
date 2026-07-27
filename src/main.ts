@@ -1,6 +1,6 @@
 import "./styles.css";
 import { Simulation } from "./core/simulation";
-import { CanvasRenderer } from "./rendering/canvasRenderer";
+import { ThreeRenderer } from "./rendering/threeRenderer";
 
 const canvas = requireElement<HTMLCanvasElement>("simulation-canvas");
 const runButton = requireElement<HTMLButtonElement>("run-button");
@@ -15,7 +15,7 @@ const pedestrianWait = requireElement<HTMLElement>("pedestrian-wait");
 const conflicts = requireElement<HTMLElement>("conflicts");
 
 const simulation = new Simulation();
-const renderer = new CanvasRenderer(canvas);
+const renderer = new ThreeRenderer(canvas);
 let previousTimestamp = performance.now();
 
 runButton.addEventListener("click", () => {
