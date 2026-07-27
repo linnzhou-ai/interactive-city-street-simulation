@@ -5,130 +5,182 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Design a city street, run a simulation, and compare traffic and pedestrian outcomes."
+      content="Model mobility, people, land use, economy, and infrastructure on one city street."
     />
-    <title>Interactive City Street Simulation</title>
+    <title>Street Systems Simulator</title>
   </head>
   <body>
     <div id="app">
-      <main class="simulation-viewport" aria-labelledby="simulation-title">
-        <canvas id="simulation-canvas" aria-label="Interactive 3D street simulation"></canvas>
-        <div class="scene-title">
-          <p class="panel-kicker">Live 3D reference scenario</p>
-          <h2 id="simulation-title">Four-way intersection</h2>
+      <main class="simulation-viewport" aria-label="Interactive 3D street simulation">
+        <canvas id="simulation-canvas" aria-label="Street systems simulation"></canvas>
+        <div class="scene-label" aria-hidden="true">
+          <span id="active-layer-label">Systems overview</span>
+          <strong>Market Street at 5th</strong>
         </div>
-        <p class="camera-hint">Drag to orbit · Scroll to zoom</p>
       </main>
 
       <header class="topbar hud-panel">
-        <div>
+        <div class="brand-block">
           <p class="eyebrow">Urban Systems Lab</p>
-          <h1>Interactive City Street Simulation</h1>
+          <h1>Street Systems Simulator</h1>
+        </div>
+        <div class="clock-block" aria-label="Simulation time">
+          <span id="day-output">Day 1</span>
+          <strong id="time-output">7:00 AM</strong>
         </div>
         <div class="simulation-actions" aria-label="Simulation controls">
+          <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
           <button id="run-button" class="primary-button" type="button">Run</button>
           <button id="pause-button" type="button">Pause</button>
           <button id="reset-button" type="button">Reset</button>
         </div>
       </header>
 
-      <aside class="panel tools-panel hud-panel" aria-labelledby="tools-title">
-        <div class="panel-heading">
-          <p class="panel-kicker">Design</p>
-          <h2 id="tools-title">Street tools</h2>
-        </div>
-        <div class="tool-list" aria-label="Planned street tools">
-          <button class="tool-button" type="button" disabled>
-            <span class="tool-icon road-icon"></span>
-            Lane
+      <aside class="inspector-panel hud-panel" aria-labelledby="inspector-title">
+        <nav class="layer-tabs" aria-label="Simulation layers">
+          <button class="layer-tab" type="button" data-layer="overview" aria-pressed="true">
+            Overview
           </button>
-          <button class="tool-button" type="button" disabled>
-            <span class="tool-icon sidewalk-icon"></span>
-            Sidewalk
+          <button class="layer-tab" type="button" data-layer="people" aria-pressed="false">
+            People
           </button>
-          <button class="tool-button" type="button" disabled>
-            <span class="tool-icon crossing-icon"></span>
-            Crosswalk
+          <button class="layer-tab" type="button" data-layer="economy" aria-pressed="false">
+            Economy
           </button>
-          <button class="tool-button" type="button" disabled>
-            <span class="tool-icon signal-icon"></span>
-            Signal
+          <button class="layer-tab" type="button" data-layer="infrastructure" aria-pressed="false">
+            Utilities
           </button>
-        </div>
+          <button class="layer-tab" type="button" data-layer="land-use" aria-pressed="false">
+            Land use
+          </button>
+        </nav>
+
+        <section class="inspector-content">
+          <p class="panel-kicker">Live model</p>
+          <h2 id="inspector-title">Street health</h2>
+          <p id="inspector-summary" class="inspector-summary">All systems are initializing.</p>
+          <dl class="snapshot-list">
+            <div>
+              <dt id="inspector-label-1">Population</dt>
+              <dd id="inspector-value-1">0</dd>
+            </div>
+            <div>
+              <dt id="inspector-label-2">Active trips</dt>
+              <dd id="inspector-value-2">0</dd>
+            </div>
+            <div>
+              <dt id="inspector-label-3">Jobs filled</dt>
+              <dd id="inspector-value-3">0%</dd>
+            </div>
+            <div>
+              <dt id="inspector-label-4">Utility coverage</dt>
+              <dd id="inspector-value-4">0%</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="event-section" aria-labelledby="event-title">
+          <div class="section-heading">
+            <p class="panel-kicker">Street log</p>
+            <h2 id="event-title">Recent events</h2>
+          </div>
+          <ol id="event-list" class="event-list" aria-live="polite">
+            <li>No events yet</li>
+          </ol>
+        </section>
       </aside>
 
-      <aside class="panel controls-panel hud-panel" aria-labelledby="scenario-title">
+      <aside class="controls-panel hud-panel" aria-labelledby="scenario-title">
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Conditions</p>
-            <h2 id="scenario-title">Scenario controls</h2>
+            <p class="panel-kicker">Scenario</p>
+            <h2 id="scenario-title">Operating conditions</h2>
           </div>
-          <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
+          <div class="signal-state" aria-label="Current signal state">
+            <span id="signal-phase">Vehicles</span>
+            <strong><span id="signal-time-remaining">6.0</span>s</strong>
+          </div>
         </div>
 
-        <div class="scenario-controls">
+        <div class="control-group">
+          <p>Demand and time</p>
           <div class="range-control">
             <div class="control-row">
-              <label for="speed-control">Simulation speed</label>
-              <output id="speed-output" for="speed-control">1.0×</output>
+              <label for="simulation-speed-control">Time scale</label>
+              <output id="simulation-speed-output" for="simulation-speed-control">1.0x</output>
             </div>
-            <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
+            <input id="simulation-speed-control" type="range" min="0.5" max="4" step="0.5" value="1" />
           </div>
-
           <div class="range-control">
             <div class="control-row">
-              <label for="vehicle-volume-control">Vehicle volume</label>
-              <output id="vehicle-volume-output" for="vehicle-volume-control">12 vehicles/min</output>
+              <label for="vehicle-volume-control">Vehicle demand</label>
+              <output id="vehicle-volume-output" for="vehicle-volume-control">12/min</output>
             </div>
-            <input
-              id="vehicle-volume-control"
-              type="range"
-              min="4"
-              max="30"
-              step="1"
-              value="12"
-            />
+            <input id="vehicle-volume-control" type="range" min="4" max="40" step="1" value="12" />
           </div>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="pedestrian-volume-control">Pedestrian demand</label>
+              <output id="pedestrian-volume-output" for="pedestrian-volume-control">12/min</output>
+            </div>
+            <input id="pedestrian-volume-control" type="range" min="4" max="40" step="1" value="12" />
+          </div>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="freight-volume-control">Freight demand</label>
+              <output id="freight-volume-output" for="freight-volume-control">4/min</output>
+            </div>
+            <input id="freight-volume-control" type="range" min="1" max="15" step="1" value="4" />
+          </div>
+        </div>
 
+        <div class="control-group">
+          <p>Street operations</p>
           <div class="range-control">
             <div class="control-row">
               <label for="speed-limit-control">Speed limit</label>
               <output id="speed-limit-output" for="speed-limit-control">25 mph</output>
             </div>
-            <input
-              id="speed-limit-control"
-              type="range"
-              min="10"
-              max="45"
-              step="5"
-              value="25"
-            />
+            <input id="speed-limit-control" type="range" min="10" max="45" step="5" value="25" />
           </div>
-
           <div class="range-control">
             <div class="control-row">
               <label for="signal-cycle-control">Signal cycle</label>
-              <output id="signal-cycle-output" for="signal-cycle-control">12 s</output>
+              <output id="signal-cycle-output" for="signal-cycle-control">12s</output>
             </div>
-            <input
-              id="signal-cycle-control"
-              type="range"
-              min="6"
-              max="40"
-              step="2"
-              value="12"
-            />
+            <input id="signal-cycle-control" type="range" min="6" max="40" step="2" value="12" />
+          </div>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="transit-headway-control">Bus headway</label>
+              <output id="transit-headway-output" for="transit-headway-control">8 min</output>
+            </div>
+            <input id="transit-headway-control" type="range" min="3" max="20" step="1" value="8" />
+          </div>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="road-capacity-control">Road capacity</label>
+              <output id="road-capacity-output" for="road-capacity-control">20 vehicles</output>
+            </div>
+            <input id="road-capacity-control" type="range" min="8" max="40" step="2" value="20" />
           </div>
         </div>
 
-        <div class="signal-summary" aria-label="Current traffic signal status">
-          <div>
-            <span>Signal phase</span>
-            <strong id="signal-phase">Vehicles</strong>
+        <div class="control-group">
+          <p>Development policy</p>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="utility-capacity-control">Utility capacity</label>
+              <output id="utility-capacity-output" for="utility-capacity-control">100%</output>
+            </div>
+            <input id="utility-capacity-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
           </div>
-          <div>
-            <span>Time remaining</span>
-            <strong><span id="signal-time-remaining">6.0</span> s</strong>
+          <div class="range-control">
+            <div class="control-row">
+              <label for="zoning-strictness-control">Zoning limits</label>
+              <output id="zoning-strictness-output" for="zoning-strictness-control">100%</output>
+            </div>
+            <input id="zoning-strictness-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
           </div>
         </div>
       </aside>
@@ -136,28 +188,38 @@
       <section class="metrics hud-panel" aria-labelledby="metrics-title">
         <div class="metrics-heading">
           <p class="panel-kicker">Live results</p>
-          <h2 id="metrics-title">Performance snapshot</h2>
+          <h2 id="metrics-title">Systems overview</h2>
         </div>
         <div class="metric-grid">
           <article class="metric-card">
-            <span>Average travel</span>
-            <strong id="average-travel">--</strong>
-            <small>Seconds per vehicle</small>
+            <span id="metric-label-1">Congestion</span>
+            <strong id="metric-value-1">0%</strong>
+            <small id="metric-detail-1">Vehicles below target speed</small>
           </article>
           <article class="metric-card">
-            <span>Congestion</span>
-            <strong id="congestion">--</strong>
-            <small>Vehicles below half speed</small>
+            <span id="metric-label-2">Travel time</span>
+            <strong id="metric-value-2">0.0s</strong>
+            <small id="metric-detail-2">Average completed trip</small>
           </article>
           <article class="metric-card">
-            <span>Traffic flow</span>
-            <strong id="traffic-flow">--</strong>
-            <small>Vehicles per minute</small>
+            <span id="metric-label-3">Household happiness</span>
+            <strong id="metric-value-3">0%</strong>
+            <small id="metric-detail-3">Schedules, costs and services</small>
           </article>
           <article class="metric-card">
-            <span>Vehicles completed</span>
-            <strong id="completed-vehicles">--</strong>
-            <small>Finished trips</small>
+            <span id="metric-label-4">Goods available</span>
+            <strong id="metric-value-4">0%</strong>
+            <small id="metric-detail-4">Retail demand supplied</small>
+          </article>
+          <article class="metric-card">
+            <span id="metric-label-5">Land value</span>
+            <strong id="metric-value-5">$0</strong>
+            <small id="metric-detail-5">Average parcel value</small>
+          </article>
+          <article class="metric-card">
+            <span id="metric-label-6">Utilities</span>
+            <strong id="metric-value-6">0%</strong>
+            <small id="metric-detail-6">Power, water and waste</small>
           </article>
         </div>
       </section>

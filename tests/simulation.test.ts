@@ -1,178 +1,151 @@
 import { describe, expect, it } from "vitest";
-import { Simulation, createInitialState } from "../src/core/simulation";
+import { Simulation } from "../src/core/simulation";
 
 describe("Simulation", () => {
-  it("does not advance while paused", () => {
+  it("initializes the connected street-scale systems and stays paused", () => {
     const simulation = new Simulation();
+    const initial = structuredClone(simulation.getState());
 
-    simulation.update(1);
+    simulation.update(2);
 
-    expect(simulation.getState()).toEqual(createInitialState());
+    expect(simulation.getState()).toEqual(initial);
+    expect(initial.people.length).toBeGreaterThan(0);
+    expect(new Set(initial.people.map((person) => person.ageGroup))).toEqual(
+      new Set(["child", "adult", "senior"]),
+    );
+    expect(new Set(initial.buildings.map((building) => building.zone))).toEqual(
+      new Set(["residential", "commercial", "industrial", "civic", "park"]),
+    );
+    expect(initial.network.nodes.length).toBeGreaterThan(20);
+    expect(initial.infrastructure.transitLines[0]?.active).toBe(true);
   });
 
-  it("spawns alternating traffic and advances both agent types", () => {
+  it("creates and advances road, pedestrian, freight, and transit activity", () => {
     const simulation = new Simulation();
     simulation.start();
+    simulation.update(12);
 
-    simulation.update(6);
-
-    expect(simulation.getState().vehicles.length).toBeGreaterThanOrEqual(2);
-    expect(simulation.getState().vehicles[0]?.direction).toBe("eastbound");
-    expect(simulation.getState().vehicles[1]?.direction).toBe("westbound");
-    expect(simulation.getState().vehicles[0]?.progress).toBeGreaterThan(0);
-    expect(simulation.getState().pedestrian.progress).toBeGreaterThan(0);
+    const state = simulation.getState();
+    expect(state.elapsedSeconds).toBeCloseTo(12, 8);
+    expect(state.metrics.activeTrips).toBeGreaterThan(0);
+    expect(state.vehicles.some((vehicle) => vehicle.vehicleType === "bus")).toBe(true);
+    expect(state.vehicles.some((vehicle) => vehicle.vehicleType === "car")).toBe(true);
+    expect(state.pedestrians.length).toBeGreaterThan(0);
+    expect(state.network.edges.some((edge) => edge.occupancy > 0)).toBe(true);
+    expect(state.metrics.congestionPercent).toBeGreaterThanOrEqual(0);
+    expect(state.metrics.congestionPercent).toBeLessThanOrEqual(100);
   });
 
-  it("fully resets deterministic traffic state while preserving settings", () => {
+  it("preserves settings across a deterministic reset", () => {
     const simulation = new Simulation();
+    const initial = structuredClone(simulation.getState());
     simulation.setVehicleVolume(30);
     simulation.setSignalCycleSeconds(20);
+    simulation.setUtilityCapacityScale(0.8);
     simulation.start();
-    simulation.update(4);
+    simulation.update(8);
     simulation.reset();
 
-    expect(simulation.getState()).toEqual(
-      createInitialState(simulation.getSettings()),
-    );
+    const reset = structuredClone(simulation.getState());
     expect(simulation.getSettings().vehicleVolume).toBe(30);
+    expect(simulation.getSettings().signalCycleSeconds).toBe(20);
+    expect(simulation.getSettings().utilityCapacityScale).toBe(0.8);
+    expect(reset.running).toBe(false);
+    expect(reset.elapsedSeconds).toBe(0);
+    expect(reset.people).toEqual(initial.people);
 
-    simulation.start();
-    simulation.update(0.05);
-    expect(simulation.getState().vehicles[0]?.id).toBe("vehicle-1");
-    expect(simulation.getState().vehicles[0]?.direction).toBe("eastbound");
+    const comparison = new Simulation(simulation.getSettings());
+    expect(reset).toEqual(comparison.getState());
   });
 
-  it("clamps all traffic settings to their supported ranges", () => {
+  it("clamps every scenario control to its supported range", () => {
     const simulation = new Simulation();
+    simulation.setSimulationSpeed(99);
+    simulation.setSpeedLimitMph(99);
+    simulation.setSignalCycleSeconds(99);
+    simulation.setVehicleVolume(99);
+    simulation.setPedestrianVolume(99);
+    simulation.setFreightVolume(99);
+    simulation.setTransitHeadwayMinutes(99);
+    simulation.setRoadCapacity(99);
+    simulation.setUtilityCapacityScale(99);
+    simulation.setZoningStrictness(99);
 
-    simulation.setSimulationSpeed(10);
-    simulation.setSpeedLimitMph(100);
-    simulation.setSignalCycleSeconds(100);
-    simulation.setVehicleVolume(100);
-    expect(simulation.getSettings().simulationSpeed).toBe(2);
-    expect(simulation.getSettings().speedLimitMph).toBe(45);
-    expect(simulation.getSettings().signalCycleSeconds).toBe(40);
-    expect(simulation.getSettings().vehicleVolume).toBe(30);
-
-    simulation.setSimulationSpeed(0);
-    simulation.setSpeedLimitMph(0);
-    simulation.setSignalCycleSeconds(0);
-    simulation.setVehicleVolume(0);
-    expect(simulation.getSettings().simulationSpeed).toBe(0.5);
-    expect(simulation.getSettings().speedLimitMph).toBe(10);
-    expect(simulation.getSettings().signalCycleSeconds).toBe(6);
-    expect(simulation.getSettings().vehicleVolume).toBe(4);
-  });
-
-  it("stops at a red signal and resumes on green", () => {
-    const simulation = new Simulation();
-    simulation.setSpeedLimitMph(25);
-    simulation.setSignalCycleSeconds(6);
-    simulation.setVehicleVolume(4);
-    simulation.start();
-
-    simulation.update(5.5);
-    const stoppedVehicle = simulation.getState().vehicles[0];
-    expect(simulation.getState().signalPhase).toBe("pedestrians");
-    expect(stoppedVehicle?.progress).toBeCloseTo(0.45, 5);
-    expect(stoppedVehicle?.currentSpeedMph).toBe(0);
-    expect(stoppedVehicle?.waitingSeconds).toBeGreaterThan(0);
-    expect(simulation.getState().metrics.congestionPercent).toBeGreaterThan(0);
-
-    simulation.update(0.6);
-    expect(simulation.getState().signalPhase).toBe("vehicles");
-    expect(stoppedVehicle?.progress).toBeGreaterThan(0.45);
-    expect(stoppedVehicle?.currentSpeedMph).toBeGreaterThan(0);
-  });
-
-  it("moves vehicles farther when the speed limit is higher", () => {
-    const slowerSimulation = new Simulation();
-    const fasterSimulation = new Simulation();
-    slowerSimulation.setSpeedLimitMph(10);
-    fasterSimulation.setSpeedLimitMph(45);
-    slowerSimulation.start();
-    fasterSimulation.start();
-
-    slowerSimulation.update(2);
-    fasterSimulation.update(2);
-
-    expect(fasterSimulation.getState().vehicles[0]?.progress).toBeGreaterThan(
-      slowerSimulation.getState().vehicles[0]?.progress ?? 1,
-    );
-  });
-
-  it("keeps a safe following gap under high volume", () => {
-    const simulation = new Simulation();
-    simulation.setSpeedLimitMph(10);
-    simulation.setSignalCycleSeconds(6);
-    simulation.setVehicleVolume(30);
-    simulation.start();
-
-    simulation.update(20);
-
-    for (const direction of ["eastbound", "westbound"] as const) {
-      const progress = simulation
-        .getState()
-        .vehicles.filter(
-          (vehicle) => !vehicle.completed && vehicle.direction === direction,
-        )
-        .map((vehicle) => vehicle.progress)
-        .sort((a, b) => b - a);
-
-      for (let index = 1; index < progress.length; index += 1) {
-        expect(progress[index - 1]! - progress[index]!).toBeGreaterThanOrEqual(
-          0.08 - 1e-9,
-        );
-      }
-    }
-  });
-
-  it("calculates completed travel, congestion, and flow metrics", () => {
-    const simulation = new Simulation();
-    simulation.setSpeedLimitMph(45);
-    simulation.setSignalCycleSeconds(40);
-    simulation.setVehicleVolume(4);
-    simulation.start();
-
-    simulation.update(20);
-
-    const { metrics } = simulation.getState();
-    expect(metrics.completedVehicles).toBeGreaterThan(0);
-    expect(metrics.averageVehicleTravelSeconds).toBeGreaterThan(0);
-    expect(metrics.congestionPercent).toBeGreaterThanOrEqual(0);
-    expect(metrics.congestionPercent).toBeLessThanOrEqual(100);
-    expect(metrics.trafficFlowPerMinute).toBeCloseTo(
-      (metrics.completedVehicles * 60) / simulation.getState().elapsedSeconds,
-      8,
-    );
-    expect(metrics.potentialConflicts).toBe(0);
-  });
-
-  it("uses every part of a large frame delta without tunneling", () => {
-    const largeDeltaSimulation = new Simulation();
-    const smallDeltaSimulation = new Simulation();
-    largeDeltaSimulation.setSignalCycleSeconds(6);
-    smallDeltaSimulation.setSignalCycleSeconds(6);
-    largeDeltaSimulation.start();
-    smallDeltaSimulation.start();
-
-    largeDeltaSimulation.update(10);
-    for (let index = 0; index < 100; index += 1) {
-      smallDeltaSimulation.update(0.1);
-    }
-
-    const largeState = largeDeltaSimulation.getState();
-    const smallState = smallDeltaSimulation.getState();
-    expect(largeState.elapsedSeconds).toBeCloseTo(10, 8);
-    expect(largeState.elapsedSeconds).toBeCloseTo(smallState.elapsedSeconds, 8);
-    expect(largeState.vehicles.map(({ id, direction }) => ({ id, direction }))).toEqual(
-      smallState.vehicles.map(({ id, direction }) => ({ id, direction })),
-    );
-    largeState.vehicles.forEach((vehicle, index) => {
-      expect(vehicle.progress).toBeCloseTo(
-        smallState.vehicles[index]?.progress ?? -1,
-        8,
-      );
+    expect(simulation.getSettings()).toEqual({
+      simulationSpeed: 4,
+      speedLimitMph: 45,
+      signalCycleSeconds: 40,
+      vehicleVolume: 40,
+      pedestrianVolume: 40,
+      freightVolume: 15,
+      transitHeadwayMinutes: 20,
+      roadCapacity: 40,
+      utilityCapacityScale: 1.5,
+      zoningStrictness: 1.5,
     });
+  });
+
+  it("applies infrastructure constraints immediately", () => {
+    const simulation = new Simulation();
+    const fullCoverage = simulation.getState().metrics.utilityCoveragePercent;
+
+    simulation.setUtilityCapacityScale(0.5);
+    simulation.setRoadCapacity(8);
+    simulation.start();
+    simulation.update(1);
+
+    const state = simulation.getState();
+    expect(state.metrics.utilityCoveragePercent).toBeLessThan(fullCoverage);
+    expect(state.infrastructure.roadCapacity).toBe(8);
+    expect(state.buildings.some((building) => building.efficiency < 1)).toBe(true);
+    expect(state.infrastructure.utilities.power.demand).toBeGreaterThan(0);
+  });
+
+  it("runs daily routines, economic flows, utilities, and constrained growth", () => {
+    const simulation = new Simulation({
+      simulationSpeed: 4,
+      speedLimitMph: 45,
+      vehicleVolume: 4,
+      pedestrianVolume: 4,
+      freightVolume: 1,
+      roadCapacity: 40,
+    });
+    const initialValue = simulation.getState().landUse.averageLandValue;
+    simulation.start();
+
+    simulation.update(260);
+
+    const state = simulation.getState();
+    expect(state.day).toBe(2);
+    expect(state.economy.employedWorkers).toBeGreaterThan(0);
+    expect(state.economy.goodsProduced).toBeGreaterThan(0);
+    expect(state.infrastructure.wasteCollected).toBeGreaterThan(0);
+    expect(state.landUse.averageLandValue).not.toBe(initialValue);
+    expect(state.events.some((event) => event.category === "economy")).toBe(true);
+    expect(state.metrics.population).toBe(state.people.length);
+    for (const value of Object.values(state.metrics)) {
+      expect(Number.isFinite(value)).toBe(true);
+    }
+  });
+
+  it("produces the same result for one large update and fixed small updates", () => {
+    const largeStep = new Simulation();
+    const smallSteps = new Simulation();
+    largeStep.start();
+    smallSteps.start();
+
+    largeStep.update(10);
+    for (let index = 0; index < 100; index += 1) smallSteps.update(0.1);
+
+    const largeState = largeStep.getState();
+    const smallState = smallSteps.getState();
+    expect(largeState.elapsedSeconds).toBeCloseTo(smallState.elapsedSeconds, 8);
+    expect(largeState.timeOfDayMinutes).toBeCloseTo(smallState.timeOfDayMinutes, 8);
+    expect(largeState.vehicles.map(({ id, progress }) => ({ id, progress }))).toEqual(
+      smallState.vehicles.map(({ id, progress }) => ({ id, progress })),
+    );
+    expect(largeState.pedestrians.map(({ id, progress }) => ({ id, progress }))).toEqual(
+      smallState.pedestrians.map(({ id, progress }) => ({ id, progress })),
+    );
   });
 });

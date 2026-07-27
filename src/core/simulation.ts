@@ -1,8 +1,20 @@
+import { advanceEconomy } from "./economy";
+import {
+  createInitialInfrastructure,
+  updateInfrastructure,
+  type InfrastructureModel,
+} from "./infrastructure";
+import { createInitialLandUse, updateLandUse } from "./landUse";
+import { MobilitySystem, type MobilitySnapshot } from "./mobility";
+import { OUTSIDE_FREIGHT_BUILDING_ID } from "./network";
+import { advancePopulation, createPopulation } from "./population";
 import type {
+  ActivityType,
   ScenarioSettings,
+  SimulationEvent,
   SimulationMetrics,
   SimulationState,
-  Vehicle,
+  TripRequest,
 } from "../models/types";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
@@ -10,55 +22,44 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
   speedLimitMph: 25,
   signalCycleSeconds: 12,
   vehicleVolume: 12,
-  pedestrianVolume: 1,
+  pedestrianVolume: 12,
+  freightVolume: 4,
+  transitHeadwayMinutes: 8,
+  roadCapacity: 20,
+  utilityCapacityScale: 1,
+  zoningStrictness: 1,
 };
 
-const MAX_SUBSTEP_SECONDS = 0.05;
-const ROUTE_LENGTH_FEET = 400;
-const MILES_PER_HOUR_TO_FEET_PER_SECOND = 5280 / 3600;
-const STOP_LINE_PROGRESS = 0.45;
-const SAFE_FOLLOWING_GAP = 0.08;
-const STOPPED_SPEED_MPH = 0.5;
+const START_MINUTE = 7 * 60;
+const CITY_MINUTES_PER_SIMULATION_SECOND = 1;
+const MAX_SUBSTEP_SECONDS = 0.1;
+const MAX_EVENTS = 12;
 const EPSILON = 1e-9;
 
-export function createInitialState(
-  settings: ScenarioSettings = DEFAULT_SETTINGS,
-): SimulationState {
-  return {
-    running: false,
-    elapsedSeconds: 0,
-    signalPhase: "vehicles",
-    signalPhaseRemainingSeconds: settings.signalCycleSeconds / 2,
-    vehicles: [],
-    pedestrian: {
-      id: "pedestrian-1",
-      kind: "pedestrian",
-      progress: 0,
-      completed: false,
-      elapsedSeconds: 0,
-      waitSeconds: 0,
-    },
-    metrics: createInitialMetrics(),
-  };
-}
-
-function createInitialMetrics(): SimulationMetrics {
-  return {
-    averageVehicleTravelSeconds: 0,
-    congestionPercent: 0,
-    pedestrianWaitSeconds: 0,
-    potentialConflicts: 0,
-    completedVehicles: 0,
-    trafficFlowPerMinute: 0,
-  };
+interface DemandCredits {
+  vehicle: number;
+  pedestrian: number;
+  freight: number;
 }
 
 export class Simulation {
-  private state: SimulationState = createInitialState();
-  private settings: ScenarioSettings = { ...DEFAULT_SETTINGS };
-  private nextVehicleId = 1;
-  private nextDirection: Vehicle["direction"] = "eastbound";
-  private spawnCredit = 1;
+  private settings: ScenarioSettings;
+  private state!: SimulationState;
+  private mobility!: MobilitySystem;
+  private infrastructure!: InfrastructureModel;
+  private cityMinute = START_MINUTE;
+  private lastProcessedMinute = Math.floor(START_MINUTE);
+  private lastEconomyDay = 0;
+  private lastInfrastructureHour = -1;
+  private nextTripSequence = 1;
+  private nextEventSequence = 1;
+  private demandCredits: DemandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
+  private lastCongestionBand = 0;
+
+  constructor(settings: Partial<ScenarioSettings> = {}) {
+    this.settings = sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings });
+    this.initialize(false);
+  }
 
   getState(): Readonly<SimulationState> {
     return this.state;
@@ -77,79 +78,317 @@ export class Simulation {
   }
 
   reset(): void {
-    this.state = createInitialState(this.settings);
-    this.nextVehicleId = 1;
-    this.nextDirection = "eastbound";
-    this.spawnCredit = 1;
+    this.initialize(false);
   }
 
-  setSimulationSpeed(speed: number): void {
-    if (!Number.isFinite(speed)) {
-      return;
-    }
-
-    this.settings = {
-      ...this.settings,
-      simulationSpeed: clamp(speed, 0.5, 2),
-    };
+  setSimulationSpeed(value: number): void {
+    this.settings = { ...this.settings, simulationSpeed: finiteClamp(value, 0.5, 4, this.settings.simulationSpeed) };
   }
 
-  setSpeedLimitMph(speedLimitMph: number): void {
-    if (!Number.isFinite(speedLimitMph)) {
-      return;
-    }
-
-    this.settings = {
-      ...this.settings,
-      speedLimitMph: clamp(speedLimitMph, 10, 45),
-    };
+  setSpeedLimitMph(value: number): void {
+    this.settings = { ...this.settings, speedLimitMph: finiteClamp(value, 10, 45, this.settings.speedLimitMph) };
+    this.mobility.setSpeedLimitMph(this.settings.speedLimitMph);
   }
 
-  setSignalCycleSeconds(signalCycleSeconds: number): void {
-    if (!Number.isFinite(signalCycleSeconds)) {
-      return;
-    }
-
-    this.settings = {
-      ...this.settings,
-      signalCycleSeconds: clamp(signalCycleSeconds, 6, 40),
-    };
+  setSignalCycleSeconds(value: number): void {
+    this.settings = { ...this.settings, signalCycleSeconds: finiteClamp(value, 6, 40, this.settings.signalCycleSeconds) };
     this.updateSignalState();
   }
 
-  setVehicleVolume(vehicleVolume: number): void {
-    if (!Number.isFinite(vehicleVolume)) {
-      return;
-    }
+  setVehicleVolume(value: number): void {
+    this.settings = { ...this.settings, vehicleVolume: finiteClamp(value, 4, 40, this.settings.vehicleVolume) };
+  }
 
-    this.settings = {
-      ...this.settings,
-      vehicleVolume: clamp(vehicleVolume, 4, 30),
-    };
+  setPedestrianVolume(value: number): void {
+    this.settings = { ...this.settings, pedestrianVolume: finiteClamp(value, 4, 40, this.settings.pedestrianVolume) };
+  }
+
+  setFreightVolume(value: number): void {
+    this.settings = { ...this.settings, freightVolume: finiteClamp(value, 1, 15, this.settings.freightVolume) };
+  }
+
+  setTransitHeadwayMinutes(value: number): void {
+    this.settings = { ...this.settings, transitHeadwayMinutes: finiteClamp(value, 3, 20, this.settings.transitHeadwayMinutes) };
+    this.mobility.setBusHeadwayMinutes(this.settings.transitHeadwayMinutes);
+    this.refreshInfrastructure(0);
+  }
+
+  setRoadCapacity(value: number): void {
+    this.settings = { ...this.settings, roadCapacity: finiteClamp(value, 8, 40, this.settings.roadCapacity) };
+    this.mobility.setRoadCapacity(this.settings.roadCapacity);
+    this.refreshInfrastructure(0);
+  }
+
+  setUtilityCapacityScale(value: number): void {
+    this.settings = { ...this.settings, utilityCapacityScale: finiteClamp(value, 0.5, 1.5, this.settings.utilityCapacityScale) };
+    this.refreshInfrastructure(0);
+  }
+
+  setZoningStrictness(value: number): void {
+    this.settings = { ...this.settings, zoningStrictness: finiteClamp(value, 0.5, 1.5, this.settings.zoningStrictness) };
   }
 
   update(deltaSeconds: number): void {
-    if (!this.state.running || deltaSeconds <= 0) {
-      return;
-    }
+    if (!this.state.running || !Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
 
-    let remainingSeconds = deltaSeconds * this.settings.simulationSpeed;
-    while (remainingSeconds > EPSILON) {
-      const step = Math.min(remainingSeconds, MAX_SUBSTEP_SECONDS);
+    let remaining = deltaSeconds * this.settings.simulationSpeed;
+    while (remaining > EPSILON) {
+      const step = Math.min(MAX_SUBSTEP_SECONDS, remaining);
       this.advance(step);
-      remainingSeconds -= step;
+      remaining -= step;
     }
   }
 
-  private advance(step: number): void {
-    this.spawnCredit += (step * this.settings.vehicleVolume) / 60;
-    this.spawnVehicles();
-    this.updateVehicles(step);
-    this.updatePedestrian(step);
+  private initialize(running: boolean): void {
+    this.cityMinute = START_MINUTE;
+    this.lastProcessedMinute = Math.floor(START_MINUTE);
+    this.lastEconomyDay = 0;
+    this.lastInfrastructureHour = -1;
+    this.nextTripSequence = 1;
+    this.nextEventSequence = 1;
+    this.demandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
+    this.lastCongestionBand = 0;
 
-    this.state.elapsedSeconds += step;
-    this.updateSignalState();
+    const initialLand = createInitialLandUse();
+    const population = createPopulation(initialLand.buildings);
+    const economy = advanceEconomy({
+      households: population.households,
+      people: population.people,
+      buildings: population.buildings,
+      cityMinute: this.cityMinute,
+      freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
+    });
+
+    this.infrastructure = createInitialInfrastructure(economy.buildings, {
+      capacityScale: this.settings.utilityCapacityScale,
+      roadCapacity: this.settings.roadCapacity,
+      transitHeadwayMinutes: this.settings.transitHeadwayMinutes,
+    });
+    const infrastructure = updateInfrastructure(economy.buildings, this.infrastructure, {
+      elapsedDays: 0,
+      capacityScale: this.settings.utilityCapacityScale,
+      roadCapacity: this.settings.roadCapacity,
+      roadVolume: 0,
+      transitHeadwayMinutes: this.settings.transitHeadwayMinutes,
+    });
+    this.infrastructure = infrastructure.infrastructure;
+    this.mobility = new MobilitySystem(infrastructure.buildings, {
+      roadCapacity: this.settings.roadCapacity,
+      speedLimitMph: this.settings.speedLimitMph,
+      busHeadwayMinutes: this.settings.transitHeadwayMinutes,
+    });
+
+    this.state = {
+      running,
+      elapsedSeconds: 0,
+      day: 1,
+      timeOfDayMinutes: START_MINUTE,
+      signalPhase: "vehicles",
+      signalPhaseRemainingSeconds: this.settings.signalCycleSeconds / 2,
+      vehicles: [],
+      pedestrians: [],
+      people: economy.people,
+      households: economy.households,
+      buildings: infrastructure.buildings,
+      network: this.mobility.getNetwork(),
+      economy: economy.economy,
+      landUse: initialLand.landUse,
+      infrastructure: this.infrastructure.state,
+      metrics: createInitialMetrics(economy.people.length, initialLand.landUse.averageLandValue),
+      events: [],
+    };
+    this.recordEvent("population", `${economy.people.length} residents began their daily routines.`, "info");
+    this.recordEvent("economy", `${economy.economy.employedWorkers} workers connected to local jobs.`, "info");
+    this.mobility.consumeTrips(economy.tripRequests);
+    this.syncMobility(this.mobility.getSnapshot());
     this.updateMetrics();
+  }
+
+  private advance(step: number): void {
+    this.state.elapsedSeconds += step;
+    this.cityMinute += step * CITY_MINUTES_PER_SIMULATION_SECOND;
+    this.updateClock();
+    this.updateSignalState();
+
+    const mobilityBefore = this.mobility.getSnapshot();
+    this.generateBackgroundTrips(step);
+    this.processCityBoundaries(mobilityBefore);
+    this.mobility.update(step, this.state.signalPhase);
+
+    const mobility = this.mobility.getSnapshot();
+    this.syncMobility(mobility);
+    this.updateCongestionEvents(mobility);
+    this.updateMetrics();
+  }
+
+  private processCityBoundaries(mobility: MobilitySnapshot): void {
+    const currentMinute = Math.floor(this.cityMinute);
+    while (this.lastProcessedMinute < currentMinute) {
+      this.lastProcessedMinute += 1;
+      const population = advancePopulation(
+        this.state.people,
+        this.lastProcessedMinute,
+        this.state.buildings,
+        {
+          busAvailable: this.state.infrastructure.transitLines.some((line) => line.active),
+          parkingPressure: ratio(
+            this.state.infrastructure.parkingUsed,
+            this.state.infrastructure.parkingCapacity,
+          ),
+          congestion: mobility.roadCongestionPercent / 100,
+        },
+      );
+      this.state.people = population.people;
+      this.mobility.consumeTrips(population.tripRequests);
+
+      const dayIndex = Math.floor(this.lastProcessedMinute / 1440);
+      if (dayIndex > this.lastEconomyDay) {
+        this.runDailySystems(dayIndex);
+      }
+
+      const hourIndex = Math.floor(this.lastProcessedMinute / 60);
+      if (hourIndex > this.lastInfrastructureHour) {
+        this.lastInfrastructureHour = hourIndex;
+        this.refreshInfrastructure(1 / 24);
+      }
+    }
+  }
+
+  private runDailySystems(dayIndex: number): void {
+    this.lastEconomyDay = dayIndex;
+    const economy = advanceEconomy({
+      households: this.state.households,
+      people: this.state.people,
+      buildings: this.state.buildings,
+      cityMinute: this.lastProcessedMinute,
+      freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
+    });
+    this.state.households = economy.households;
+    this.state.people = economy.people;
+    this.state.buildings = economy.buildings;
+    this.state.economy = economy.economy;
+    this.mobility.consumeTrips(economy.tripRequests);
+    this.refreshInfrastructure(1);
+
+    const growthBefore = this.state.landUse.growthEvents;
+    const utilityCoverage = averageUtilityCoverage(this.state);
+    const landUse = updateLandUse(this.state.landUse, this.state.buildings, {
+      zoneDemand: this.state.economy.zoneDemand,
+      zoningStrictness: this.settings.zoningStrictness,
+      accessibility: 1 - this.state.metrics.congestionPercent / 140,
+      transitProximity: this.state.infrastructure.transitLines.some((line) => line.active) ? 0.85 : 0.25,
+      utilityReliability: utilityCoverage / 100,
+      congestion: this.state.metrics.congestionPercent / 100,
+      pollution: average(this.state.buildings.map((building) => building.pollution)) / 100,
+      rentPressure: clamp01(this.state.economy.averageRent / 220),
+    });
+    this.state.landUse = landUse.landUse;
+    this.state.buildings = landUse.buildings;
+    this.refreshInfrastructure(0);
+
+    this.recordEvent(
+      "economy",
+      `${formatNumber(economy.economy.goodsProduced)} goods produced; ${economy.economy.deliveriesCompleted} deliveries dispatched.`,
+      "info",
+    );
+    const newGrowth = landUse.landUse.growthEvents - growthBefore;
+    if (newGrowth > 0) {
+      this.recordEvent("land-use", `${newGrowth} building ${newGrowth === 1 ? "project added" : "projects added"} floor area.`, "info");
+    }
+  }
+
+  private refreshInfrastructure(elapsedDays: number): void {
+    const mobility = this.mobility?.getSnapshot();
+    const update = updateInfrastructure(this.state?.buildings ?? [], this.infrastructure, {
+      elapsedDays,
+      capacityScale: this.settings.utilityCapacityScale,
+      roadCapacity: this.settings.roadCapacity,
+      roadVolume: mobility?.roadVolume ?? 0,
+      transitHeadwayMinutes: this.settings.transitHeadwayMinutes,
+      parkingUsed: mobility ? Math.min(this.infrastructure.state.parkingCapacity, mobility.vehicles.length) : 0,
+    });
+    this.infrastructure = update.infrastructure;
+    if (this.state) {
+      this.state.buildings = update.buildings;
+      this.state.infrastructure = update.infrastructure.state;
+      const coverage = averageUtilityCoverage(this.state);
+      if (coverage < 85) {
+        this.recordEvent("utilities", `Network capacity constrained service to ${Math.round(coverage)}%.`, "warning");
+      }
+    }
+  }
+
+  private generateBackgroundTrips(step: number): void {
+    this.demandCredits.vehicle += (step * this.settings.vehicleVolume) / 60;
+    this.demandCredits.pedestrian += (step * this.settings.pedestrianVolume) / 60;
+    this.demandCredits.freight += (step * this.settings.freightVolume) / 60;
+
+    this.consumeCredit("vehicle", () => this.createLocalTrip("car", "work"));
+    this.consumeCredit("pedestrian", () => this.createLocalTrip("walk", "shopping"));
+    this.consumeCredit("freight", () => this.createFreightTrip());
+  }
+
+  private consumeCredit(kind: keyof DemandCredits, create: () => TripRequest): void {
+    let guard = 0;
+    while (this.demandCredits[kind] >= 1 - EPSILON && guard < 4) {
+      this.mobility.submitTrip(create());
+      this.demandCredits[kind] -= 1;
+      guard += 1;
+    }
+  }
+
+  private createLocalTrip(mode: "car" | "walk", purpose: ActivityType): TripRequest {
+    const buildings = this.state.buildings;
+    const sequence = this.nextTripSequence++;
+    const origin = buildings[sequence % buildings.length]!;
+    let destination = buildings[(sequence * 3 + 1) % buildings.length]!;
+    if (destination.id === origin.id) destination = buildings[(sequence + 1) % buildings.length]!;
+    return {
+      id: `ambient-${mode}-${sequence}`,
+      originBuildingId: origin.id,
+      destinationBuildingId: destination.id,
+      mode,
+      purpose,
+      createdMinute: Math.floor(this.cityMinute),
+      cargoUnits: 0,
+    };
+  }
+
+  private createFreightTrip(): TripRequest {
+    const destinations = this.state.buildings.filter((building) => building.zone === "commercial" || building.zone === "industrial");
+    const sequence = this.nextTripSequence++;
+    const building = destinations[sequence % destinations.length]!;
+    const inbound = sequence % 2 === 0;
+    return {
+      id: `ambient-freight-${sequence}`,
+      originBuildingId: inbound ? OUTSIDE_FREIGHT_BUILDING_ID : building.id,
+      destinationBuildingId: inbound ? building.id : OUTSIDE_FREIGHT_BUILDING_ID,
+      mode: "freight",
+      purpose: "delivery",
+      createdMinute: Math.floor(this.cityMinute),
+      vehicleType: "truck",
+      cargoUnits: 8 + (sequence % 5),
+    };
+  }
+
+  private syncMobility(snapshot: MobilitySnapshot): void {
+    this.state.vehicles = snapshot.vehicles;
+    this.state.pedestrians = snapshot.pedestrians;
+    this.state.network = this.mobility.getNetwork();
+    this.state.infrastructure = {
+      ...this.infrastructure.state,
+      transitLines: this.infrastructure.state.transitLines.map((line) => ({
+        ...line,
+        passengersTransported: snapshot.counters.transitRidership,
+        averageWaitMinutes: snapshot.counters.averageTransitWaitMinutes,
+      })),
+      roadVolume: snapshot.roadVolume,
+    };
+  }
+
+  private updateClock(): void {
+    this.state.day = Math.floor(this.cityMinute / 1440) + 1;
+    this.state.timeOfDayMinutes = ((this.cityMinute % 1440) + 1440) % 1440;
   }
 
   private updateSignalState(): void {
@@ -160,147 +399,138 @@ export class Simulation {
       this.state.signalPhase === "vehicles"
         ? halfCycle - cyclePosition
         : this.settings.signalCycleSeconds - cyclePosition;
+    this.mobility?.setSignalPhase(this.state.signalPhase);
   }
 
-  private spawnVehicles(): void {
-    while (
-      this.spawnCredit >= 1 - EPSILON &&
-      this.canSpawn(this.nextDirection)
-    ) {
-      this.state.vehicles.push({
-        id: `vehicle-${this.nextVehicleId}`,
-        kind: "vehicle",
-        direction: this.nextDirection,
-        progress: 0,
-        completed: false,
-        elapsedSeconds: 0,
-        waitingSeconds: 0,
-        currentSpeedMph: 0,
-      });
-      this.nextVehicleId += 1;
-      this.nextDirection =
-        this.nextDirection === "eastbound" ? "westbound" : "eastbound";
-      this.spawnCredit = Math.max(0, this.spawnCredit - 1);
-    }
-  }
-
-  private canSpawn(direction: Vehicle["direction"]): boolean {
-    return !this.state.vehicles.some(
-      (vehicle) =>
-        !vehicle.completed &&
-        vehicle.direction === direction &&
-        vehicle.progress < SAFE_FOLLOWING_GAP,
-    );
-  }
-
-  private updateVehicles(step: number): void {
-    this.updateDirection("eastbound", step);
-    this.updateDirection("westbound", step);
-  }
-
-  private updateDirection(direction: Vehicle["direction"], step: number): void {
-    const vehicles = this.state.vehicles
-      .filter((vehicle) => !vehicle.completed && vehicle.direction === direction)
-      .sort((a, b) => b.progress - a.progress);
-    const freeFlowProgress =
-      (this.settings.speedLimitMph * MILES_PER_HOUR_TO_FEET_PER_SECOND * step) /
-      ROUTE_LENGTH_FEET;
-
-    let leader: Vehicle | undefined;
-    for (const vehicle of vehicles) {
-      vehicle.elapsedSeconds += step;
-
-      let maximumProgress = 1;
-      if (
-        this.state.signalPhase !== "vehicles" &&
-        vehicle.progress <= STOP_LINE_PROGRESS
-      ) {
-        maximumProgress = STOP_LINE_PROGRESS;
-      }
-      if (leader) {
-        maximumProgress = Math.min(
-          maximumProgress,
-          leader.progress - SAFE_FOLLOWING_GAP,
-        );
-      }
-
-      const previousProgress = vehicle.progress;
-      vehicle.progress = Math.max(
-        previousProgress,
-        Math.min(1, previousProgress + freeFlowProgress, maximumProgress),
+  private updateCongestionEvents(snapshot: MobilitySnapshot): void {
+    const band = snapshot.roadCongestionPercent >= 80 ? 2 : snapshot.roadCongestionPercent >= 50 ? 1 : 0;
+    if (band > this.lastCongestionBand) {
+      this.recordEvent(
+        "mobility",
+        band === 2 ? "Road demand exceeded practical capacity." : "Queues are forming at the intersection.",
+        "warning",
       );
-
-      const traveledProgress = vehicle.progress - previousProgress;
-      vehicle.currentSpeedMph =
-        freeFlowProgress > 0
-          ? this.settings.speedLimitMph * (traveledProgress / freeFlowProgress)
-          : 0;
-      if (vehicle.currentSpeedMph < STOPPED_SPEED_MPH) {
-        vehicle.waitingSeconds += step;
-      }
-
-      if (vehicle.progress >= 1) {
-        vehicle.progress = 1;
-        vehicle.completed = true;
-        vehicle.currentSpeedMph = 0;
-      }
-
-      leader = vehicle;
     }
-  }
-
-  private updatePedestrian(step: number): void {
-    const pedestrian = this.state.pedestrian;
-    if (pedestrian.completed) {
-      return;
-    }
-
-    pedestrian.elapsedSeconds += step;
-    const atCrossing = pedestrian.progress >= 0.32 && pedestrian.progress <= 0.68;
-    if (atCrossing && this.state.signalPhase !== "pedestrians") {
-      pedestrian.waitSeconds += step;
-      return;
-    }
-
-    pedestrian.progress = Math.min(1, pedestrian.progress + step / 14);
-    pedestrian.completed = pedestrian.progress >= 1;
+    this.lastCongestionBand = band;
   }
 
   private updateMetrics(): void {
-    const completedVehicles = this.state.vehicles.filter(
-      (vehicle) => vehicle.completed,
-    );
-    const activeVehicles = this.state.vehicles.filter(
-      (vehicle) => !vehicle.completed,
-    );
-    const congestedVehicles = activeVehicles.filter(
-      (vehicle) => vehicle.currentSpeedMph < this.settings.speedLimitMph / 2,
-    );
-    const totalTravelSeconds = completedVehicles.reduce(
-      (total, vehicle) => total + vehicle.elapsedSeconds,
-      0,
-    );
+    const mobility = this.mobility.getSnapshot();
+    const commercial = this.state.buildings.filter((building) => building.zone === "commercial");
+    const retailDemand = sum(commercial.map((building) => building.customerDemand));
+    const retailInventory = sum(commercial.map((building) => building.goodsInventory));
+    const jobs = this.state.economy.employedWorkers + this.state.economy.availableJobs;
+    const utilityCoverage = averageUtilityCoverage(this.state);
+    const happiness = average(this.state.households.map((household) => household.happiness));
 
     this.state.metrics = {
-      averageVehicleTravelSeconds:
-        completedVehicles.length > 0
-          ? totalTravelSeconds / completedVehicles.length
-          : 0,
-      congestionPercent:
-        activeVehicles.length > 0
-          ? (congestedVehicles.length / activeVehicles.length) * 100
-          : 0,
-      pedestrianWaitSeconds: this.state.pedestrian.waitSeconds,
-      potentialConflicts: 0,
-      completedVehicles: completedVehicles.length,
-      trafficFlowPerMinute:
-        this.state.elapsedSeconds > 0
-          ? (completedVehicles.length * 60) / this.state.elapsedSeconds
-          : 0,
+      averageVehicleTravelSeconds: mobility.counters.averageVehicleTravelSeconds,
+      congestionPercent: mobility.roadCongestionPercent,
+      pedestrianWaitSeconds: mobility.counters.averagePedestrianWaitSeconds,
+      potentialConflicts: mobility.counters.potentialConflicts,
+      completedVehicles: mobility.counters.completedVehicles,
+      trafficFlowPerMinute: this.state.elapsedSeconds > 0
+        ? (mobility.counters.completedVehicles * 60) / this.state.elapsedSeconds
+        : 0,
+      population: this.state.people.length,
+      activeTrips: mobility.vehicles.length + mobility.pedestrians.length + mobility.busQueueLength + mobility.busPassengersOnBoard,
+      transitRidership: mobility.counters.transitRidership,
+      averageTransitWaitMinutes: mobility.counters.averageTransitWaitMinutes,
+      goodsAvailabilityPercent: retailDemand > 0 ? clamp((retailInventory / retailDemand) * 100, 0, 100) : 100,
+      jobFillPercent: jobs > 0 ? (this.state.economy.employedWorkers / jobs) * 100 : 100,
+      averageLandValue: this.state.landUse.averageLandValue,
+      utilityCoveragePercent: utilityCoverage,
+      wasteCollectionPercent: this.state.infrastructure.utilities.waste.coveragePercent,
+      householdHappiness: happiness,
     };
   }
+
+  private recordEvent(
+    category: SimulationEvent["category"],
+    message: string,
+    severity: SimulationEvent["severity"],
+  ): void {
+    const duplicate = this.state?.events[0];
+    if (duplicate?.message === message && duplicate.minute === Math.floor(this.cityMinute)) return;
+    const event: SimulationEvent = {
+      id: `event-${this.nextEventSequence++}`,
+      minute: Math.floor(this.cityMinute),
+      category,
+      message,
+      severity,
+    };
+    if (this.state) this.state.events = [event, ...this.state.events].slice(0, MAX_EVENTS);
+  }
+}
+
+function createInitialMetrics(population: number, landValue: number): SimulationMetrics {
+  return {
+    averageVehicleTravelSeconds: 0,
+    congestionPercent: 0,
+    pedestrianWaitSeconds: 0,
+    potentialConflicts: 0,
+    completedVehicles: 0,
+    trafficFlowPerMinute: 0,
+    population,
+    activeTrips: 0,
+    transitRidership: 0,
+    averageTransitWaitMinutes: 0,
+    goodsAvailabilityPercent: 100,
+    jobFillPercent: 0,
+    averageLandValue: landValue,
+    utilityCoveragePercent: 100,
+    wasteCollectionPercent: 100,
+    householdHappiness: 0,
+  };
+}
+
+function sanitizeSettings(settings: ScenarioSettings): ScenarioSettings {
+  return {
+    simulationSpeed: finiteClamp(settings.simulationSpeed, 0.5, 4, 1),
+    speedLimitMph: finiteClamp(settings.speedLimitMph, 10, 45, 25),
+    signalCycleSeconds: finiteClamp(settings.signalCycleSeconds, 6, 40, 12),
+    vehicleVolume: finiteClamp(settings.vehicleVolume, 4, 40, 12),
+    pedestrianVolume: finiteClamp(settings.pedestrianVolume, 4, 40, 12),
+    freightVolume: finiteClamp(settings.freightVolume, 1, 15, 4),
+    transitHeadwayMinutes: finiteClamp(settings.transitHeadwayMinutes, 3, 20, 8),
+    roadCapacity: finiteClamp(settings.roadCapacity, 8, 40, 20),
+    utilityCapacityScale: finiteClamp(settings.utilityCapacityScale, 0.5, 1.5, 1),
+    zoningStrictness: finiteClamp(settings.zoningStrictness, 0.5, 1.5, 1),
+  };
+}
+
+function averageUtilityCoverage(state: SimulationState): number {
+  return average([
+    state.infrastructure.utilities.power.coveragePercent,
+    state.infrastructure.utilities.water.coveragePercent,
+    state.infrastructure.utilities.waste.coveragePercent,
+  ]);
+}
+
+function finiteClamp(value: number, minimum: number, maximum: number, fallback: number): number {
+  return Number.isFinite(value) ? clamp(value, minimum, maximum) : fallback;
+}
+
+function average(values: readonly number[]): number {
+  return values.length === 0 ? 0 : sum(values) / values.length;
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+function ratio(value: number, total: number): number {
+  return total > 0 ? value / total : 0;
+}
+
+function clamp01(value: number): number {
+  return clamp(value, 0, 1);
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
