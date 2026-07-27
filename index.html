@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Design a city street, run a simulation, and compare traffic and pedestrian outcomes."
+    />
+    <title>Interactive City Street Simulation</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Urban Systems Lab</p>
+          <h1>Interactive City Street Simulation</h1>
+        </div>
+        <div class="simulation-actions" aria-label="Simulation controls">
+          <button id="run-button" class="primary-button" type="button">Run</button>
+          <button id="pause-button" type="button">Pause</button>
+          <button id="reset-button" type="button">Reset</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel tools-panel" aria-labelledby="tools-title">
+          <div class="panel-heading">
+            <p class="panel-kicker">Design</p>
+            <h2 id="tools-title">Street tools</h2>
+          </div>
+          <div class="tool-list" aria-label="Planned street tools">
+            <button class="tool-button" type="button" disabled>
+              <span class="tool-icon road-icon"></span>
+              Lane
+            </button>
+            <button class="tool-button" type="button" disabled>
+              <span class="tool-icon sidewalk-icon"></span>
+              Sidewalk
+            </button>
+            <button class="tool-button" type="button" disabled>
+              <span class="tool-icon crossing-icon"></span>
+              Crosswalk
+            </button>
+            <button class="tool-button" type="button" disabled>
+              <span class="tool-icon signal-icon"></span>
+              Signal
+            </button>
+          </div>
+          <p class="helper-text">Editing tools unlock after the movement foundation is complete.</p>
+        </aside>
+
+        <section class="simulation-panel" aria-labelledby="simulation-title">
+          <div class="simulation-heading">
+            <div>
+              <p class="panel-kicker">Reference scenario</p>
+              <h2 id="simulation-title">Four-way intersection</h2>
+            </div>
+            <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
+          </div>
+          <div class="canvas-shell">
+            <canvas id="simulation-canvas" aria-label="Street simulation canvas"></canvas>
+          </div>
+          <p class="canvas-caption">
+            The vehicle and pedestrian use predetermined routes so the team can verify the shared
+            simulation loop before adding the editor.
+          </p>
+        </section>
+
+        <aside class="panel controls-panel" aria-labelledby="scenario-title">
+          <div class="panel-heading">
+            <p class="panel-kicker">Conditions</p>
+            <h2 id="scenario-title">Scenario controls</h2>
+          </div>
+
+          <label class="control-row" for="speed-control">
+            <span>Simulation speed</span>
+            <output id="speed-output" for="speed-control">1.0×</output>
+          </label>
+          <input
+            id="speed-control"
+            type="range"
+            min="0.5"
+            max="2"
+            step="0.5"
+            value="1"
+          />
+
+          <div class="control-summary">
+            <div>
+              <span>Vehicle volume</span>
+              <strong>Low</strong>
+            </div>
+            <div>
+              <span>Pedestrian volume</span>
+              <strong>Low</strong>
+            </div>
+            <div>
+              <span>Speed limit</span>
+              <strong>25 mph</strong>
+            </div>
+            <div>
+              <span>Signal cycle</span>
+              <strong>12 sec</strong>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <section class="metrics" aria-labelledby="metrics-title">
+        <div class="metrics-heading">
+          <p class="panel-kicker">Live results</p>
+          <h2 id="metrics-title">Performance snapshot</h2>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span>Vehicle time</span>
+            <strong id="vehicle-time">0.0 s</strong>
+            <small>Elapsed route time</small>
+          </article>
+          <article class="metric-card">
+            <span>Congestion</span>
+            <strong id="congestion">0</strong>
+            <small>Active vehicles</small>
+          </article>
+          <article class="metric-card">
+            <span>Pedestrian wait</span>
+            <strong id="pedestrian-wait">0.0 s</strong>
+            <small>Time stopped at signal</small>
+          </article>
+          <article class="metric-card">
+            <span>Potential conflicts</span>
+            <strong id="conflicts">0</strong>
+            <small>Foundation placeholder</small>
+          </article>
+        </div>
+      </section>
+
+      <div class="small-screen-message">
+        <h2>A wider screen is required</h2>
+        <p>Open the simulation on a laptop or desktop browser with at least 900px of width.</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
