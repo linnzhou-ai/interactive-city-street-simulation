@@ -1,3 +1,5 @@
+import { advanceCitySection } from "./cityEngine";
+import { createCitySectionState, createDemoCitySectionDefinition } from "./cityModel";
 import { advanceEconomy } from "./economy";
 import {
   createInitialInfrastructure,
@@ -8,6 +10,8 @@ import { createInitialLandUse, updateLandUse } from "./landUse";
 import { MobilitySystem, type MobilitySnapshot } from "./mobility";
 import { OUTSIDE_FREIGHT_BUILDING_ID } from "./network";
 import { advancePopulation, createPopulation } from "./population";
+import { calendarFromElapsedDays, cityMinutesPerSecond } from "./timeScale";
+import type { CitySectionDefinition, CitySystemEvent, TimeHorizon } from "../models/cityTypes";
 import type {
   ActivityType,
   ScenarioSettings,
@@ -19,6 +23,7 @@ import type {
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSpeed: 1,
+  timeHorizon: "day",
   speedLimitMph: 25,
   signalCycleSeconds: 12,
   vehicleVolume: 12,
@@ -31,7 +36,6 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
 };
 
 const START_MINUTE = 7 * 60;
-const CITY_MINUTES_PER_SIMULATION_SECOND = 1;
 const MAX_SUBSTEP_SECONDS = 0.1;
 const MAX_EVENTS = 12;
 const EPSILON = 1e-9;
@@ -50,13 +54,17 @@ export class Simulation {
   private cityMinute = START_MINUTE;
   private lastProcessedMinute = Math.floor(START_MINUTE);
   private lastEconomyDay = 0;
-  private lastInfrastructureHour = -1;
+  private lastInfrastructureMinute = START_MINUTE;
   private nextTripSequence = 1;
   private nextEventSequence = 1;
+  private cityDayCredit = 0;
   private demandCredits: DemandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
   private lastCongestionBand = 0;
 
-  constructor(settings: Partial<ScenarioSettings> = {}) {
+  constructor(
+    settings: Partial<ScenarioSettings> = {},
+    private readonly cityDefinition: CitySectionDefinition = createDemoCitySectionDefinition(),
+  ) {
     this.settings = sanitizeSettings({ ...DEFAULT_SETTINGS, ...settings });
     this.initialize(false);
   }
@@ -83,6 +91,12 @@ export class Simulation {
 
   setSimulationSpeed(value: number): void {
     this.settings = { ...this.settings, simulationSpeed: finiteClamp(value, 0.5, 4, this.settings.simulationSpeed) };
+  }
+
+  setTimeHorizon(value: TimeHorizon): void {
+    if (!(value in { day: true, week: true, month: true, year: true })) return;
+    this.settings = { ...this.settings, timeHorizon: value };
+    this.state.timeHorizon = value;
   }
 
   setSpeedLimitMph(value: number): void {
@@ -130,26 +144,56 @@ export class Simulation {
 
   update(deltaSeconds: number): void {
     if (!this.state.running || !Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
+    const scaledSeconds = deltaSeconds * this.settings.simulationSpeed;
+    const cityMinutes = scaledSeconds * cityMinutesPerSecond(this.settings.timeHorizon);
+    this.state.elapsedSeconds += scaledSeconds;
+    this.cityMinute += cityMinutes;
+    this.cityDayCredit += cityMinutes / 1440;
 
-    let remaining = deltaSeconds * this.settings.simulationSpeed;
-    while (remaining > EPSILON) {
-      const step = Math.min(MAX_SUBSTEP_SECONDS, remaining);
-      this.advance(step);
-      remaining -= step;
+    const completedCityDays = Math.floor(this.cityDayCredit + EPSILON);
+    if (completedCityDays > 0) {
+      const cityUpdate = advanceCitySection(this.state.city, completedCityDays, {
+        roadCapacityScale: this.settings.roadCapacity / DEFAULT_SETTINGS.roadCapacity,
+        utilityCapacityScale: this.settings.utilityCapacityScale,
+        zoningStrictness: this.settings.zoningStrictness,
+        transitServiceScale: DEFAULT_SETTINGS.transitHeadwayMinutes / this.settings.transitHeadwayMinutes,
+        travelDemandScale: this.settings.vehicleVolume / DEFAULT_SETTINGS.vehicleVolume,
+        freightDemandScale: this.settings.freightVolume / DEFAULT_SETTINGS.freightVolume,
+      });
+      this.state.city = cityUpdate.state;
+      cityUpdate.events.forEach((event) => this.recordCityEvent(event));
+      this.cityDayCredit -= completedCityDays;
     }
+
+    this.updateClock();
+    this.updateSignalState();
+    this.processCityBoundaries(this.mobility.getSnapshot());
+
+    let visualSeconds = Math.min(scaledSeconds, 5);
+    while (visualSeconds > EPSILON) {
+      const step = Math.min(MAX_SUBSTEP_SECONDS, visualSeconds);
+      this.advanceDetail(step);
+      visualSeconds -= step;
+    }
+    const mobility = this.mobility.getSnapshot();
+    this.syncMobility(mobility);
+    this.updateCongestionEvents(mobility);
+    this.updateMetrics();
   }
 
   private initialize(running: boolean): void {
     this.cityMinute = START_MINUTE;
     this.lastProcessedMinute = Math.floor(START_MINUTE);
     this.lastEconomyDay = 0;
-    this.lastInfrastructureHour = -1;
+    this.lastInfrastructureMinute = START_MINUTE;
     this.nextTripSequence = 1;
     this.nextEventSequence = 1;
+    this.cityDayCredit = 0;
     this.demandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
     this.lastCongestionBand = 0;
 
     const initialLand = createInitialLandUse();
+    const city = createCitySectionState(this.cityDefinition);
     const population = createPopulation(initialLand.buildings);
     const economy = advanceEconomy({
       households: population.households,
@@ -182,7 +226,11 @@ export class Simulation {
       running,
       elapsedSeconds: 0,
       day: 1,
+      calendarYear: city.year,
+      calendarMonth: city.month,
+      calendarDay: 1,
       timeOfDayMinutes: START_MINUTE,
+      timeHorizon: this.settings.timeHorizon,
       signalPhase: "vehicles",
       signalPhaseRemainingSeconds: this.settings.signalCycleSeconds / 2,
       vehicles: [],
@@ -194,7 +242,8 @@ export class Simulation {
       economy: economy.economy,
       landUse: initialLand.landUse,
       infrastructure: this.infrastructure.state,
-      metrics: createInitialMetrics(economy.people.length, initialLand.landUse.averageLandValue),
+      city,
+      metrics: createInitialMetrics(economy.people.length, initialLand.landUse.averageLandValue, city),
       events: [],
     };
     this.recordEvent("population", `${economy.people.length} residents began their daily routines.`, "info");
@@ -204,54 +253,42 @@ export class Simulation {
     this.updateMetrics();
   }
 
-  private advance(step: number): void {
-    this.state.elapsedSeconds += step;
-    this.cityMinute += step * CITY_MINUTES_PER_SIMULATION_SECOND;
-    this.updateClock();
-    this.updateSignalState();
-
-    const mobilityBefore = this.mobility.getSnapshot();
+  private advanceDetail(step: number): void {
     this.generateBackgroundTrips(step);
-    this.processCityBoundaries(mobilityBefore);
     this.mobility.update(step, this.state.signalPhase);
-
-    const mobility = this.mobility.getSnapshot();
-    this.syncMobility(mobility);
-    this.updateCongestionEvents(mobility);
-    this.updateMetrics();
   }
 
   private processCityBoundaries(mobility: MobilitySnapshot): void {
     const currentMinute = Math.floor(this.cityMinute);
-    while (this.lastProcessedMinute < currentMinute) {
-      this.lastProcessedMinute += 1;
-      const population = advancePopulation(
-        this.state.people,
-        this.lastProcessedMinute,
-        this.state.buildings,
-        {
-          busAvailable: this.state.infrastructure.transitLines.some((line) => line.active),
-          parkingPressure: ratio(
-            this.state.infrastructure.parkingUsed,
-            this.state.infrastructure.parkingCapacity,
-          ),
-          congestion: mobility.roadCongestionPercent / 100,
-        },
-      );
-      this.state.people = population.people;
-      this.mobility.consumeTrips(population.tripRequests);
+    if (currentMinute <= this.lastProcessedMinute) return;
+    const population = advancePopulation(
+      this.state.people,
+      currentMinute,
+      this.state.buildings,
+      {
+        busAvailable: this.state.infrastructure.transitLines.some((line) => line.active),
+        parkingPressure: ratio(
+          this.state.infrastructure.parkingUsed,
+          this.state.infrastructure.parkingCapacity,
+        ),
+        congestion: mobility.roadCongestionPercent / 100,
+      },
+    );
+    this.state.people = population.people;
+    if (this.settings.timeHorizon === "day") this.mobility.consumeTrips(population.tripRequests);
 
-      const dayIndex = Math.floor(this.lastProcessedMinute / 1440);
-      if (dayIndex > this.lastEconomyDay) {
-        this.runDailySystems(dayIndex);
-      }
-
-      const hourIndex = Math.floor(this.lastProcessedMinute / 60);
-      if (hourIndex > this.lastInfrastructureHour) {
-        this.lastInfrastructureHour = hourIndex;
-        this.refreshInfrastructure(1 / 24);
-      }
+    const currentDay = Math.floor(currentMinute / 1440);
+    while (this.lastEconomyDay < currentDay) {
+      this.lastEconomyDay += 1;
+      this.runDailySystems(this.lastEconomyDay);
     }
+
+    const infrastructureDays = (currentMinute - this.lastInfrastructureMinute) / 1440;
+    if (infrastructureDays >= 1 / 24) {
+      this.refreshInfrastructure(Math.min(30, infrastructureDays));
+      this.lastInfrastructureMinute = currentMinute;
+    }
+    this.lastProcessedMinute = currentMinute;
   }
 
   private runDailySystems(dayIndex: number): void {
@@ -260,14 +297,14 @@ export class Simulation {
       households: this.state.households,
       people: this.state.people,
       buildings: this.state.buildings,
-      cityMinute: this.lastProcessedMinute,
+      cityMinute: dayIndex * 1440,
       freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
     });
     this.state.households = economy.households;
     this.state.people = economy.people;
     this.state.buildings = economy.buildings;
     this.state.economy = economy.economy;
-    this.mobility.consumeTrips(economy.tripRequests);
+    if (this.settings.timeHorizon === "day") this.mobility.consumeTrips(economy.tripRequests);
     this.refreshInfrastructure(1);
 
     const growthBefore = this.state.landUse.growthEvents;
@@ -387,7 +424,12 @@ export class Simulation {
   }
 
   private updateClock(): void {
-    this.state.day = Math.floor(this.cityMinute / 1440) + 1;
+    const elapsedDays = Math.max(0, (this.cityMinute - START_MINUTE) / 1440);
+    const calendar = calendarFromElapsedDays(this.state.city.startYear, elapsedDays);
+    this.state.day = Math.floor(elapsedDays) + 1;
+    this.state.calendarYear = calendar.year;
+    this.state.calendarMonth = calendar.month;
+    this.state.calendarDay = calendar.dayOfMonth;
     this.state.timeOfDayMinutes = ((this.cityMinute % 1440) + 1440) % 1440;
   }
 
@@ -442,6 +484,14 @@ export class Simulation {
       utilityCoveragePercent: utilityCoverage,
       wasteCollectionPercent: this.state.infrastructure.utilities.waste.coveragePercent,
       householdHappiness: happiness,
+      cityPopulation: this.state.city.metrics.population,
+      districtCount: this.state.city.districts.length,
+      grossCityProductDaily: this.state.city.metrics.grossCityProductDaily,
+      municipalBalance: this.state.city.metrics.municipalBalance,
+      cityUnemploymentPercent: this.state.city.metrics.unemploymentPercent,
+      cityHousingOccupancyPercent: this.state.city.metrics.housingOccupancyPercent,
+      cityTransitSharePercent: this.state.city.metrics.transitSharePercent,
+      simulatedDays: Math.max(0, (this.cityMinute - START_MINUTE) / 1440),
     };
   }
 
@@ -461,9 +511,21 @@ export class Simulation {
     };
     if (this.state) this.state.events = [event, ...this.state.events].slice(0, MAX_EVENTS);
   }
+
+  private recordCityEvent(event: CitySystemEvent): void {
+    this.recordEvent(
+      event.category === "finance" ? "economy" : event.category,
+      event.message,
+      event.severity,
+    );
+  }
 }
 
-function createInitialMetrics(population: number, landValue: number): SimulationMetrics {
+function createInitialMetrics(
+  population: number,
+  landValue: number,
+  city: SimulationState["city"],
+): SimulationMetrics {
   return {
     averageVehicleTravelSeconds: 0,
     congestionPercent: 0,
@@ -481,12 +543,21 @@ function createInitialMetrics(population: number, landValue: number): Simulation
     utilityCoveragePercent: 100,
     wasteCollectionPercent: 100,
     householdHappiness: 0,
+    cityPopulation: city.metrics.population,
+    districtCount: city.districts.length,
+    grossCityProductDaily: city.metrics.grossCityProductDaily,
+    municipalBalance: city.metrics.municipalBalance,
+    cityUnemploymentPercent: city.metrics.unemploymentPercent,
+    cityHousingOccupancyPercent: city.metrics.housingOccupancyPercent,
+    cityTransitSharePercent: city.metrics.transitSharePercent,
+    simulatedDays: city.elapsedDays,
   };
 }
 
 function sanitizeSettings(settings: ScenarioSettings): ScenarioSettings {
   return {
     simulationSpeed: finiteClamp(settings.simulationSpeed, 0.5, 4, 1),
+    timeHorizon: sanitizeTimeHorizon(settings.timeHorizon),
     speedLimitMph: finiteClamp(settings.speedLimitMph, 10, 45, 25),
     signalCycleSeconds: finiteClamp(settings.signalCycleSeconds, 6, 40, 12),
     vehicleVolume: finiteClamp(settings.vehicleVolume, 4, 40, 12),
@@ -497,6 +568,10 @@ function sanitizeSettings(settings: ScenarioSettings): ScenarioSettings {
     utilityCapacityScale: finiteClamp(settings.utilityCapacityScale, 0.5, 1.5, 1),
     zoningStrictness: finiteClamp(settings.zoningStrictness, 0.5, 1.5, 1),
   };
+}
+
+function sanitizeTimeHorizon(value: TimeHorizon): TimeHorizon {
+  return value === "day" || value === "week" || value === "month" || value === "year" ? value : "day";
 }
 
 function averageUtilityCoverage(state: SimulationState): number {

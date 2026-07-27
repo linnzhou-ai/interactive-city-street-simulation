@@ -14,8 +14,8 @@
       <main class="simulation-viewport" aria-label="Interactive 3D street simulation">
         <canvas id="simulation-canvas" aria-label="Street systems simulation"></canvas>
         <div class="scene-label" aria-hidden="true">
-          <span id="active-layer-label">Systems overview</span>
-          <strong>Market Street at 5th</strong>
+          <span id="active-layer-label">City systems overview</span>
+          <strong id="city-name-output">Market-River City Section</strong>
         </div>
       </main>
 
@@ -25,8 +25,8 @@
           <h1>Street Systems Simulator</h1>
         </div>
         <div class="clock-block" aria-label="Simulation time">
-          <span id="day-output">Day 1</span>
-          <strong id="time-output">7:00 AM</strong>
+          <span id="day-output">Day 1 · Day horizon</span>
+          <strong id="time-output">Jan 1, 2026</strong>
         </div>
         <div class="simulation-actions" aria-label="Simulation controls">
           <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
@@ -104,9 +104,15 @@
 
         <div class="control-group">
           <p>Demand and time</p>
+          <div class="horizon-control" role="group" aria-label="Simulation time horizon">
+            <button type="button" data-horizon="day" aria-pressed="true">Day</button>
+            <button type="button" data-horizon="week" aria-pressed="false">Week</button>
+            <button type="button" data-horizon="month" aria-pressed="false">Month</button>
+            <button type="button" data-horizon="year" aria-pressed="false">Year</button>
+          </div>
           <div class="range-control">
             <div class="control-row">
-              <label for="simulation-speed-control">Time scale</label>
+              <label for="simulation-speed-control">Playback multiplier</label>
               <output id="simulation-speed-output" for="simulation-speed-control">1.0x</output>
             </div>
             <input id="simulation-speed-control" type="range" min="0.5" max="4" step="0.5" value="1" />

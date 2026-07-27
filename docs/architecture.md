@@ -1,9 +1,16 @@
 # Simulation architecture
 
-The application separates deterministic domain systems from Three.js rendering:
+The application separates district-scale systems, street-detail systems, and
+schematic Three.js rendering:
 
-- `src/core/simulation.ts` coordinates the city clock, fixed-step updates, demand,
-  domain update order, events, settings, and aggregate metrics.
+- `src/core/cityModel.ts` validates external district/network input and provides
+  the replaceable demo city section.
+- `src/core/cityEngine.ts` advances aggregate demographics, employment, goods,
+  migration, land, housing, transport, utilities, taxation, maintenance, and
+  municipal balance in deterministic daily steps.
+- `src/core/timeScale.ts` maps day, week, month, and year horizons to calendar time.
+- `src/core/simulation.ts` coordinates the long-term engine with the bounded
+  street-detail model, controls, events, and metrics.
 - `src/core/population.ts` creates households and demographics, assigns daily
   schedules, and emits explainable travel choices.
 - `src/core/network.ts` builds the multimodal graph and calculates generalized
@@ -17,13 +24,15 @@ The application separates deterministic domain systems from Three.js rendering:
 - `src/core/landUse.ts` applies zoning, terrain and height constraints, then updates
   suitability, land value, rent, and permitted building growth.
 - `src/models/types.ts` defines shared contracts used by all three contributors.
-- `src/rendering/threeRenderer.ts` translates state into an interactive 3D scene without
-  changing state.
+- `src/models/cityTypes.ts` is the integration contract for partner city data.
+- `src/rendering/threeRenderer.ts` draws a low-detail district and network schematic
+  without changing simulation state.
 - `src/main.ts` connects controls, animation timing, rendering, and metric output.
 
-Domain updates are deterministic. Population creates trips, the economy creates
-jobs and freight, mobility consumes trips, infrastructure allocates services, and
-land use responds to the resulting accessibility, demand, and service conditions.
+Long-horizon state advances only in completed daily steps. This keeps annual runs
+frame-rate independent and avoids minute-by-minute loops. The street layer advances
+at most five representative seconds per browser update so vehicles never dominate
+the cost of a month- or year-scale scenario.
 
 ## Team boundaries
 

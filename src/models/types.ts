@@ -1,3 +1,5 @@
+import type { CitySectionState, TimeHorizon } from "./cityTypes";
+
 export type SignalPhase = "vehicles" | "pedestrians";
 export type TravelDirection = "eastbound" | "westbound" | "northbound" | "southbound";
 export type TravelMode = "walk" | "car" | "bus" | "freight" | "service";
@@ -246,6 +248,7 @@ export interface TripRequest {
 
 export interface ScenarioSettings {
   simulationSpeed: number;
+  timeHorizon: TimeHorizon;
   speedLimitMph: number;
   signalCycleSeconds: number;
   vehicleVolume: number;
@@ -274,13 +277,25 @@ export interface SimulationMetrics {
   utilityCoveragePercent: number;
   wasteCollectionPercent: number;
   householdHappiness: number;
+  cityPopulation: number;
+  districtCount: number;
+  grossCityProductDaily: number;
+  municipalBalance: number;
+  cityUnemploymentPercent: number;
+  cityHousingOccupancyPercent: number;
+  cityTransitSharePercent: number;
+  simulatedDays: number;
 }
 
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
   day: number;
+  calendarYear: number;
+  calendarMonth: number;
+  calendarDay: number;
   timeOfDayMinutes: number;
+  timeHorizon: TimeHorizon;
   signalPhase: SignalPhase;
   signalPhaseRemainingSeconds: number;
   vehicles: Vehicle[];
@@ -292,6 +307,7 @@ export interface SimulationState {
   economy: EconomyState;
   landUse: LandUseState;
   infrastructure: InfrastructureState;
+  city: CitySectionState;
   metrics: SimulationMetrics;
   events: SimulationEvent[];
 }

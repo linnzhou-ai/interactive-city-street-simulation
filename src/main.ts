@@ -1,7 +1,9 @@
 import "./styles.css";
 import { Simulation } from "./core/simulation";
+import { formatLongDate } from "./core/timeScale";
+import type { TimeHorizon } from "./models/cityTypes";
+import type { SimulationState } from "./models/types";
 import { ThreeRenderer } from "./rendering/threeRenderer";
-import type { SimulationMetrics, SimulationState } from "./models/types";
 
 type Layer = "overview" | "people" | "economy" | "infrastructure" | "land-use";
 
@@ -29,11 +31,13 @@ const timeOutput = requireElement<HTMLElement>("time-output");
 const signalPhase = requireElement<HTMLElement>("signal-phase");
 const signalTimeRemaining = requireElement<HTMLElement>("signal-time-remaining");
 const activeLayerLabel = requireElement<HTMLElement>("active-layer-label");
+const cityNameOutput = requireElement<HTMLElement>("city-name-output");
 const inspectorTitle = requireElement<HTMLElement>("inspector-title");
 const inspectorSummary = requireElement<HTMLElement>("inspector-summary");
 const metricsTitle = requireElement<HTMLElement>("metrics-title");
 const eventList = requireElement<HTMLOListElement>("event-list");
 const layerTabs = [...document.querySelectorAll<HTMLButtonElement>(".layer-tab")];
+const horizonButtons = [...document.querySelectorAll<HTMLButtonElement>(".horizon-control button")];
 
 const simulation = new Simulation();
 const renderer = new ThreeRenderer(canvas);
@@ -42,102 +46,102 @@ let activeLayer: Layer = "overview";
 
 const views: Record<Layer, LayerView> = {
   overview: {
-    title: "Street health",
-    sceneLabel: "Systems overview",
-    summary: (state) => state.metrics.utilityCoveragePercent < 85
-      ? "Utility limits are reducing building performance."
-      : state.metrics.congestionPercent >= 60
-        ? "Street demand is producing sustained queues."
-        : "Mobility, services and local activity are operating within capacity.",
+    title: "City section health",
+    sceneLabel: "City systems overview",
+    summary: (state) => state.city.metrics.utilityCoveragePercent < 88
+      ? "Utility limits are reducing district performance and long-term growth."
+      : state.city.metrics.congestionPercent >= 65
+        ? "Regional travel demand is exceeding the connected network capacity."
+        : "Population, services, mobility and development are operating within modeled capacity.",
     inspector: [
-      item("Population", (metrics) => number(metrics.population)),
-      item("Active trips", (metrics) => number(metrics.activeTrips)),
-      item("Jobs filled", (metrics) => percent(metrics.jobFillPercent)),
-      item("Utility coverage", (metrics) => percent(metrics.utilityCoveragePercent)),
+      entry("City population", (state) => number(state.city.metrics.population)),
+      entry("Districts", (state) => number(state.city.districts.length)),
+      entry("Unemployment", (state) => percent(state.city.metrics.unemploymentPercent)),
+      entry("Utility coverage", (state) => percent(state.city.metrics.utilityCoveragePercent)),
     ],
     metrics: [
-      item("Congestion", (metrics) => percent(metrics.congestionPercent), "Network volume against road capacity"),
-      item("Travel time", (metrics) => seconds(metrics.averageVehicleTravelSeconds), "Average completed vehicle trip"),
-      item("Household happiness", (metrics) => percent(metrics.householdHappiness), "Schedules, costs and services"),
-      item("Goods available", (metrics) => percent(metrics.goodsAvailabilityPercent), "Retail demand supplied"),
-      item("Land value", (metrics) => currency(metrics.averageLandValue), "Average developed parcel"),
-      item("Utilities", (metrics) => percent(metrics.utilityCoveragePercent), "Power, water and waste"),
+      entry("Congestion", (state) => percent(state.city.metrics.congestionPercent), "Daily network demand against capacity"),
+      entry("Daily output", (state) => currency(state.city.metrics.grossCityProductDaily), "Modeled gross city product"),
+      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Residents against available units"),
+      entry("Transit share", (state) => percent(state.city.metrics.transitSharePercent), "Trips carried by public transit"),
+      entry("Land value", (state) => currency(state.city.metrics.averageLandValue), "Population-weighted district value"),
+      entry("Municipal balance", (state) => currency(state.city.metrics.municipalBalance), "Taxes less infrastructure maintenance"),
     ],
   },
   people: {
-    title: "People and routines",
-    sceneLabel: "Daily routines",
-    summary: (state) => `${state.people.length} residents follow age-specific home, school, work, shopping and leisure schedules.`,
+    title: "Population and households",
+    sceneLabel: "Demographics and migration",
+    summary: (state) => `${number(state.city.metrics.population)} residents in ${number(state.city.metrics.households)} households respond to housing, jobs, services, costs and access.`,
     inspector: [
-      { label: "Children", value: (state) => number(countPeople(state, "child")) },
-      { label: "Adults", value: (state) => number(countPeople(state, "adult")) },
-      { label: "Seniors", value: (state) => number(countPeople(state, "senior")) },
-      { label: "Households", value: (state) => number(state.households.length) },
+      entry("Children", (state) => number(sumDistricts(state, (district) => district.children))),
+      entry("Adults", (state) => number(sumDistricts(state, (district) => district.adults))),
+      entry("Seniors", (state) => number(sumDistricts(state, (district) => district.seniors))),
+      entry("Annual migration", (state) => signedNumber(sumDistricts(state, (district) => district.annualizedMigration))),
     ],
     metrics: [
-      item("Population", (metrics) => number(metrics.population), "Residents with individual schedules"),
-      item("Active trips", (metrics) => number(metrics.activeTrips), "Walking, driving and transit"),
-      item("Transit riders", (metrics) => number(metrics.transitRidership), "Passengers who boarded"),
-      item("Transit wait", (metrics) => minutes(metrics.averageTransitWaitMinutes), "Average passenger queue time"),
-      item("Pedestrian wait", (metrics) => seconds(metrics.pedestrianWaitSeconds), "Average completed crossing delay"),
-      item("Happiness", (metrics) => percent(metrics.householdHappiness), "Goods, rent and income balance"),
+      entry("Population", (state) => number(state.city.metrics.population), "District-level demographic totals"),
+      entry("Households", (state) => number(state.city.metrics.households), "Average modeled household size"),
+      entry("Unemployment", (state) => percent(state.city.metrics.unemploymentPercent), "Labor force without matched jobs"),
+      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Population against housing capacity"),
+      entry("Happiness", (state) => percent(state.city.metrics.happiness), "Jobs, goods, services, rent and travel"),
+      entry("Annual migration", (state) => signedNumber(sumDistricts(state, (district) => district.annualizedMigration)), "Current conditions annualized"),
     ],
   },
   economy: {
-    title: "Local economy",
-    sceneLabel: "Goods and jobs",
-    summary: (state) => `${formatAmount(state.economy.goodsProduced)} goods produced, ${formatAmount(state.economy.goodsImported)} imported and ${state.economy.deliveriesCompleted} deliveries dispatched today.`,
+    title: "District economy",
+    sceneLabel: "Jobs, goods and finance",
+    summary: (state) => `${formatAmount(state.city.metrics.goodsProducedDaily)} goods produced and ${formatAmount(state.city.metrics.goodsConsumedDaily)} consumed each modeled day.`,
     inspector: [
-      { label: "Employed", value: (state) => number(state.economy.employedWorkers) },
-      { label: "Open jobs", value: (state) => number(state.economy.availableJobs) },
-      { label: "Retail sales", value: (state) => currency(state.economy.retailSales * 10) },
-      { label: "Business revenue", value: (state) => currency(state.economy.businessRevenue) },
+      entry("Jobs", (state) => number(state.city.metrics.jobs)),
+      entry("Employed residents", (state) => number(state.city.metrics.employedResidents)),
+      entry("Household spending", (state) => currency(state.city.metrics.householdSpendingDaily)),
+      entry("Daily output", (state) => currency(state.city.metrics.grossCityProductDaily)),
     ],
     metrics: [
-      item("Jobs filled", (metrics) => percent(metrics.jobFillPercent), "Employed workers against positions"),
-      item("Goods available", (metrics) => percent(metrics.goodsAvailabilityPercent), "Inventory against customer demand"),
-      { label: "Produced", value: (state) => formatAmount(state.economy.goodsProduced), detail: "Local industrial output" },
-      { label: "Imported", value: (state) => formatAmount(state.economy.goodsImported), detail: "Goods entering the street" },
-      { label: "Exported", value: (state) => formatAmount(state.economy.goodsExported), detail: "Surplus leaving the street" },
-      { label: "Average rent", value: (state) => currency(state.economy.averageRent), detail: "Daily residential cost" },
+      entry("Daily output", (state) => currency(state.city.metrics.grossCityProductDaily), "Labor, production and commercial activity"),
+      entry("Tax revenue", (state) => currency(state.city.metrics.taxRevenueDaily), "Modeled daily municipal revenue"),
+      entry("Maintenance", (state) => currency(state.city.metrics.maintenanceCostDaily), "Networks, utilities and developed area"),
+      entry("Municipal balance", (state) => currency(state.city.metrics.municipalBalance), "Accumulated operating position"),
+      entry("Goods produced", (state) => formatAmount(state.city.metrics.goodsProducedDaily), "Local production each day"),
+      entry("Goods imported", (state) => formatAmount(state.city.metrics.goodsImportedDaily), "Demand not met by local inventory"),
     ],
   },
   infrastructure: {
     title: "Infrastructure networks",
-    sceneLabel: "Utilities and capacity",
-    summary: (state) => `Roads carry ${Math.round(state.infrastructure.roadVolume)} active vehicle-edge movements while utility networks allocate service by demand and priority.`,
+    sceneLabel: "Mobility and utilities",
+    summary: (state) => `${number(state.city.links.length)} district links carry ${number(state.city.metrics.dailyTrips)} daily trips while shared networks allocate power, water and waste capacity.`,
     inspector: [
-      { label: "Power", value: (state) => percent(state.infrastructure.utilities.power.coveragePercent) },
-      { label: "Water", value: (state) => percent(state.infrastructure.utilities.water.coveragePercent) },
-      { label: "Waste", value: (state) => percent(state.infrastructure.utilities.waste.coveragePercent) },
-      { label: "Road condition", value: (state) => percent(state.infrastructure.roadCondition) },
+      entry("Power", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.power * 100))),
+      entry("Water", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.water * 100))),
+      entry("Waste", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.waste * 100))),
+      entry("Network links", (state) => number(state.city.links.length)),
     ],
     metrics: [
-      item("Utility coverage", (metrics) => percent(metrics.utilityCoveragePercent), "Average network delivery"),
-      item("Waste collected", (metrics) => percent(metrics.wasteCollectionPercent), "Collection against generated waste"),
-      item("Congestion", (metrics) => percent(metrics.congestionPercent), "Volume-to-capacity pressure"),
-      item("Traffic flow", (metrics) => `${metrics.trafficFlowPerMinute.toFixed(1)}/min`, "Completed vehicle trips"),
-      item("Transit riders", (metrics) => number(metrics.transitRidership), "Passengers transported"),
-      item("Safety conflicts", (metrics) => number(metrics.potentialConflicts), "Vehicle-crosswalk proximity events"),
+      entry("Daily trips", (state) => number(state.city.metrics.dailyTrips), "All district travel demand"),
+      entry("Congestion", (state) => percent(state.city.metrics.congestionPercent), "Private trips against road capacity"),
+      entry("Transit share", (state) => percent(state.city.metrics.transitSharePercent), "Demand served by transit capacity"),
+      entry("Utilities", (state) => percent(state.city.metrics.utilityCoveragePercent), "Power, water and waste coverage"),
+      entry("Waste collected", (state) => percent(state.city.metrics.wasteCollectionPercent), "Collection against generated waste"),
+      entry("Maintenance", (state) => currency(state.city.metrics.maintenanceCostDaily), "Daily systems operating cost"),
     ],
   },
   "land-use": {
     title: "Land use and growth",
-    sceneLabel: "Zoning and land value",
-    summary: (state) => `${state.landUse.parcels.length} parcels respect zoning, terrain slope and building-height limits.`,
+    sceneLabel: "District zoning and value",
+    summary: (state) => `${state.city.districts.length} districts apply terrain, zoning strictness, floor-area limits, housing demand and infrastructure reliability.`,
     inspector: [
-      { label: "Growth events", value: (state) => number(state.landUse.growthEvents) },
-      { label: "Floor area", value: (state) => number(state.landUse.developedFloorArea) },
-      { label: "Permitted area", value: (state) => number(state.landUse.permittedFloorArea) },
-      { label: "Average value", value: (state) => currency(state.landUse.averageLandValue) },
+      entry("Developed area", (state) => area(sumDistricts(state, (district) => district.developedFloorArea))),
+      entry("Zoned capacity", (state) => area(sumDistricts(state, (district) => district.maxFloorArea))),
+      entry("Housing units", (state) => number(sumDistricts(state, (district) => district.housingUnits))),
+      entry("Average value", (state) => currency(state.city.metrics.averageLandValue)),
     ],
     metrics: [
-      item("Land value", (metrics) => currency(metrics.averageLandValue), "Access, amenities and demand"),
-      { label: "Residential demand", value: (state) => percent(state.economy.zoneDemand.residential), detail: "Housing suitability signal" },
-      { label: "Commercial demand", value: (state) => percent(state.economy.zoneDemand.commercial), detail: "Retail suitability signal" },
-      { label: "Industrial demand", value: (state) => percent(state.economy.zoneDemand.industrial), detail: "Production suitability signal" },
-      { label: "Developed floors", value: (state) => number(state.landUse.developedFloorArea), detail: "Current built floor area" },
-      { label: "Growth", value: (state) => number(state.landUse.growthEvents), detail: "Permitted floor additions" },
+      entry("Land value", (state) => currency(state.city.metrics.averageLandValue), "Access, services, demand and congestion"),
+      entry("Rent index", (state) => state.city.metrics.averageRentIndex.toFixed(2), "Value and occupancy pressure"),
+      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Residents against available units"),
+      entry("Developed area", (state) => area(sumDistricts(state, (district) => district.developedFloorArea)), "Current modeled floor area"),
+      entry("Zoned capacity", (state) => area(sumDistricts(state, (district) => district.maxFloorArea)), "Maximum permitted floor area"),
+      entry("Timeline points", (state) => number(state.city.timeline.length), "Weekly and calendar-boundary history"),
     ],
   },
 };
@@ -160,9 +164,15 @@ resetButton.addEventListener("click", () => {
 for (const tab of layerTabs) {
   tab.addEventListener("click", () => {
     activeLayer = tab.dataset.layer as Layer;
-    for (const candidate of layerTabs) {
-      candidate.setAttribute("aria-pressed", String(candidate === tab));
-    }
+    layerTabs.forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === tab)));
+    updateInterface();
+  });
+}
+
+for (const button of horizonButtons) {
+  button.addEventListener("click", () => {
+    simulation.setTimeHorizon(button.dataset.horizon as TimeHorizon);
+    horizonButtons.forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
     updateInterface();
   });
 }
@@ -200,34 +210,34 @@ function updateInterface(): void {
   statusPill.textContent = state.running ? "Running" : state.elapsedSeconds > 0 ? "Paused" : "Ready";
   runButton.disabled = state.running;
   pauseButton.disabled = !state.running;
-  dayOutput.textContent = `Day ${state.day}`;
-  timeOutput.textContent = formatClock(state.timeOfDayMinutes);
+  dayOutput.textContent = `Day ${Math.floor(state.metrics.simulatedDays) + 1} · ${capitalize(state.timeHorizon)} horizon`;
+  timeOutput.textContent = formatLongDate(state.city.startYear, state.metrics.simulatedDays);
   signalPhase.textContent = state.signalPhase === "vehicles" ? "Vehicles" : "Pedestrians";
   signalTimeRemaining.textContent = state.signalPhaseRemainingSeconds.toFixed(1);
+  cityNameOutput.textContent = state.city.name;
   activeLayerLabel.textContent = view.sceneLabel;
   inspectorTitle.textContent = view.title;
   inspectorSummary.textContent = view.summary(state);
   metricsTitle.textContent = view.sceneLabel;
 
-  view.inspector.forEach((entry, index) => {
-    requireElement(`inspector-label-${index + 1}`).textContent = entry.label;
-    requireElement(`inspector-value-${index + 1}`).textContent = entry.value(state);
+  view.inspector.forEach((display, index) => {
+    requireElement(`inspector-label-${index + 1}`).textContent = display.label;
+    requireElement(`inspector-value-${index + 1}`).textContent = display.value(state);
   });
-  view.metrics.forEach((entry, index) => {
-    requireElement(`metric-label-${index + 1}`).textContent = entry.label;
-    requireElement(`metric-value-${index + 1}`).textContent = entry.value(state);
-    requireElement(`metric-detail-${index + 1}`).textContent = entry.detail ?? "";
+  view.metrics.forEach((display, index) => {
+    requireElement(`metric-label-${index + 1}`).textContent = display.label;
+    requireElement(`metric-value-${index + 1}`).textContent = display.value(state);
+    requireElement(`metric-detail-${index + 1}`).textContent = display.detail ?? "";
   });
   renderEvents(state);
 }
 
 function renderEvents(state: Readonly<SimulationState>): void {
-  const visible = state.events.slice(0, 5);
-  eventList.replaceChildren(...visible.map((event) => {
+  eventList.replaceChildren(...state.events.slice(0, 5).map((event) => {
     const item = document.createElement("li");
     item.dataset.severity = event.severity;
     const time = document.createElement("time");
-    time.textContent = formatClock(event.minute % 1440);
+    time.textContent = `Day ${Math.max(1, Math.floor((event.minute - 420) / 1440) + 1)}`;
     const message = document.createElement("span");
     message.textContent = event.message;
     item.append(time, message);
@@ -254,44 +264,51 @@ function bindRange(
   control.addEventListener("input", update);
 }
 
-function item(label: string, value: (metrics: SimulationMetrics) => string, detail?: string): DisplayItem {
-  return { label, value: (state) => value(state.metrics), detail };
+function entry(label: string, value: DisplayItem["value"], detail?: string): DisplayItem {
+  return { label, value, detail };
 }
 
-function countPeople(state: Readonly<SimulationState>, ageGroup: "child" | "adult" | "senior"): number {
-  return state.people.filter((person) => person.ageGroup === ageGroup).length;
+function sumDistricts(state: Readonly<SimulationState>, select: (district: SimulationState["city"]["districts"][number]) => number): number {
+  return state.city.districts.reduce((total, district) => total + select(district), 0);
 }
 
-function formatClock(totalMinutes: number): string {
-  const minute = Math.floor(totalMinutes) % 60;
-  const hour24 = Math.floor(totalMinutes / 60) % 24;
-  const suffix = hour24 >= 12 ? "PM" : "AM";
-  const hour = hour24 % 12 || 12;
-  return `${hour}:${String(minute).padStart(2, "0")} ${suffix}`;
+function weightedCity(state: Readonly<SimulationState>, select: (district: SimulationState["city"]["districts"][number]) => number): number {
+  const population = state.city.metrics.population;
+  return population > 0
+    ? sumDistricts(state, (district) => select(district) * district.population) / population
+    : 0;
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function percent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
-function seconds(value: number): string {
-  return `${value.toFixed(1)}s`;
-}
-
-function minutes(value: number): string {
-  return `${value.toFixed(1)} min`;
-}
-
 function currency(value: number): string {
-  return `$${Math.round(value).toLocaleString()}`;
+  const absolute = Math.abs(value);
+  const prefix = value < 0 ? "-$" : "$";
+  if (absolute >= 1_000_000) return `${prefix}${(absolute / 1_000_000).toFixed(1)}M`;
+  if (absolute >= 1_000) return `${prefix}${(absolute / 1_000).toFixed(1)}K`;
+  return `${prefix}${Math.round(absolute).toLocaleString()}`;
 }
 
 function number(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
+function signedNumber(value: number): string {
+  return `${value >= 0 ? "+" : ""}${number(value)}`;
+}
+
+function area(value: number): string {
+  return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M m²` : `${number(value)} m²`;
+}
+
 function formatAmount(value: number): string {
-  return Number.isInteger(value) ? number(value) : value.toFixed(1);
+  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : Number.isInteger(value) ? number(value) : value.toFixed(1);
 }
 
 function requireElement<T extends HTMLElement = HTMLElement>(id: string): T {

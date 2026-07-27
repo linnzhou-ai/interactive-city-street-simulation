@@ -303,6 +303,12 @@ h2 {
   line-height: 1.35;
 }
 
+.event-list time {
+  display: inline-block;
+  margin-right: 0.35rem;
+  color: #e3e9e5;
+}
+
 .event-list li[data-severity="warning"] {
   color: #f0ba83;
 }
@@ -370,6 +376,28 @@ h2 {
 
 .range-control + .range-control {
   margin-top: 0.55rem;
+}
+
+.horizon-control {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.horizon-control button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0.35rem 0.2rem;
+  overflow: hidden;
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+}
+
+.horizon-control button[aria-pressed="true"] {
+  border-color: #62d6b7;
+  color: #0e2921;
+  background: #75dabc;
 }
 
 .control-row {

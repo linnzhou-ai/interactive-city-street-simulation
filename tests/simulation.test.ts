@@ -18,6 +18,8 @@ describe("Simulation", () => {
     );
     expect(initial.network.nodes.length).toBeGreaterThan(20);
     expect(initial.infrastructure.transitLines[0]?.active).toBe(true);
+    expect(initial.city.districts).toHaveLength(12);
+    expect(initial.metrics.cityPopulation).toBeGreaterThan(80_000);
   });
 
   it("creates and advances road, pedestrian, freight, and transit activity", () => {
@@ -73,6 +75,7 @@ describe("Simulation", () => {
 
     expect(simulation.getSettings()).toEqual({
       simulationSpeed: 4,
+      timeHorizon: "day",
       speedLimitMph: 45,
       signalCycleSeconds: 40,
       vehicleVolume: 40,
@@ -116,11 +119,13 @@ describe("Simulation", () => {
     simulation.update(260);
 
     const state = simulation.getState();
-    expect(state.day).toBe(2);
+    expect(state.day).toBe(44);
     expect(state.economy.employedWorkers).toBeGreaterThan(0);
     expect(state.economy.goodsProduced).toBeGreaterThan(0);
     expect(state.infrastructure.wasteCollected).toBeGreaterThan(0);
     expect(state.landUse.averageLandValue).not.toBe(initialValue);
+    expect(state.city.elapsedDays).toBe(43);
+    expect(state.city.timeline.length).toBeGreaterThan(1);
     expect(state.events.some((event) => event.category === "economy")).toBe(true);
     expect(state.metrics.population).toBe(state.people.length);
     for (const value of Object.values(state.metrics)) {
@@ -128,9 +133,11 @@ describe("Simulation", () => {
     }
   });
 
-  it("produces the same result for one large update and fixed small updates", () => {
+  it("produces the same long-horizon result for one large update and fixed small updates", () => {
     const largeStep = new Simulation();
     const smallSteps = new Simulation();
+    largeStep.setTimeHorizon("year");
+    smallSteps.setTimeHorizon("year");
     largeStep.start();
     smallSteps.start();
 
@@ -141,11 +148,18 @@ describe("Simulation", () => {
     const smallState = smallSteps.getState();
     expect(largeState.elapsedSeconds).toBeCloseTo(smallState.elapsedSeconds, 8);
     expect(largeState.timeOfDayMinutes).toBeCloseTo(smallState.timeOfDayMinutes, 8);
-    expect(largeState.vehicles.map(({ id, progress }) => ({ id, progress }))).toEqual(
-      smallState.vehicles.map(({ id, progress }) => ({ id, progress })),
-    );
-    expect(largeState.pedestrians.map(({ id, progress }) => ({ id, progress }))).toEqual(
-      smallState.pedestrians.map(({ id, progress }) => ({ id, progress })),
-    );
+    expect(largeState.city).toEqual(smallState.city);
+    expect(largeState.metrics.simulatedDays).toBeCloseTo(70, 8);
+  });
+
+  it("advances day, week, month, and year horizons at distinct calendar rates", () => {
+    const expectedDays = { day: 1 / 24, week: 1 / 4, month: 1, year: 7 } as const;
+    for (const [horizon, days] of Object.entries(expectedDays)) {
+      const simulation = new Simulation();
+      simulation.setTimeHorizon(horizon as keyof typeof expectedDays);
+      simulation.start();
+      simulation.update(1);
+      expect(simulation.getState().metrics.simulatedDays).toBeCloseTo(days, 8);
+    }
   });
 });
