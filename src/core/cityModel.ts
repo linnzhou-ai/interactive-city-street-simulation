@@ -5,11 +5,21 @@ import type {
   CitySectionDefinition,
   CitySectionState,
   CityTimelinePoint,
+  ExternalMarketDefinition,
+  GoodsBasket,
 } from "../models/cityTypes";
+import {
+  createExternalMarketState,
+  createInitialGoodsMarket,
+  emptyGoodsBasket,
+  resolveProductionCapacity,
+} from "./cityEconomy";
 
 export function createCitySectionState(definition: CitySectionDefinition): CitySectionState {
   validateCitySectionDefinition(definition);
   const districts = definition.districts.map(createDistrictState);
+  const market = createInitialGoodsMarket();
+  const externalMarkets = (definition.externalMarkets ?? []).map(createExternalMarketState);
   const metrics = summarizeInitialCity(districts, definition.startingBudget);
   const timeline: CityTimelinePoint[] = [{
     day: 0,
@@ -37,6 +47,8 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     municipalBudget: definition.startingBudget,
     districts,
     links: definition.links.map((link) => ({ ...link })),
+    externalMarkets,
+    market,
     metrics,
     timeline,
   };
@@ -77,6 +89,10 @@ export function validateCitySectionDefinition(definition: CitySectionDefinition)
   }
   for (const capacity of Object.values(definition.utilityCapacity)) {
     if (!Number.isFinite(capacity) || capacity < 0) throw new Error("Utility capacity must be non-negative");
+  }
+  const externalIds = new Set<string>();
+  for (const market of definition.externalMarkets ?? []) {
+    validateExternalMarket(market, externalIds);
   }
 }
 
@@ -130,6 +146,32 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
     },
     districts,
     links,
+    externalMarkets: [
+      {
+        id: "metro-region",
+        name: "Surrounding Metro",
+        kind: "regional",
+        distanceKm: 18,
+        freightCapacityDaily: 34_000,
+        commuterCapacityDaily: 18_000,
+        externalJobs: 12_000,
+        goodsPrices: { food: 8.4, consumerGoods: 22.5, industrialMaterials: 14.2 },
+        goodsSupplyDaily: { food: 24_000, consumerGoods: 11_000, industrialMaterials: 9_000 },
+        goodsDemandDaily: { food: 3_500, consumerGoods: 5_500, industrialMaterials: 11_000 },
+      },
+      {
+        id: "national-network",
+        name: "Wider Economy",
+        kind: "outside-city",
+        distanceKm: 145,
+        freightCapacityDaily: 24_000,
+        commuterCapacityDaily: 1_200,
+        externalJobs: 800,
+        goodsPrices: { food: 7.6, consumerGoods: 20.5, industrialMaterials: 12.8 },
+        goodsSupplyDaily: { food: 28_000, consumerGoods: 20_000, industrialMaterials: 22_000 },
+        goodsDemandDaily: { food: 9_000, consumerGoods: 14_000, industrialMaterials: 18_000 },
+      },
+    ],
   };
 }
 
@@ -139,9 +181,11 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
   const adults = definition.population - children - seniors;
   const developedFloorArea = definition.housingUnits * 88 + definition.commercialFloorArea + definition.industrialFloorArea + definition.civicFloorArea;
   const housingCapacity = Math.max(1, definition.housingUnits * 2.45);
+  const productionCapacity = resolveProductionCapacity(definition);
+  const households = definition.population / 2.42;
   return {
     ...definition,
-    households: definition.population / 2.42,
+    households,
     children,
     adults,
     seniors,
@@ -149,16 +193,35 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
     employedResidents: 0,
     developedFloorArea,
     rentIndex: definition.landValue / 200,
-    goodsInventory: definition.goodsProductionCapacity * 2.5,
+    productionCapacity,
+    goodsInventory: mapBasket(productionCapacity, (value) => value * 1.5),
+    goodsDemandByType: emptyGoodsBasket(),
+    goodsProducedByType: emptyGoodsBasket(),
+    goodsConsumedByType: emptyGoodsBasket(),
+    goodsImportedByType: emptyGoodsBasket(),
+    goodsExportedByType: emptyGoodsBasket(),
     goodsProducedDaily: 0,
     goodsConsumedDaily: 0,
     goodsImportedDaily: 0,
     goodsExportedDaily: 0,
+    averageWageDaily: definition.averageIncome / 260,
+    householdWealth: households * 420,
+    householdIncomeDaily: 0,
+    householdSpendingDaily: 0,
+    disposableIncomeDaily: 0,
+    businessRevenueDaily: 0,
+    businessCostsDaily: 0,
+    businessProfitDaily: 0,
     utilityDemand: { power: 0, water: 0, waste: 0 },
     utilityCoverage: { power: 1, water: 1, waste: 1 },
     dailyTrips: definition.population * 2.15,
     congestionPercent: 0,
     transitSharePercent: 18,
+    commuteTripsDaily: definition.population * 0.9,
+    shoppingTripsDaily: households * 0.35,
+    pedestrianTripsDaily: definition.population * 0.18,
+    freightTripsDaily: definition.goodsProductionCapacity / 28,
+    externalCommutersDaily: 0,
     unemploymentPercent: 0,
     housingOccupancyPercent: Math.min(100, (definition.population / housingCapacity) * 100),
     happiness: 72,
@@ -179,7 +242,12 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     unemploymentPercent: labor > 0 ? ((labor - employedResidents) / labor) * 100 : 0,
     housingOccupancyPercent: weightedAverage(districts, "housingOccupancyPercent"),
     grossCityProductDaily: employedResidents * 185,
-    householdSpendingDaily: population * 38,
+    householdIncomeDaily: 0,
+    disposableIncomeDaily: 0,
+    householdSpendingDaily: 0,
+    businessRevenueDaily: 0,
+    businessCostsDaily: 0,
+    businessProfitDaily: 0,
     goodsProducedDaily: 0,
     goodsConsumedDaily: 0,
     goodsImportedDaily: 0,
@@ -188,6 +256,12 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     averageRentIndex: weightedAverage(districts, "rentIndex"),
     utilityCoveragePercent: 100,
     wasteCollectionPercent: 100,
+    commuteTripsDaily: sum(districts.map((district) => district.commuteTripsDaily)),
+    shoppingTripsDaily: sum(districts.map((district) => district.shoppingTripsDaily)),
+    vehicleTripsDaily: sum(districts.map((district) => district.commuteTripsDaily * 0.55 + district.freightTripsDaily)),
+    pedestrianTripsDaily: sum(districts.map((district) => district.pedestrianTripsDaily)),
+    freightTripsDaily: sum(districts.map((district) => district.freightTripsDaily)),
+    externalCommutersDaily: 0,
     dailyTrips: sum(districts.map((district) => district.dailyTrips)),
     congestionPercent: 0,
     transitSharePercent: weightedAverage(districts, "transitSharePercent"),
@@ -195,6 +269,32 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     maintenanceCostDaily: 0,
     municipalBalance: budget,
     happiness: weightedAverage(districts, "happiness"),
+  };
+}
+
+function validateExternalMarket(market: ExternalMarketDefinition, ids: Set<string>): void {
+  if (!market.id.trim() || !market.name.trim()) throw new Error("External market id and name are required");
+  if (ids.has(market.id)) throw new Error(`Duplicate external market id: ${market.id}`);
+  ids.add(market.id);
+  const values = [
+    market.distanceKm,
+    market.freightCapacityDaily,
+    market.commuterCapacityDaily,
+    market.externalJobs,
+    ...Object.values(market.goodsPrices),
+    ...Object.values(market.goodsSupplyDaily),
+    ...Object.values(market.goodsDemandDaily),
+  ];
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error(`External market contains an invalid value: ${market.id}`);
+  }
+}
+
+function mapBasket(basket: GoodsBasket, transform: (value: number) => number): GoodsBasket {
+  return {
+    food: transform(basket.food),
+    consumerGoods: transform(basket.consumerGoods),
+    industrialMaterials: transform(basket.industrialMaterials),
   };
 }
 
@@ -206,6 +306,11 @@ function validateDistrict(district: CityDistrictDefinition): void {
   }
   if (!Number.isFinite(district.terrainSlope) || district.terrainSlope < 0 || district.terrainSlope > 1) {
     throw new Error(`District terrain slope must be between 0 and 1: ${district.id}`);
+  }
+  if (district.productionProfile && Object.values(district.productionProfile).some(
+    (value) => value === undefined || !Number.isFinite(value) || value < 0,
+  )) {
+    throw new Error(`District production profile contains an invalid value: ${district.id}`);
   }
 }
 

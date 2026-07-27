@@ -25,10 +25,10 @@ describe("Simulation", () => {
   it("creates and advances road, pedestrian, freight, and transit activity", () => {
     const simulation = new Simulation();
     simulation.start();
-    simulation.update(12);
+    for (let second = 0; second < 30; second += 1) simulation.update(1);
 
     const state = simulation.getState();
-    expect(state.elapsedSeconds).toBeCloseTo(12, 8);
+    expect(state.elapsedSeconds).toBeCloseTo(30, 8);
     expect(state.metrics.activeTrips).toBeGreaterThan(0);
     expect(state.vehicles.some((vehicle) => vehicle.vehicleType === "bus")).toBe(true);
     expect(state.vehicles.some((vehicle) => vehicle.vehicleType === "car")).toBe(true);
@@ -41,16 +41,16 @@ describe("Simulation", () => {
   it("preserves settings across a deterministic reset", () => {
     const simulation = new Simulation();
     const initial = structuredClone(simulation.getState());
-    simulation.setVehicleVolume(30);
     simulation.setSignalCycleSeconds(20);
+    simulation.setTransitHeadwayMinutes(12);
     simulation.setUtilityCapacityScale(0.8);
     simulation.start();
     simulation.update(8);
     simulation.reset();
 
     const reset = structuredClone(simulation.getState());
-    expect(simulation.getSettings().vehicleVolume).toBe(30);
     expect(simulation.getSettings().signalCycleSeconds).toBe(20);
+    expect(simulation.getSettings().transitHeadwayMinutes).toBe(12);
     expect(simulation.getSettings().utilityCapacityScale).toBe(0.8);
     expect(reset.running).toBe(false);
     expect(reset.elapsedSeconds).toBe(0);
@@ -65,9 +65,6 @@ describe("Simulation", () => {
     simulation.setSimulationSpeed(99);
     simulation.setSpeedLimitMph(99);
     simulation.setSignalCycleSeconds(99);
-    simulation.setVehicleVolume(99);
-    simulation.setPedestrianVolume(99);
-    simulation.setFreightVolume(99);
     simulation.setTransitHeadwayMinutes(99);
     simulation.setRoadCapacity(99);
     simulation.setUtilityCapacityScale(99);
@@ -78,9 +75,6 @@ describe("Simulation", () => {
       timeHorizon: "day",
       speedLimitMph: 45,
       signalCycleSeconds: 40,
-      vehicleVolume: 40,
-      pedestrianVolume: 40,
-      freightVolume: 15,
       transitHeadwayMinutes: 20,
       roadCapacity: 40,
       utilityCapacityScale: 1.5,
@@ -108,9 +102,6 @@ describe("Simulation", () => {
     const simulation = new Simulation({
       simulationSpeed: 4,
       speedLimitMph: 45,
-      vehicleVolume: 4,
-      pedestrianVolume: 4,
-      freightVolume: 1,
       roadCapacity: 40,
     });
     const initialValue = simulation.getState().landUse.averageLandValue;
@@ -126,6 +117,9 @@ describe("Simulation", () => {
     expect(state.landUse.averageLandValue).not.toBe(initialValue);
     expect(state.city.elapsedDays).toBe(43);
     expect(state.city.timeline.length).toBeGreaterThan(1);
+    expect(state.city.metrics.commuteTripsDaily).toBeGreaterThan(0);
+    expect(state.city.metrics.shoppingTripsDaily).toBeGreaterThan(0);
+    expect(state.city.metrics.freightTripsDaily).toBeGreaterThan(0);
     expect(state.events.some((event) => event.category === "economy")).toBe(true);
     expect(state.metrics.population).toBe(state.people.length);
     for (const value of Object.values(state.metrics)) {

@@ -1,6 +1,8 @@
 import type { UtilityKind, ZoneType } from "./types";
 
 export type TimeHorizon = "day" | "week" | "month" | "year";
+export type GoodType = "food" | "consumerGoods" | "industrialMaterials";
+export type GoodsBasket = Record<GoodType, number>;
 
 export interface CityDistrictDefinition {
   id: string;
@@ -21,6 +23,43 @@ export interface CityDistrictDefinition {
   averageIncome: number;
   landValue: number;
   goodsProductionCapacity: number;
+  productionProfile?: Partial<GoodsBasket>;
+}
+
+export interface ExternalMarketDefinition {
+  id: string;
+  name: string;
+  kind: "regional" | "outside-city";
+  distanceKm: number;
+  freightCapacityDaily: number;
+  commuterCapacityDaily: number;
+  externalJobs: number;
+  goodsPrices: GoodsBasket;
+  goodsSupplyDaily: GoodsBasket;
+  goodsDemandDaily: GoodsBasket;
+}
+
+export interface ExternalMarketState extends ExternalMarketDefinition {
+  importsDaily: GoodsBasket;
+  exportsDaily: GoodsBasket;
+  transportCostDaily: number;
+  freightTripsDaily: number;
+  inboundCommutersDaily: number;
+  outboundCommutersDaily: number;
+}
+
+export interface CityGoodsMarketState {
+  prices: GoodsBasket;
+  demandDaily: GoodsBasket;
+  localSupplyDaily: GoodsBasket;
+  fulfilledDaily: GoodsBasket;
+  importsDaily: GoodsBasket;
+  exportsDaily: GoodsBasket;
+  unmetDemandDaily: GoodsBasket;
+  consumerPriceIndex: number;
+  localSupplyPercent: number;
+  importDependencePercent: number;
+  transportCostDaily: number;
 }
 
 export interface CityLinkDefinition {
@@ -42,6 +81,7 @@ export interface CitySectionDefinition {
   utilityCapacity: Record<UtilityKind, number>;
   districts: CityDistrictDefinition[];
   links: CityLinkDefinition[];
+  externalMarkets?: ExternalMarketDefinition[];
 }
 
 export interface CityDistrictState extends CityDistrictDefinition {
@@ -53,13 +93,32 @@ export interface CityDistrictState extends CityDistrictDefinition {
   employedResidents: number;
   developedFloorArea: number;
   rentIndex: number;
-  goodsInventory: number;
+  productionCapacity: GoodsBasket;
+  goodsInventory: GoodsBasket;
+  goodsDemandByType: GoodsBasket;
+  goodsProducedByType: GoodsBasket;
+  goodsConsumedByType: GoodsBasket;
+  goodsImportedByType: GoodsBasket;
+  goodsExportedByType: GoodsBasket;
   goodsProducedDaily: number;
   goodsConsumedDaily: number;
   goodsImportedDaily: number;
   goodsExportedDaily: number;
+  averageWageDaily: number;
+  householdWealth: number;
+  householdIncomeDaily: number;
+  householdSpendingDaily: number;
+  disposableIncomeDaily: number;
+  businessRevenueDaily: number;
+  businessCostsDaily: number;
+  businessProfitDaily: number;
   utilityDemand: Record<UtilityKind, number>;
   utilityCoverage: Record<UtilityKind, number>;
+  commuteTripsDaily: number;
+  shoppingTripsDaily: number;
+  pedestrianTripsDaily: number;
+  freightTripsDaily: number;
+  externalCommutersDaily: number;
   dailyTrips: number;
   congestionPercent: number;
   transitSharePercent: number;
@@ -77,7 +136,12 @@ export interface CityAggregateMetrics {
   unemploymentPercent: number;
   housingOccupancyPercent: number;
   grossCityProductDaily: number;
+  householdIncomeDaily: number;
+  disposableIncomeDaily: number;
   householdSpendingDaily: number;
+  businessRevenueDaily: number;
+  businessCostsDaily: number;
+  businessProfitDaily: number;
   goodsProducedDaily: number;
   goodsConsumedDaily: number;
   goodsImportedDaily: number;
@@ -86,6 +150,12 @@ export interface CityAggregateMetrics {
   averageRentIndex: number;
   utilityCoveragePercent: number;
   wasteCollectionPercent: number;
+  commuteTripsDaily: number;
+  shoppingTripsDaily: number;
+  vehicleTripsDaily: number;
+  pedestrianTripsDaily: number;
+  freightTripsDaily: number;
+  externalCommutersDaily: number;
   dailyTrips: number;
   congestionPercent: number;
   transitSharePercent: number;
@@ -121,6 +191,8 @@ export interface CitySectionState {
   municipalBudget: number;
   districts: CityDistrictState[];
   links: CityLinkDefinition[];
+  externalMarkets: ExternalMarketState[];
+  market: CityGoodsMarketState;
   metrics: CityAggregateMetrics;
   timeline: CityTimelinePoint[];
 }
@@ -130,8 +202,6 @@ export interface CityPolicySettings {
   utilityCapacityScale: number;
   zoningStrictness: number;
   transitServiceScale: number;
-  travelDemandScale: number;
-  freightDemandScale: number;
 }
 
 export interface CitySystemEvent {

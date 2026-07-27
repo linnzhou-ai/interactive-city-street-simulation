@@ -8,6 +8,9 @@ schematic Three.js rendering:
 - `src/core/cityEngine.ts` advances aggregate demographics, employment, goods,
   migration, land, housing, transport, utilities, taxation, maintenance, and
   municipal balance in deterministic daily steps.
+- `src/core/cityEconomy.ts` matches workers and jobs, updates household and
+  business accounts, clears local goods markets, allocates bounded outside trade,
+  and generates commute, shopping, pedestrian, and freight demand.
 - `src/core/timeScale.ts` maps day, week, month, and year horizons to calendar time.
 - `src/core/simulation.ts` coordinates the long-term engine with the bounded
   street-detail model, controls, events, and metrics.
@@ -18,7 +21,8 @@ schematic Three.js rendering:
 - `src/core/mobility.ts` moves cars, freight, buses, and pedestrians while applying
   signals, capacity, queues, following gaps, transit dwell, and conflict proxies.
 - `src/core/economy.ts` handles jobs, wages, household consumption, production,
-  retail inventory, imports, exports, and freight requests.
+  retail inventory, imports, exports, and freight requests in the street-detail
+  layer.
 - `src/core/infrastructure.ts` allocates power, water, and waste capacity and tracks
   roads, parking, condition, and transit service.
 - `src/core/landUse.ts` applies zoning, terrain and height constraints, then updates

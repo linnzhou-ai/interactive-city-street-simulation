@@ -26,9 +26,6 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
   timeHorizon: "day",
   speedLimitMph: 25,
   signalCycleSeconds: 12,
-  vehicleVolume: 12,
-  pedestrianVolume: 12,
-  freightVolume: 4,
   transitHeadwayMinutes: 8,
   roadCapacity: 20,
   utilityCapacityScale: 1,
@@ -58,7 +55,7 @@ export class Simulation {
   private nextTripSequence = 1;
   private nextEventSequence = 1;
   private cityDayCredit = 0;
-  private demandCredits: DemandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
+  private demandCredits: DemandCredits = { vehicle: 0, pedestrian: 0, freight: 0 };
   private lastCongestionBand = 0;
 
   constructor(
@@ -109,18 +106,6 @@ export class Simulation {
     this.updateSignalState();
   }
 
-  setVehicleVolume(value: number): void {
-    this.settings = { ...this.settings, vehicleVolume: finiteClamp(value, 4, 40, this.settings.vehicleVolume) };
-  }
-
-  setPedestrianVolume(value: number): void {
-    this.settings = { ...this.settings, pedestrianVolume: finiteClamp(value, 4, 40, this.settings.pedestrianVolume) };
-  }
-
-  setFreightVolume(value: number): void {
-    this.settings = { ...this.settings, freightVolume: finiteClamp(value, 1, 15, this.settings.freightVolume) };
-  }
-
   setTransitHeadwayMinutes(value: number): void {
     this.settings = { ...this.settings, transitHeadwayMinutes: finiteClamp(value, 3, 20, this.settings.transitHeadwayMinutes) };
     this.mobility.setBusHeadwayMinutes(this.settings.transitHeadwayMinutes);
@@ -157,8 +142,6 @@ export class Simulation {
         utilityCapacityScale: this.settings.utilityCapacityScale,
         zoningStrictness: this.settings.zoningStrictness,
         transitServiceScale: DEFAULT_SETTINGS.transitHeadwayMinutes / this.settings.transitHeadwayMinutes,
-        travelDemandScale: this.settings.vehicleVolume / DEFAULT_SETTINGS.vehicleVolume,
-        freightDemandScale: this.settings.freightVolume / DEFAULT_SETTINGS.freightVolume,
       });
       this.state.city = cityUpdate.state;
       cityUpdate.events.forEach((event) => this.recordCityEvent(event));
@@ -189,7 +172,7 @@ export class Simulation {
     this.nextTripSequence = 1;
     this.nextEventSequence = 1;
     this.cityDayCredit = 0;
-    this.demandCredits = { vehicle: 1, pedestrian: 1, freight: 0 };
+    this.demandCredits = { vehicle: 0, pedestrian: 0, freight: 0 };
     this.lastCongestionBand = 0;
 
     const initialLand = createInitialLandUse();
@@ -356,9 +339,13 @@ export class Simulation {
   }
 
   private generateBackgroundTrips(step: number): void {
-    this.demandCredits.vehicle += (step * this.settings.vehicleVolume) / 60;
-    this.demandCredits.pedestrian += (step * this.settings.pedestrianVolume) / 60;
-    this.demandCredits.freight += (step * this.settings.freightVolume) / 60;
+    const city = this.state.city.metrics;
+    const vehicleRate = clamp(city.vehicleTripsDaily / 9_000, 0.4, 18);
+    const pedestrianRate = clamp(city.pedestrianTripsDaily / 7_000, 0.4, 16);
+    const freightRate = clamp(city.freightTripsDaily / 45, 0.1, 12);
+    this.demandCredits.vehicle += (step * vehicleRate) / 60;
+    this.demandCredits.pedestrian += (step * pedestrianRate) / 60;
+    this.demandCredits.freight += (step * freightRate) / 60;
 
     this.consumeCredit("vehicle", () => this.createLocalTrip("car", "work"));
     this.consumeCredit("pedestrian", () => this.createLocalTrip("walk", "shopping"));
@@ -393,18 +380,35 @@ export class Simulation {
 
   private createFreightTrip(): TripRequest {
     const destinations = this.state.buildings.filter((building) => building.zone === "commercial" || building.zone === "industrial");
+    const industries = this.state.buildings.filter((building) => building.zone === "industrial");
     const sequence = this.nextTripSequence++;
     const building = destinations[sequence % destinations.length]!;
-    const inbound = sequence % 2 === 0;
+    const industry = industries[sequence % industries.length] ?? building;
+    const imports = this.state.city.metrics.goodsImportedDaily;
+    const exports = this.state.city.metrics.goodsExportedDaily;
+    const externalFreight = this.state.city.externalMarkets.reduce(
+      (total, market) => total + market.freightTripsDaily,
+      0,
+    );
+    const externalShare = clamp(externalFreight / Math.max(1, this.state.city.metrics.freightTripsDaily), 0, 1);
+    const sample = (sequence * 0.61803398875) % 1;
+    const external = sample < externalShare;
+    const inbound = imports + exports <= 0 || (sequence * 0.41421356237) % 1 < imports / Math.max(1, imports + exports);
+    const averageCargo = (imports + exports + this.state.city.metrics.goodsProducedDaily) /
+      Math.max(1, this.state.city.metrics.freightTripsDaily);
     return {
       id: `ambient-freight-${sequence}`,
-      originBuildingId: inbound ? OUTSIDE_FREIGHT_BUILDING_ID : building.id,
-      destinationBuildingId: inbound ? building.id : OUTSIDE_FREIGHT_BUILDING_ID,
+      originBuildingId: external
+        ? inbound ? OUTSIDE_FREIGHT_BUILDING_ID : industry.id
+        : industry.id,
+      destinationBuildingId: external
+        ? inbound ? building.id : OUTSIDE_FREIGHT_BUILDING_ID
+        : building.id,
       mode: "freight",
       purpose: "delivery",
       createdMinute: Math.floor(this.cityMinute),
       vehicleType: "truck",
-      cargoUnits: 8 + (sequence % 5),
+      cargoUnits: clamp(averageCargo, 4, 36),
     };
   }
 
@@ -560,9 +564,6 @@ function sanitizeSettings(settings: ScenarioSettings): ScenarioSettings {
     timeHorizon: sanitizeTimeHorizon(settings.timeHorizon),
     speedLimitMph: finiteClamp(settings.speedLimitMph, 10, 45, 25),
     signalCycleSeconds: finiteClamp(settings.signalCycleSeconds, 6, 40, 12),
-    vehicleVolume: finiteClamp(settings.vehicleVolume, 4, 40, 12),
-    pedestrianVolume: finiteClamp(settings.pedestrianVolume, 4, 40, 12),
-    freightVolume: finiteClamp(settings.freightVolume, 1, 15, 4),
     transitHeadwayMinutes: finiteClamp(settings.transitHeadwayMinutes, 3, 20, 8),
     roadCapacity: finiteClamp(settings.roadCapacity, 8, 40, 20),
     utilityCapacityScale: finiteClamp(settings.utilityCapacityScale, 0.5, 1.5, 1),

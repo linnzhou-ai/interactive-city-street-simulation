@@ -8,6 +8,7 @@ import type {
   CityTimelinePoint,
 } from "../models/cityTypes";
 import type { UtilityKind } from "../models/types";
+import { advanceCityEconomy } from "./cityEconomy";
 import { calendarFromElapsedDays } from "./timeScale";
 
 const UTILITY_KINDS: UtilityKind[] = ["power", "water", "waste"];
@@ -18,8 +19,6 @@ export const DEFAULT_CITY_POLICY: CityPolicySettings = {
   utilityCapacityScale: 1,
   zoningStrictness: 1,
   transitServiceScale: 1,
-  travelDemandScale: 1,
-  freightDemandScale: 1,
 };
 
 export function advanceCitySection(
@@ -55,17 +54,16 @@ export function summarizeCitySection(
   const laborForce = sum(districts.map((district) => district.laborForce));
   const employedResidents = sum(districts.map((district) => district.employedResidents));
   const housingCapacity = sum(districts.map((district) => district.housingUnits * 2.45));
+  const householdIncomeDaily = sum(districts.map((district) => district.householdIncomeDaily));
+  const disposableIncomeDaily = sum(districts.map((district) => district.disposableIncomeDaily));
+  const householdSpendingDaily = sum(districts.map((district) => district.householdSpendingDaily));
+  const businessRevenueDaily = sum(districts.map((district) => district.businessRevenueDaily));
+  const businessCostsDaily = sum(districts.map((district) => district.businessCostsDaily));
+  const businessProfitDaily = sum(districts.map((district) => district.businessProfitDaily));
   const goodsProducedDaily = sum(districts.map((district) => district.goodsProducedDaily));
   const goodsConsumedDaily = sum(districts.map((district) => district.goodsConsumedDaily));
-  const grossCityProductDaily = sum(districts.map((district) =>
-    district.employedResidents * (district.averageIncome / 260) * 0.72 +
-    district.goodsProducedDaily * 38 +
-    district.commercialFloorArea * 1.2,
-  ));
-  const householdSpendingDaily = sum(districts.map((district) =>
-    district.population * (24 + district.averageIncome / 4_000),
-  ));
-  const taxRevenueDaily = grossCityProductDaily * taxRate * 0.06;
+  const grossCityProductDaily = businessRevenueDaily;
+  const taxRevenueDaily = householdIncomeDaily * taxRate * 0.16 + Math.max(0, businessProfitDaily) * taxRate;
   const developedFloorArea = sum(districts.map((district) => district.developedFloorArea));
   const networkCapacity = sum(links.map((link) => link.roadCapacityDaily + link.transitCapacityDaily));
   const totalUtilityCapacity = sum(Object.values(utilityCapacity));
@@ -79,7 +77,12 @@ export function summarizeCitySection(
     unemploymentPercent: round(laborForce > 0 ? ((laborForce - employedResidents) / laborForce) * 100 : 0),
     housingOccupancyPercent: round(clamp((population / Math.max(1, housingCapacity)) * 100, 0, 140)),
     grossCityProductDaily: round(grossCityProductDaily),
+    householdIncomeDaily: round(householdIncomeDaily),
+    disposableIncomeDaily: round(disposableIncomeDaily),
     householdSpendingDaily: round(householdSpendingDaily),
+    businessRevenueDaily: round(businessRevenueDaily),
+    businessCostsDaily: round(businessCostsDaily),
+    businessProfitDaily: round(businessProfitDaily),
     goodsProducedDaily: round(goodsProducedDaily),
     goodsConsumedDaily: round(goodsConsumedDaily),
     goodsImportedDaily: round(sum(districts.map((district) => district.goodsImportedDaily))),
@@ -88,6 +91,15 @@ export function summarizeCitySection(
     averageRentIndex: round(weightedAverage(districts, "rentIndex")),
     utilityCoveragePercent: round(average(UTILITY_KINDS.map((kind) => weightedUtilityCoverage(districts, kind)))),
     wasteCollectionPercent: round(weightedUtilityCoverage(districts, "waste")),
+    commuteTripsDaily: round(sum(districts.map((district) => district.commuteTripsDaily))),
+    shoppingTripsDaily: round(sum(districts.map((district) => district.shoppingTripsDaily))),
+    vehicleTripsDaily: round(sum(districts.map((district) => {
+      const personTrips = Math.max(0, district.commuteTripsDaily + district.shoppingTripsDaily - district.pedestrianTripsDaily);
+      return personTrips * (1 - district.transitSharePercent / 100) + district.freightTripsDaily;
+    }))),
+    pedestrianTripsDaily: round(sum(districts.map((district) => district.pedestrianTripsDaily))),
+    freightTripsDaily: round(sum(districts.map((district) => district.freightTripsDaily))),
+    externalCommutersDaily: round(sum(districts.map((district) => district.externalCommutersDaily))),
     dailyTrips: round(sum(districts.map((district) => district.dailyTrips))),
     congestionPercent: round(weightedAverage(districts, "congestionPercent")),
     transitSharePercent: round(weightedAverage(districts, "transitSharePercent")),
@@ -105,9 +117,6 @@ function advanceCityDay(
   events: CitySystemEvent[],
 ): void {
   const previousCalendar = calendarFromElapsedDays(state.startYear, state.elapsedDays);
-  const totalLabor = sum(state.districts.map((district) => district.laborForce));
-  const totalJobs = sum(state.districts.map((district) => district.jobs));
-  const cityEmploymentRatio = totalLabor > 0 ? clamp01(totalJobs / totalLabor) : 1;
   const connectedCapacity = districtCapacity(state);
   const demandByDistrict = state.districts.map(calculateUtilityDemand);
   const totalUtilityDemand = Object.fromEntries(UTILITY_KINDS.map((kind) => [
@@ -126,32 +135,55 @@ function advanceCityDay(
       kind,
       clamp01(baseUtilityCoverage[kind] * priority),
     ])) as Record<UtilityKind, number>;
-    const utilityReliability = average(Object.values(utilityCoverage));
+    return {
+      ...district,
+      utilityDemand: mapRecord(utilityDemand, round),
+      utilityCoverage: mapRecord(utilityCoverage, (value) => round(value)),
+    };
+  });
+
+  const economy = advanceCityEconomy({
+    districts: state.districts,
+    externalMarkets: state.externalMarkets,
+    previousMarket: state.market,
+    transportCapacity: connectedCapacity,
+    elapsedDays,
+  });
+  state.externalMarkets = economy.externalMarkets;
+  state.market = economy.market;
+
+  state.districts = economy.districts.map((district) => {
+    const utilityReliability = average(Object.values(district.utilityCoverage));
     const capacity = connectedCapacity.get(district.id) ?? { road: 1, transit: 0, freight: 0 };
-    const dailyTrips = district.population * (1.75 + cityEmploymentRatio * 0.62) * policy.travelDemandScale;
     const transitCapacity = capacity.transit * policy.transitServiceScale;
-    const transitSharePercent = clamp(10 + 48 * (transitCapacity / Math.max(1, dailyTrips)), 8, 68);
-    const privateTrips = dailyTrips * Math.max(0.1, 0.84 - transitSharePercent / 100);
-    const congestionPercent = clamp(100 * (privateTrips / Math.max(1, capacity.road * policy.roadCapacityScale)) ** 1.35, 0, 100);
-    const freightPressure = policy.freightDemandScale * district.goodsProductionCapacity / Math.max(1, capacity.freight);
-    const employedResidents = district.laborForce * cityEmploymentRatio * clamp(1.04 - congestionPercent / 360, 0.72, 1);
-    const unemploymentPercent = district.laborForce > 0 ? ((district.laborForce - employedResidents) / district.laborForce) * 100 : 0;
-    const productionUtilization = clamp01((employedResidents / Math.max(1, district.laborForce)) * utilityReliability * (1 - freightPressure * 0.04));
-    const goodsProducedDaily = district.goodsProductionCapacity * productionUtilization;
-    const goodsConsumedDaily = district.population * (0.38 + district.averageIncome / 240_000);
-    const availableGoods = district.goodsInventory + goodsProducedDaily;
-    const locallyConsumed = Math.min(availableGoods, goodsConsumedDaily);
-    const goodsImportedDaily = Math.max(0, goodsConsumedDaily - availableGoods);
-    const reserve = district.goodsProductionCapacity * 1.5;
-    const goodsExportedDaily = Math.max(0, availableGoods - locallyConsumed - reserve) * 0.35;
-    const goodsInventory = Math.max(0, availableGoods - locallyConsumed - goodsExportedDaily);
+    const transitSharePercent = clamp(
+      8 + 62 * transitCapacity / Math.max(1, district.commuteTripsDaily + transitCapacity),
+      8,
+      68,
+    );
+    const motorizedPersonTrips = Math.max(
+      0,
+      district.commuteTripsDaily + district.shoppingTripsDaily - district.pedestrianTripsDaily,
+    );
+    const privateTrips = motorizedPersonTrips * (1 - transitSharePercent / 100) + district.freightTripsDaily;
+    const congestionPercent = clamp(
+      100 * (privateTrips / Math.max(1, capacity.road * policy.roadCapacityScale)) ** 1.35,
+      0,
+      100,
+    );
+    const unemploymentPercent = district.laborForce > 0
+      ? ((district.laborForce - district.employedResidents) / district.laborForce) * 100
+      : 0;
+    const goodsCoverage = district.goodsConsumedDaily / Math.max(1, sum(Object.values(district.goodsDemandByType)));
     const housingCapacity = Math.max(1, district.housingUnits * 2.45);
     const housingOccupancyPercent = clamp((district.population / housingCapacity) * 100, 0, 140);
-    const goodsCoverage = goodsConsumedDaily > 0 ? clamp01(locallyConsumed / goodsConsumedDaily) : 1;
-    const rentBurden = clamp01((district.rentIndex * 1_250) / Math.max(1, district.averageIncome));
+    const rentBurden = clamp01(
+      district.households * district.rentIndex * 52 / Math.max(1, district.householdIncomeDaily),
+    );
+    const spendingRoom = clamp01(district.disposableIncomeDaily / Math.max(1, district.householdIncomeDaily));
     const happiness = clamp(
       34 + utilityReliability * 22 + (1 - unemploymentPercent / 100) * 18 + goodsCoverage * 12 +
-      (1 - congestionPercent / 100) * 9 + (1 - rentBurden) * 9,
+      (1 - congestionPercent / 100) * 7 + (1 - rentBurden) * 5 + spendingRoom * 6,
       0,
       100,
     );
@@ -177,22 +209,42 @@ function advanceCityDay(
     );
     const commercialGrowth = Math.min(
       Math.max(0, floorRoom - housingGrowth * 88),
-      district.commercialFloorArea * clamp((goodsCoverage - 0.8) * 0.0012, 0, 0.0005) * growthPermission * elapsedDays,
+      district.commercialFloorArea * clamp(
+        district.businessProfitDaily / Math.max(1, district.businessRevenueDaily) * 0.0012,
+        0,
+        0.00045,
+      ) * growthPermission * elapsedDays,
     );
     const industrialGrowth = Math.min(
       Math.max(0, floorRoom - housingGrowth * 88 - commercialGrowth),
-      district.industrialFloorArea * clamp((goodsImportedDaily / Math.max(1, goodsConsumedDaily)) * 0.0008, 0, 0.0004) * growthPermission * elapsedDays,
+      district.industrialFloorArea * clamp(
+        state.market.importDependencePercent / 100 * 0.00055 +
+        Math.max(0, district.businessProfitDaily) / Math.max(1, district.businessRevenueDaily) * 0.00035,
+        0,
+        0.0004,
+      ) * growthPermission * elapsedDays,
     );
     const developedFloorArea = district.developedFloorArea + housingGrowth * 88 + commercialGrowth + industrialGrowth;
-    const jobs = district.jobs + commercialGrowth / 34 + industrialGrowth / 48;
-    const accessScore = clamp01((capacity.road * policy.roadCapacityScale + transitCapacity) / Math.max(1, dailyTrips * 1.4));
+    const profitMargin = district.businessProfitDaily / Math.max(1, district.businessRevenueDaily);
+    const jobs = Math.max(0, district.jobs + (
+      commercialGrowth / 34 + industrialGrowth / 48 + district.jobs * clamp(profitMargin, -0.2, 0.2) * 0.00012 * elapsedDays
+    ));
+    const dailyTrips = district.commuteTripsDaily + district.shoppingTripsDaily + district.freightTripsDaily;
+    const accessScore = clamp01(
+      (capacity.road * policy.roadCapacityScale + transitCapacity) / Math.max(1, dailyTrips * 1.4),
+    );
     const targetLandValue = clamp(
-      70 + district.averageIncome / 520 + accessScore * 145 + utilityReliability * 110 + happiness * 1.1 - congestionPercent * 1.35,
+      55 + district.averageWageDaily * 0.42 + accessScore * 145 + utilityReliability * 105 +
+      happiness * 1.05 + clamp(profitMargin, -0.3, 0.3) * 80 - congestionPercent * 1.2,
       35,
       720,
     );
     const landValue = district.landValue + (targetLandValue - district.landValue) * 0.0035 * elapsedDays;
     const rentIndex = Math.max(0.25, district.rentIndex + ((landValue / 200) * (0.7 + housingOccupancyPercent / 220) - district.rentIndex) * 0.006 * elapsedDays);
+    const capacityGrowth = 1 + (
+      industrialGrowth / Math.max(1, district.industrialFloorArea) * 0.7 +
+      commercialGrowth / Math.max(1, district.commercialFloorArea) * 0.25
+    );
 
     return {
       ...district,
@@ -202,7 +254,7 @@ function advanceCityDay(
       adults: round(district.adults * demographicScale),
       seniors: round(district.seniors * demographicScale),
       laborForce: round(district.adults * demographicScale * 0.74),
-      employedResidents: round(employedResidents),
+      employedResidents: round(district.employedResidents * demographicScale),
       housingUnits: round(district.housingUnits + housingGrowth),
       commercialFloorArea: round(district.commercialFloorArea + commercialGrowth),
       industrialFloorArea: round(district.industrialFloorArea + industrialGrowth),
@@ -210,13 +262,11 @@ function advanceCityDay(
       jobs: round(jobs),
       landValue: round(landValue),
       rentIndex: round(rentIndex),
-      goodsInventory: round(goodsInventory),
-      goodsProducedDaily: round(goodsProducedDaily),
-      goodsConsumedDaily: round(goodsConsumedDaily),
-      goodsImportedDaily: round(goodsImportedDaily),
-      goodsExportedDaily: round(goodsExportedDaily),
-      utilityDemand: mapRecord(utilityDemand, round),
-      utilityCoverage: mapRecord(utilityCoverage, (value) => round(value)),
+      productionCapacity: {
+        food: round(district.productionCapacity.food * capacityGrowth),
+        consumerGoods: round(district.productionCapacity.consumerGoods * capacityGrowth),
+        industrialMaterials: round(district.productionCapacity.industrialMaterials * capacityGrowth),
+      },
       dailyTrips: round(dailyTrips),
       congestionPercent: round(congestionPercent),
       transitSharePercent: round(transitSharePercent),
@@ -300,6 +350,22 @@ function addEvents(
   if (state.metrics.housingOccupancyPercent > 105) {
     addUnique(events, { category: "land-use", message: "Housing demand exceeds the section's current zoned capacity.", severity: "warning" });
   }
+  const unmetDemand = sum(Object.values(state.market.unmetDemandDaily));
+  const totalDemand = sum(Object.values(state.market.demandDaily));
+  if (unmetDemand / Math.max(1, totalDemand) > 0.08) {
+    addUnique(events, {
+      category: "economy",
+      message: `${Math.round(unmetDemand).toLocaleString()} units of daily goods demand could not be supplied.`,
+      severity: "warning",
+    });
+  }
+  if (state.market.importDependencePercent > 55) {
+    addUnique(events, {
+      category: "economy",
+      message: `External markets supply ${Math.round(state.market.importDependencePercent)}% of purchased goods.`,
+      severity: "info",
+    });
+  }
 }
 
 function addUnique(events: CitySystemEvent[], event: CitySystemEvent): void {
@@ -312,10 +378,36 @@ function cloneCityState(state: Readonly<CitySectionState>): CitySectionState {
     utilityCapacity: { ...state.utilityCapacity },
     districts: state.districts.map((district) => ({
       ...district,
+      productionProfile: district.productionProfile ? { ...district.productionProfile } : undefined,
+      productionCapacity: { ...district.productionCapacity },
+      goodsInventory: { ...district.goodsInventory },
+      goodsDemandByType: { ...district.goodsDemandByType },
+      goodsProducedByType: { ...district.goodsProducedByType },
+      goodsConsumedByType: { ...district.goodsConsumedByType },
+      goodsImportedByType: { ...district.goodsImportedByType },
+      goodsExportedByType: { ...district.goodsExportedByType },
       utilityDemand: { ...district.utilityDemand },
       utilityCoverage: { ...district.utilityCoverage },
     })),
     links: state.links.map((link) => ({ ...link })),
+    externalMarkets: state.externalMarkets.map((market) => ({
+      ...market,
+      goodsPrices: { ...market.goodsPrices },
+      goodsSupplyDaily: { ...market.goodsSupplyDaily },
+      goodsDemandDaily: { ...market.goodsDemandDaily },
+      importsDaily: { ...market.importsDaily },
+      exportsDaily: { ...market.exportsDaily },
+    })),
+    market: {
+      ...state.market,
+      prices: { ...state.market.prices },
+      demandDaily: { ...state.market.demandDaily },
+      localSupplyDaily: { ...state.market.localSupplyDaily },
+      fulfilledDaily: { ...state.market.fulfilledDaily },
+      importsDaily: { ...state.market.importsDaily },
+      exportsDaily: { ...state.market.exportsDaily },
+      unmetDemandDaily: { ...state.market.unmetDemandDaily },
+    },
     metrics: { ...state.metrics },
     timeline: state.timeline.map((point) => ({ ...point })),
   };
@@ -327,8 +419,6 @@ function sanitizePolicy(policy: CityPolicySettings): CityPolicySettings {
     utilityCapacityScale: finiteClamp(policy.utilityCapacityScale, 0.25, 3, 1),
     zoningStrictness: finiteClamp(policy.zoningStrictness, 0.25, 2, 1),
     transitServiceScale: finiteClamp(policy.transitServiceScale, 0.25, 3, 1),
-    travelDemandScale: finiteClamp(policy.travelDemandScale, 0.25, 3, 1),
-    freightDemandScale: finiteClamp(policy.freightDemandScale, 0.25, 3, 1),
   };
 }
 

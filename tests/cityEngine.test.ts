@@ -76,6 +76,70 @@ describe("city section model", () => {
     expect(constrained.metrics.population).toBeLessThan(supported.metrics.population);
   });
 
+  it("turns household and business activity into market demand and trips", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    const state = advanceCitySection(initial, 1).state;
+
+    expect(state.market.demandDaily.food).toBeGreaterThan(0);
+    expect(state.market.localSupplyDaily.consumerGoods).toBeGreaterThan(0);
+    expect(state.metrics.householdIncomeDaily).toBeGreaterThan(0);
+    expect(state.metrics.householdSpendingDaily).toBeGreaterThan(0);
+    expect(state.metrics.businessRevenueDaily).toBeGreaterThan(0);
+    expect(state.metrics.commuteTripsDaily).toBeGreaterThan(0);
+    expect(state.metrics.shoppingTripsDaily).toBeGreaterThan(0);
+    expect(state.metrics.freightTripsDaily).toBeGreaterThan(0);
+    expect(state.districts.every((district) => district.householdWealth >= 0)).toBe(true);
+  });
+
+  it("limits outside goods to each market's physical freight capacity", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    for (const district of initial.districts) {
+      district.productionCapacity = { food: 0, consumerGoods: 0, industrialMaterials: 0 };
+      district.goodsInventory = { food: 0, consumerGoods: 0, industrialMaterials: 0 };
+    }
+    for (const market of initial.externalMarkets) {
+      market.freightCapacityDaily = 100;
+      market.goodsSupplyDaily = { food: 1_000_000, consumerGoods: 1_000_000, industrialMaterials: 1_000_000 };
+    }
+
+    const state = advanceCitySection(initial, 1).state;
+    for (const market of state.externalMarkets) {
+      const freightUsed = market.importsDaily.food +
+        market.importsDaily.consumerGoods * 0.7 +
+        market.importsDaily.industrialMaterials * 1.6;
+      expect(freightUsed).toBeLessThanOrEqual(market.freightCapacityDaily + 0.01);
+    }
+    expect(Object.values(state.market.unmetDemandDaily).some((amount) => amount > 0)).toBe(true);
+  });
+
+  it("charges more to supply the city from a more distant market", () => {
+    const nearDefinition = createDemoCitySectionDefinition();
+    const farDefinition = createDemoCitySectionDefinition();
+    nearDefinition.externalMarkets![0]!.distanceKm = 10;
+    farDefinition.externalMarkets![0]!.distanceKm = 150;
+    nearDefinition.externalMarkets![1]!.freightCapacityDaily = 0;
+    farDefinition.externalMarkets![1]!.freightCapacityDaily = 0;
+
+    const near = advanceCitySection(createCitySectionState(nearDefinition), 1).state;
+    const far = advanceCitySection(createCitySectionState(farDefinition), 1).state;
+
+    expect(far.market.transportCostDaily).toBeGreaterThan(near.market.transportCostDaily);
+    expect(far.market.consumerPriceIndex).toBeGreaterThan(near.market.consumerPriceIndex);
+  });
+
+  it("does not create unconfigured outside supplies", () => {
+    const initial = createCitySectionState(customDefinition());
+    for (const district of initial.districts) {
+      district.productionCapacity = { food: 0, consumerGoods: 0, industrialMaterials: 0 };
+      district.goodsInventory = { food: 0, consumerGoods: 0, industrialMaterials: 0 };
+    }
+    const state = advanceCitySection(initial, 1).state;
+
+    expect(state.externalMarkets).toEqual([]);
+    expect(state.market.importsDaily).toEqual({ food: 0, consumerGoods: 0, industrialMaterials: 0 });
+    expect(Object.values(state.market.unmetDemandDaily).some((amount) => amount > 0)).toBe(true);
+  });
+
   it("maps horizon presets and calendar dates", () => {
     expect(cityMinutesPerSecond("day")).toBe(60);
     expect(cityMinutesPerSecond("week")).toBe(360);

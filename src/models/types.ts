@@ -251,9 +251,6 @@ export interface ScenarioSettings {
   timeHorizon: TimeHorizon;
   speedLimitMph: number;
   signalCycleSeconds: number;
-  vehicleVolume: number;
-  pedestrianVolume: number;
-  freightVolume: number;
   transitHeadwayMinutes: number;
   roadCapacity: number;
   utilityCapacityScale: number;

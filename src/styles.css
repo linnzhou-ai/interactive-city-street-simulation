@@ -424,6 +424,40 @@ h2 {
   text-align: right;
 }
 
+.generated-activity {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 6px;
+}
+
+.generated-activity div {
+  min-width: 0;
+  padding: 0.48rem 0.55rem;
+}
+
+.generated-activity div:nth-child(odd) {
+  border-right: 1px solid rgb(255 255 255 / 8%);
+}
+
+.generated-activity div:nth-child(n + 3) {
+  border-top: 1px solid rgb(255 255 255 / 8%);
+}
+
+.generated-activity dt {
+  color: #aebbb4;
+  font-size: 0.62rem;
+}
+
+.generated-activity dd {
+  margin: 0.12rem 0 0;
+  color: #8fe0c5;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
 input[type="range"] {
   width: 100%;
   height: 18px;

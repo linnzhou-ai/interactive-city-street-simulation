@@ -14,8 +14,15 @@ Each city section supplies:
   maximum permitted floor area.
 - Starting housing, commercial, industrial, and civic floor area.
 - Starting population, jobs, income, land value, and goods-production capacity.
+- An optional production mix for food, consumer goods, and industrial materials.
 - Links between district ids with distance and daily road, transit, and freight
   capacity.
+- Optional regional and outside-city markets with distance, prices, finite daily
+  goods supply and demand, freight capacity, commuter capacity, and external jobs.
+
+When `externalMarkets` is omitted, the section operates as a closed goods and
+labor market. The engine reports unmet demand rather than creating unconfigured
+imports.
 
 `validateCitySectionDefinition()` rejects duplicate ids, missing link endpoints,
 self-links, negative capacities, and invalid district values before a run begins.
@@ -53,14 +60,18 @@ const oneYear = advanceCitySection(initial, 365, {
 
 Every completed model day updates these feedback loops in order:
 
-1. Match the regional labor force to available jobs.
-2. Calculate district trips, mode share, network capacity, and congestion.
-3. Allocate power, water, and waste capacity by demand and district priority.
-4. Produce, consume, import, export, and store goods.
-5. Update household satisfaction, migration, demographics, and housing pressure.
-6. Apply zoning, terrain, service, and floor-area constraints to development.
-7. Adjust jobs, land value, rent, tax revenue, maintenance, and city balance.
-8. Record weekly and calendar-boundary timeline snapshots.
+1. Allocate power, water, and waste capacity by demand and district priority.
+2. Match residents to local jobs and bounded external commuter capacity.
+3. Pay wages and rent, form budget- and price-sensitive household demand, and
+   produce goods using labor, utilities, inventory, and transport access.
+4. Clear local supply first, then import or export through finite outside-market
+   supply, demand, and freight capacity while adding distance-based delivery cost.
+5. Generate commute, shopping, pedestrian, and freight trips from those flows,
+   then calculate mode share, network capacity, and congestion.
+6. Update household satisfaction, migration, demographics, and housing pressure.
+7. Apply zoning, terrain, service, and floor-area constraints to development.
+8. Adjust jobs, land value, rent, tax revenue, maintenance, and city balance.
+9. Record weekly and calendar-boundary timeline snapshots.
 
 The engine is deterministic: identical input, policy, and elapsed days produce the
 same output regardless of whether days are submitted individually or as a batch.
