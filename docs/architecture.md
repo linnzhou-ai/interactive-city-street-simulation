@@ -1,10 +1,11 @@
 # Foundation architecture
 
-The foundation separates deterministic simulation state from Canvas rendering:
+The foundation separates deterministic simulation state from Three.js rendering:
 
 - `src/core/simulation.ts` owns time, agent progress, signal phases, and metrics.
 - `src/models/types.ts` defines shared contracts used by all three contributors.
-- `src/rendering/canvasRenderer.ts` translates state into pixels without changing state.
+- `src/rendering/threeRenderer.ts` translates state into an interactive 3D scene without
+  changing state.
 - `src/main.ts` connects controls, animation timing, rendering, and metric output.
 
 ## Team boundaries
