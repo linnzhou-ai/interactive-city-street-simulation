@@ -428,6 +428,10 @@ renderer.setBuildingInteractionHandlers({
 });
 
 renderer.setExpansionRoadInteractionHandlers({
+  onStarted: () => {
+    selectionStatus.textContent =
+      "Start point set. Click an end point to build, drag to orbit, or press Esc to cancel.";
+  },
   onComplete: (startX, startZ, endX, endZ) => {
     if (appMode !== "build" || buildWorkspace !== "expansion") return;
     const validation = renderer.validateExpansionRoad(startX, startZ, endX, endZ);
@@ -449,7 +453,10 @@ renderer.setExpansionRoadInteractionHandlers({
     updateExpansionRoadCount();
     finishEdit("Expansion road autosaved");
     selectionStatus.textContent =
-      "Road added. Drag from an endpoint to keep extending the network.";
+      "Road added. Click once to start the next road, then click again to finish.";
+  },
+  onCancelled: () => {
+    selectionStatus.textContent = "Road drawing cancelled. Drag to orbit freely.";
   },
   onRejected: (reason) => {
     selectionStatus.textContent = reason;
@@ -591,17 +598,17 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
     setExpansionRoadToolActive(true);
     buildWorkspaceHelp.textContent =
-      "The build grid starts outside the locked city. Green ports connect new roads to it.";
+      "Click two points to build a road. Mouse drag always orbits the camera.";
     selectionTitle.textContent = "Expansion zone";
     selectionDescription.textContent =
-      "Start at a green city port, drag outward, then extend on the 20 m grid.";
+      "Click a start and end point; drag to orbit without creating a road.";
     featureKind.textContent = "Build area";
     featureKind.dataset.kind = "building";
     buildingEditor.hidden = true;
     signalEditor.hidden = true;
     designSummary.replaceChildren();
     selectionStatus.textContent =
-      "The original world stays locked while expansion roads connect at marked street ends.";
+      "Start at a green city port or grid point. Press Esc to cancel a pending road.";
   } else {
     setExpansionRoadToolActive(false);
     clearExpansionStreetObjectTool();

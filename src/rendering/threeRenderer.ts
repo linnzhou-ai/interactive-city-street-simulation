@@ -102,12 +102,14 @@ interface BuildingInteractionHandlers {
 }
 
 interface ExpansionRoadInteractionHandlers {
+  onStarted: (startX: number, startZ: number) => void;
   onComplete: (
     startX: number,
     startZ: number,
     endX: number,
     endZ: number,
   ) => void;
+  onCancelled: () => void;
   onRejected: (reason: string) => void;
 }
 
@@ -320,6 +322,10 @@ export class ThreeRenderer {
   setExpansionRoadDrawEnabled(enabled: boolean): void {
     this.expansionRoadDrawEnabled =
       enabled && this.expansionMode && this.buildMode;
+    if (!this.expansionRoadDrawEnabled && this.drawingExpansionRoadStart) {
+      this.drawingExpansionRoadStart = null;
+      this.clearExpansionRoadPreview();
+    }
     if (this.cameraMode === "orbit") {
       this.canvas.style.cursor =
         this.expansionRoadDrawEnabled || this.buildingPlacementEnabled
@@ -2039,32 +2045,6 @@ export class ThreeRenderer {
       this.pointerDown.set(event.clientX, event.clientY);
       if (
         this.buildMode &&
-        this.expansionMode &&
-        this.expansionRoadDrawEnabled &&
-        this.cameraMode === "orbit"
-      ) {
-        this.updatePointerRay(event);
-        if (this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
-          const start = this.snapExpansionPoint(this.placementPoint);
-          if (
-            pointInsideBounds(start.x, start.z, CORE_BOUNDS) &&
-            findOriginalRoadConnector(start.x, start.z) === null
-          ) {
-            this.expansionRoadInteractionHandlers?.onRejected(
-              "Start the road outside the protected original city.",
-            );
-            return;
-          }
-          this.drawingExpansionRoadStart = start;
-          this.updateExpansionRoadPreview(start, start);
-          this.controls.enabled = false;
-          this.canvas.setPointerCapture(event.pointerId);
-          event.preventDefault();
-          return;
-        }
-      }
-      if (
-        this.buildMode &&
         this.cameraMode === "orbit" &&
         this.expansionStreetObjectPlacementTool === null
       ) {
@@ -2158,24 +2138,45 @@ export class ThreeRenderer {
       this.applyFlyRotation();
     });
     this.canvas.addEventListener("pointerup", (event) => {
-      if (this.drawingExpansionRoadStart) {
-        const start = this.drawingExpansionRoadStart;
+      const pointerTravel = Math.hypot(
+        event.clientX - this.pointerDown.x,
+        event.clientY - this.pointerDown.y,
+      );
+      if (
+        this.buildMode &&
+        this.expansionMode &&
+        this.expansionRoadDrawEnabled &&
+        this.cameraMode === "orbit" &&
+        pointerTravel < 5
+      ) {
         this.updatePointerRay(event);
         const hitGround = this.raycaster.ray.intersectPlane(
           this.placementPlane,
           this.placementPoint,
         );
-        const end = hitGround
-          ? this.snapOrthogonalExpansionEnd(start, this.placementPoint)
-          : start;
-        this.drawingExpansionRoadStart = null;
-        this.clearExpansionRoadPreview();
-        this.controls.enabled = true;
-        if (this.canvas.hasPointerCapture(event.pointerId)) {
-          this.canvas.releasePointerCapture(event.pointerId);
+        if (!hitGround) return;
+        if (!this.drawingExpansionRoadStart) {
+          const start = this.snapExpansionPoint(this.placementPoint);
+          if (
+            pointInsideBounds(start.x, start.z, CORE_BOUNDS) &&
+            findOriginalRoadConnector(start.x, start.z) === null
+          ) {
+            this.expansionRoadInteractionHandlers?.onRejected(
+              "Start the road outside the protected original city.",
+            );
+            return;
+          }
+          this.drawingExpansionRoadStart = start;
+          this.updateExpansionRoadPreview(start, start);
+          this.expansionRoadInteractionHandlers?.onStarted(start.x, start.z);
+          return;
         }
+        const start = this.drawingExpansionRoadStart;
+        const end = this.snapOrthogonalExpansionEnd(start, this.placementPoint);
         const validation = this.validateExpansionRoad(start.x, start.z, end.x, end.z);
         if (validation.valid) {
+          this.drawingExpansionRoadStart = null;
+          this.clearExpansionRoadPreview();
           this.expansionRoadInteractionHandlers?.onComplete(
             start.x,
             start.z,
@@ -2221,6 +2222,16 @@ export class ThreeRenderer {
       { passive: false },
     );
     window.addEventListener("keydown", (event) => {
+      if (
+        event.code === "Escape" &&
+        this.drawingExpansionRoadStart &&
+        !isTypingTarget(event.target)
+      ) {
+        this.drawingExpansionRoadStart = null;
+        this.clearExpansionRoadPreview();
+        this.expansionRoadInteractionHandlers?.onCancelled();
+        return;
+      }
       if (
         (this.cameraMode !== "fly" && this.cameraMode !== "walk") ||
         isTypingTarget(event.target)
