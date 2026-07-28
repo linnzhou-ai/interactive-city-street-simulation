@@ -184,7 +184,18 @@ function isExpansionRoad(value: unknown): value is ExpansionRoad {
     typeof value.width === "number" &&
     Number.isFinite(value.width) &&
     value.width >= 6 &&
-    value.width <= 30
+    value.width <= 30 &&
+    (value.laneDelta === undefined ||
+      value.laneDelta === -1 ||
+      value.laneDelta === 0 ||
+      value.laneDelta === 1) &&
+    (value.bikeLane === undefined || typeof value.bikeLane === "boolean") &&
+    (value.widenedSidewalk === undefined ||
+      typeof value.widenedSidewalk === "boolean") &&
+    (value.laneDirection === undefined ||
+      value.laneDirection === "two-way" ||
+      value.laneDirection === "forward" ||
+      value.laneDirection === "reverse")
   );
 }
 

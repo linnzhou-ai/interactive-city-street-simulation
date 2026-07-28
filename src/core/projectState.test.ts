@@ -97,12 +97,22 @@ describe("parseProjectSnapshot", () => {
             endX: 1040,
             endZ: 760,
             width: 15,
+            laneDelta: 1,
+            bikeLane: true,
+            widenedSidewalk: true,
+            laneDirection: "forward",
           },
         ],
         nextExpansionRoadId: 2,
       }),
     );
     expect(parsed.expansionRoads).toHaveLength(1);
+    expect(parsed.expansionRoads[0]).toMatchObject({
+      laneDelta: 1,
+      bikeLane: true,
+      widenedSidewalk: true,
+      laneDirection: "forward",
+    });
     expect(parsed.nextExpansionRoadId).toBe(2);
   });
 

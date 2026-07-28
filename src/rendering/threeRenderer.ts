@@ -151,6 +151,7 @@ export class ThreeRenderer {
   private readonly features = PENN_ROAD_GRAPH;
   private readonly featureMeshes = new Map<string, THREE.Mesh>();
   private readonly selectableRoads: THREE.Mesh[] = [];
+  private readonly selectableExpansionRoads: THREE.Mesh[] = [];
   private readonly designGroup = new THREE.Group();
   private readonly analysisGroup = new THREE.Group();
   private readonly trafficGroup = new THREE.Group();
@@ -183,6 +184,7 @@ export class ThreeRenderer {
     "collisionDebug",
   );
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
+  private expansionRoadSelectionHandler: ((roadId: string) => void) | null = null;
   private buildingInteractionHandlers: BuildingInteractionHandlers | null = null;
   private expansionRoadInteractionHandlers: ExpansionRoadInteractionHandlers | null =
     null;
@@ -190,6 +192,7 @@ export class ThreeRenderer {
     | ExpansionStreetObjectInteractionHandlers
     | null = null;
   private selectedFeatureId: string | null = null;
+  private selectedExpansionRoadId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
   private buildingPlacementEnabled = false;
   private expansionMode = false;
@@ -294,6 +297,10 @@ export class ThreeRenderer {
     this.selectionHandler = handler;
   }
 
+  setExpansionRoadSelectionHandler(handler: (roadId: string) => void): void {
+    this.expansionRoadSelectionHandler = handler;
+  }
+
   setBuildingInteractionHandlers(handlers: BuildingInteractionHandlers): void {
     this.buildingInteractionHandlers = handlers;
   }
@@ -377,6 +384,7 @@ export class ThreeRenderer {
 
   setExpansionRoads(roads: readonly ExpansionRoad[]): void {
     clearGroup(this.expansionRoadGroup);
+    this.selectableExpansionRoads.length = 0;
     this.expansionRoadData.clear();
     for (const road of roads) {
       this.expansionRoadData.set(road.id, { ...road });
@@ -384,6 +392,12 @@ export class ThreeRenderer {
     const junctions = findExpansionJunctions(roads);
     for (const road of roads) this.addExpansionRoad(road, junctions);
     for (const junction of junctions) this.addExpansionJunction(junction);
+    this.updateExpansionRoadSelection();
+  }
+
+  setSelectedExpansionRoad(id: string | null): void {
+    this.selectedExpansionRoadId = id;
+    this.updateExpansionRoadSelection();
   }
 
   setExpansionStreetObjects(objects: readonly ExpansionStreetObject[]): void {
@@ -914,19 +928,24 @@ export class ThreeRenderer {
   ): void {
     const group = new THREE.Group();
     group.userData.expansionRoadId = road.id;
+    const width = expansionRoadWidth(road);
+    const asphaltMaterial = this.materials.asphalt.clone();
     const asphalt = createWorldSegmentMesh(
       road.startX,
       road.startZ,
       road.endX,
       road.endZ,
-      road.width,
+      width,
       0.12,
-      this.materials.asphalt,
+      asphaltMaterial,
     );
+    asphalt.name = "expansion-road-surface";
+    asphalt.userData.expansionRoadId = road.id;
     asphalt.position.y = RENDER_HEIGHTS.roadSurface;
     asphalt.receiveShadow = true;
     asphalt.userData.walkable = true;
     group.add(asphalt);
+    this.selectableExpansionRoads.push(asphalt);
 
     const connectedJunctions = junctions.filter((junction) =>
       junction.roadIds.has(road.id),
@@ -934,7 +953,7 @@ export class ThreeRenderer {
     const visiblePieces = splitRoadAroundJunctions(
       road,
       connectedJunctions,
-      road.width / 2 + 1,
+      width / 2 + 1,
     );
     for (const piece of visiblePieces) {
       const centerLine = createWorldSegmentMesh(
@@ -951,6 +970,48 @@ export class ThreeRenderer {
       group.add(centerLine);
     }
 
+    const dx = road.endX - road.startX;
+    const dz = road.endZ - road.startZ;
+    const length = Math.hypot(dx, dz);
+    const nx = length > 0 ? -dz / length : 0;
+    const nz = length > 0 ? dx / length : 0;
+    if (road.bikeLane) {
+      for (const side of [-1, 1]) {
+        for (const piece of visiblePieces) {
+          const bikeLane = createWorldSegmentMesh(
+            piece.startX + nx * (width / 2 - 1.15) * side,
+            piece.startZ + nz * (width / 2 - 1.15) * side,
+            piece.endX + nx * (width / 2 - 1.15) * side,
+            piece.endZ + nz * (width / 2 - 1.15) * side,
+            1.7,
+            0.025,
+            this.materials.bikeLane,
+          );
+          bikeLane.position.y = RENDER_HEIGHTS.roadMarking + 0.01;
+          group.add(bikeLane);
+        }
+      }
+    }
+    if (road.widenedSidewalk) {
+      const sidewalkOffset = width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
+      for (const side of [-1, 1]) {
+        for (const piece of visiblePieces) {
+          const sidewalk = createWorldSegmentMesh(
+            piece.startX + nx * sidewalkOffset * side,
+            piece.startZ + nz * sidewalkOffset * side,
+            piece.endX + nx * sidewalkOffset * side,
+            piece.endZ + nz * sidewalkOffset * side,
+            SIDEWALK_WIDTH,
+            0.28,
+            this.materials.sidewalk,
+          );
+          sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
+          sidewalk.receiveShadow = true;
+          sidewalk.userData.walkable = true;
+          group.add(sidewalk);
+        }
+      }
+    }
     this.expansionRoadGroup.add(group);
   }
 
@@ -959,7 +1020,8 @@ export class ThreeRenderer {
       .map((id) => this.expansionRoadData.get(id))
       .filter((road): road is ExpansionRoad => road !== undefined);
     if (connectedRoads.length < 2) return;
-    const width = Math.max(...connectedRoads.map((road) => road.width)) + 1;
+    const width =
+      Math.max(...connectedRoads.map((road) => expansionRoadWidth(road))) + 1;
     const group = new THREE.Group();
     group.userData.expansionJunction = true;
 
@@ -2020,6 +2082,25 @@ export class ThreeRenderer {
     }
   }
 
+  private updateExpansionRoadSelection(): void {
+    for (const group of this.expansionRoadGroup.children) {
+      const roadId =
+        typeof group.userData.expansionRoadId === "string"
+          ? group.userData.expansionRoadId
+          : null;
+      const surface = group.getObjectByName("expansion-road-surface");
+      if (
+        !(surface instanceof THREE.Mesh) ||
+        !(surface.material instanceof THREE.MeshStandardMaterial)
+      ) {
+        continue;
+      }
+      const selected = roadId === this.selectedExpansionRoadId;
+      surface.material.emissive.set(selected ? "#28d8ae" : "#000000");
+      surface.material.emissiveIntensity = selected ? 0.7 : 0;
+    }
+  }
+
   private updatePointerRay(event: PointerEvent): void {
     const bounds = this.canvas.getBoundingClientRect();
     this.pointer.set(
@@ -2324,6 +2405,15 @@ export class ThreeRenderer {
           EXPANSION_WORLD_LIMIT,
         ),
       );
+      return;
+    }
+    const expansionRoadHit = this.raycaster.intersectObjects(
+      this.selectableExpansionRoads,
+      false,
+    )[0];
+    const expansionRoadId = expansionRoadHit?.object.userData.expansionRoadId;
+    if (typeof expansionRoadId === "string") {
+      this.expansionRoadSelectionHandler?.(expansionRoadId);
       return;
     }
     const hit = this.raycaster.intersectObjects(this.selectableRoads, false)[0];
@@ -3866,6 +3956,10 @@ function seededRandom(seed: number): () => number {
     value = (value * 1_664_525 + 1_013_904_223) >>> 0;
     return value / 4_294_967_296;
   };
+}
+
+function expansionRoadWidth(road: ExpansionRoad): number {
+  return Math.max(7, road.width + (road.laneDelta ?? 0) * 3.2);
 }
 
 class SpatialHash<T extends SpatialBounds> {

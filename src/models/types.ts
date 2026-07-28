@@ -36,6 +36,10 @@ export interface ExpansionRoad {
   endX: number;
   endZ: number;
   width: number;
+  laneDelta?: -1 | 0 | 1;
+  bikeLane?: boolean;
+  widenedSidewalk?: boolean;
+  laneDirection?: LaneDirection;
 }
 
 export type ExpansionStreetObjectKind = "crosswalk" | "traffic-signal";

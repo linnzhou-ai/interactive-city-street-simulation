@@ -177,6 +177,7 @@ let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
 let selectedPlacedBuildingId: string | null = null;
+let selectedExpansionRoadId: string | null = null;
 let activeBuildingTool: BuildingKind | null = "residential";
 let nextBuildingId = 1;
 let nextExpansionRoadId = 1;
@@ -244,10 +245,12 @@ resetDesignButton.addEventListener("click", () => {
   nextExpansionRoadId = 1;
   nextExpansionStreetObjectId = 1;
   selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = null;
   renderer.setPlacedBuildings([]);
   renderer.setExpansionRoads([]);
   renderer.setExpansionStreetObjects([]);
   renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedExpansionRoad(null);
   syncBuildingActivity();
   syncDesign();
   finishEdit("Empty design autosaved");
@@ -399,9 +402,21 @@ locationSearch.addEventListener("submit", (event) => {
 renderer.setSelectionHandler((feature) => {
   if (appMode !== "build" || buildWorkspace !== "city-edit") return;
   selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = null;
   renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedExpansionRoad(null);
   selectedFeature = feature;
   renderer.setSelectedFeature(feature.id);
+  updateSelectionPanel();
+});
+
+renderer.setExpansionRoadSelectionHandler((roadId) => {
+  if (appMode !== "build" || buildWorkspace !== "city-edit") return;
+  selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = roadId;
+  renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedFeature(null);
+  renderer.setSelectedExpansionRoad(roadId);
   updateSelectionPanel();
 });
 
@@ -592,7 +607,9 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
   renderer.setExpansionMode(expansion);
   if (expansion) {
     selectedPlacedBuildingId = null;
+    selectedExpansionRoadId = null;
     renderer.setSelectedPlacedBuilding(null);
+    renderer.setSelectedExpansionRoad(null);
     renderer.setSelectedFeature(null);
     activeBuildingTool = null;
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
@@ -612,6 +629,8 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
   } else {
     setExpansionRoadToolActive(false);
     clearExpansionStreetObjectTool();
+    selectedExpansionRoadId = null;
+    renderer.setSelectedExpansionRoad(null);
     renderer.setSelectedFeature(selectedFeature?.id ?? null);
     buildWorkspaceHelp.textContent =
       "Select an original street or intersection to edit it.";
@@ -786,6 +805,13 @@ function updateSelectionPanel(): void {
       return;
     }
   }
+  if (selectedExpansionRoadId) {
+    const road = expansionRoads.get(selectedExpansionRoadId);
+    if (road) {
+      renderExpansionRoadSelection(road);
+      return;
+    }
+  }
   if (!selectedFeature) return;
   buildingEditor.hidden = true;
   const design = getDesign(selectedFeature.id);
@@ -840,6 +866,42 @@ function updateSelectionPanel(): void {
   selectionStatus.textContent = "Changes appear directly in the 3D street and update simulation results.";
 }
 
+function renderExpansionRoadSelection(road: ExpansionRoad): void {
+  const length = Math.hypot(road.endX - road.startX, road.endZ - road.startZ);
+  const axis: DistrictFeature["axis"] =
+    Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
+      ? "x"
+      : "z";
+  const summaries = [
+    formatLaneChange(road.laneDelta ?? 0),
+    road.bikeLane ? "Protected bike lane" : "No bike lane",
+    road.widenedSidewalk ? "Sidewalk added" : "No sidewalk",
+    formatDirection(road.laneDirection ?? "two-way", axis),
+  ];
+  const displayNumber = road.id.match(/\d+$/)?.[0] ?? road.id;
+  selectionTitle.textContent = `Expansion road ${displayNumber}`;
+  selectionDescription.textContent = `${length.toFixed(0)} m user-built street`;
+  featureKind.textContent = "Street";
+  featureKind.dataset.kind = "street";
+  simulationTitle.textContent = `Expansion road ${displayNumber}`;
+  sceneSubtitle.textContent = "Editable expansion road";
+  buildingEditor.hidden = true;
+  signalEditor.hidden = true;
+  for (const button of buildToolButtons) {
+    button.disabled = button.dataset.target !== "street";
+  }
+  designSummary.replaceChildren(
+    ...summaries.map((summary, index) => {
+      const tag = document.createElement("span");
+      tag.textContent = summary;
+      tag.dataset.active = String(index === 0 || !summary.startsWith("No "));
+      return tag;
+    }),
+  );
+  selectionStatus.textContent =
+    "This user-built road can be edited with the street tools below.";
+}
+
 function selectBuildingTool(kind: BuildingKind): void {
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   if (cameraMode !== "orbit") setCameraMode("orbit");
@@ -888,7 +950,9 @@ function placeBuilding(x: number, z: number): void {
 
 function selectPlacedBuilding(id: string | null): void {
   selectedPlacedBuildingId = id;
+  selectedExpansionRoadId = null;
   renderer.setSelectedPlacedBuilding(id);
+  renderer.setSelectedExpansionRoad(null);
   if (id) renderer.setSelectedFeature(null);
   updateSelectionPanel();
 }
@@ -1098,10 +1162,35 @@ function signalCycleSeconds(intersectionId: string): number {
 }
 
 function applyBuildTool(tool: BuildTool): void {
-  if (!selectedFeature) return;
   const streetTool = ["add-lane", "remove-lane", "bike-lane", "sidewalk", "direction"].includes(
     tool,
   );
+  if (selectedExpansionRoadId) {
+    const road = expansionRoads.get(selectedExpansionRoadId);
+    if (!road) return;
+    if (!streetTool) {
+      selectionStatus.textContent = "Select an intersection first.";
+      return;
+    }
+    recordEdit();
+    const updated: ExpansionRoad = { ...road };
+    const laneDelta = updated.laneDelta ?? 0;
+    if (tool === "add-lane") updated.laneDelta = laneDelta === 1 ? 0 : 1;
+    if (tool === "remove-lane") updated.laneDelta = laneDelta === -1 ? 0 : -1;
+    if (tool === "bike-lane") updated.bikeLane = !updated.bikeLane;
+    if (tool === "sidewalk") updated.widenedSidewalk = !updated.widenedSidewalk;
+    if (tool === "direction") {
+      updated.laneDirection = nextDirection(updated.laneDirection ?? "two-way");
+    }
+    expansionRoads.set(updated.id, updated);
+    renderer.setExpansionRoads([...expansionRoads.values()]);
+    renderer.setSelectedExpansionRoad(updated.id);
+    renderExpansionRoadSelection(updated);
+    finishEdit("Expansion road edit autosaved");
+    selectionStatus.textContent = `${formatTool(tool)} applied to ${selectionTitle.textContent}.`;
+    return;
+  }
+  if (!selectedFeature) return;
   if (
     (streetTool && selectedFeature.kind !== "street") ||
     (!streetTool && selectedFeature.kind !== "intersection")
@@ -1241,7 +1330,9 @@ function applyEditorSnapshot(snapshot: EditorSnapshot): void {
     snapshot.nextExpansionStreetObjectId,
   );
   selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = null;
   renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedExpansionRoad(null);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   renderer.setExpansionRoads([...expansionRoads.values()]);
   renderer.setExpansionStreetObjects([...expansionStreetObjects.values()]);
@@ -1575,6 +1666,10 @@ function flyToSearchResult(rawQuery: string): void {
   locationSearchInput.setCustomValidity("");
   renderer.flyTo(point);
   if (feature) {
+    selectedPlacedBuildingId = null;
+    selectedExpansionRoadId = null;
+    renderer.setSelectedPlacedBuilding(null);
+    renderer.setSelectedExpansionRoad(null);
     selectedFeature = feature;
     renderer.setSelectedFeature(feature.id);
     if (appMode === "build") updateSelectionPanel();
