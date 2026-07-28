@@ -11,14 +11,10 @@ export type EnvironmentMode = "loading" | "rendered";
 export type MapOverlayMode =
   | "none"
   | "congestion"
-  | "pedestrians"
-  | "conflicts"
-  | "economy"
   | "profitability"
   | "land-value"
   | "employment"
-  | "happiness"
-  | "migration"
+  | "wellbeing"
   | "goods";
 export type SignalPhase =
   | "ns-green"

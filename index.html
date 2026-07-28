@@ -10,7 +10,7 @@
     <title>Penn Campus Street Lab</title>
   </head>
   <body
-    data-app-mode="build"
+    data-app-mode="simulate"
     data-camera-mode="orbit"
     data-entity-selection="none"
     data-walk-placement="false"
@@ -35,7 +35,24 @@
             />
             <datalist id="location-options"></datalist>
             <button type="submit">Go</button>
+            <button
+              id="search-minimize-button"
+              class="icon-button panel-minimize-button"
+              type="button"
+              aria-label="Minimize location search"
+              aria-controls="location-search"
+              title="Minimize search"
+            >×</button>
           </form>
+          <button
+            id="search-restore-button"
+            class="search-restore-button"
+            type="button"
+            aria-label="Open location search"
+            aria-controls="location-search"
+            title="Open location search"
+            hidden
+          ><span class="search-icon" aria-hidden="true"></span></button>
         </div>
         <p id="orbit-camera-hint" class="camera-hint orbit-hint">
           Drag to orbit · Scroll to zoom · Click a highlighted street
@@ -76,9 +93,13 @@
             <button id="fly-camera-button" type="button" aria-pressed="false">Fly</button>
             <button id="walk-camera-button" type="button" aria-pressed="false">Walk</button>
           </div>
+          <div class="city-clock topbar-clock" aria-live="polite">
+            <span id="city-date">Jan 1, 2026</span>
+            <strong id="city-clock">07:00</strong>
+          </div>
           <div class="mode-switch" aria-label="Application mode">
-            <button id="build-mode-button" type="button" aria-pressed="true">Build</button>
-            <button id="simulate-mode-button" type="button" aria-pressed="false">Simulate</button>
+            <button id="build-mode-button" type="button" aria-pressed="false" title="Pause and edit streets">Plan</button>
+            <button id="simulate-mode-button" type="button" aria-pressed="true" title="Resume the live city">Live</button>
           </div>
           <div class="simulation-actions" aria-label="Simulation controls">
             <button id="run-button" class="primary-button" type="button">Run</button>
@@ -88,17 +109,50 @@
         </div>
       </header>
 
-      <aside class="panel tools-panel hud-panel" aria-labelledby="tools-title">
+      <div id="notification-center" class="notification-center">
+        <button
+          id="notification-button"
+          class="notification-button"
+          type="button"
+          aria-label="Open city issues"
+          aria-expanded="false"
+          aria-controls="notification-panel"
+          title="City issues"
+        >
+          <span class="notification-symbol" aria-hidden="true">!</span>
+          <span id="notification-count" class="notification-count">0</span>
+        </button>
+        <aside
+          id="notification-panel"
+          class="notification-panel hud-panel"
+          aria-labelledby="notification-title"
+          hidden
+        >
+          <header>
+            <div>
+              <p class="panel-kicker">Current conditions</p>
+              <h2 id="notification-title">City issues</h2>
+            </div>
+            <button
+              id="notification-close-button"
+              class="icon-button"
+              type="button"
+              aria-label="Close city issues"
+            >×</button>
+          </header>
+          <p id="notification-summary" class="notification-summary"></p>
+          <div id="notification-list" class="notification-list"></div>
+        </aside>
+      </div>
+
+      <aside class="panel tools-panel tool-rail hud-panel" aria-labelledby="tools-title">
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Build mode</p>
-            <h2 id="tools-title">Street interventions</h2>
+            <p class="panel-kicker">Plan</p>
+            <h2 id="tools-title">Street tools</h2>
           </div>
           <span class="live-badge">Live</span>
         </div>
-        <p class="panel-help">
-          Select a real street segment or intersection in the 3D district, then apply an upgrade.
-        </p>
         <p class="tool-section-label">Street tools</p>
         <div class="tool-list" aria-label="Street design tools">
           <button class="tool-button" type="button" data-build-tool="add-lane" data-target="street">
@@ -236,53 +290,65 @@
         </p>
       </aside>
 
-      <aside class="panel controls-panel hud-panel" aria-labelledby="scenario-title">
+      <aside id="city-inspector-panel" class="panel controls-panel hud-panel" aria-labelledby="scenario-title">
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Simulate mode</p>
+            <p class="panel-kicker">City view</p>
             <h2 id="scenario-title">City inspector</h2>
           </div>
-          <span id="status-pill" class="status-pill" data-status="running">Running</span>
+          <div class="panel-heading-actions">
+            <span id="status-pill" class="status-pill" data-status="running">Running</span>
+            <button
+              id="city-inspector-minimize-button"
+              class="icon-button panel-minimize-button"
+              type="button"
+              aria-label="Minimize city inspector"
+              aria-controls="city-inspector-panel"
+              title="Minimize inspector"
+            >×</button>
+          </div>
         </div>
         <div class="inspector-toolbar">
           <label for="analysis-overlay">Map mode</label>
           <select id="analysis-overlay">
             <option value="none">None</option>
-            <option value="congestion">Traffic congestion</option>
-            <option value="pedestrians">Pedestrian density</option>
-            <option value="conflicts">Potential conflicts</option>
-            <option value="economy">Economic activity</option>
-            <option value="profitability">Profitability</option>
-            <option value="land-value">Land value</option>
-            <option value="employment">Staffing</option>
-            <option value="happiness">Happiness</option>
-            <option value="migration">Migration pressure</option>
-            <option value="goods">Goods availability</option>
+            <optgroup label="Mobility">
+              <option value="congestion">Traffic congestion</option>
+            </optgroup>
+            <optgroup label="Buildings and people">
+              <option value="profitability">Business profitability</option>
+              <option value="employment">Staffing</option>
+              <option value="goods">Goods supply</option>
+              <option value="wellbeing">Resident wellbeing</option>
+              <option value="land-value">Land value</option>
+            </optgroup>
           </select>
           <button id="settings-button" type="button" aria-label="Open simulation settings">Settings</button>
         </div>
         <div id="map-legend" class="map-legend" aria-live="polite"></div>
-        <div class="city-clock inspector-clock" aria-live="polite">
-          <span id="city-date">Jan 1, 2026</span>
-          <strong id="city-clock">07:00</strong>
-        </div>
-        <fieldset id="flow-controls" class="flow-controls">
-          <legend>Selected flows</legend>
-          <label><input type="checkbox" value="commute" checked /> Commutes</label>
-          <label><input type="checkbox" value="customer" checked /> Customers</label>
-          <label><input type="checkbox" value="supply" checked /> Supplies</label>
-        </fieldset>
+        <details id="tracked-people" class="tracked-people" hidden>
+          <summary>
+            <span>Favourite people</span>
+            <b id="tracked-people-count">0</b>
+          </summary>
+          <div id="tracked-people-list" class="tracked-people-list"></div>
+        </details>
         <div id="entity-inspector" class="entity-inspector" aria-live="polite">
           <div class="inspector-empty">
             <strong>Select a building or person</strong>
             <p>Click the city to inspect schedules, finances, services, and connected trips.</p>
           </div>
         </div>
-        <details class="alert-summary">
-          <summary>District alerts <span id="alert-count">0</span></summary>
-          <div id="grouped-alerts" class="grouped-alerts"></div>
-        </details>
       </aside>
+      <button
+        id="city-inspector-restore-button"
+        class="city-inspector-restore-button hud-panel"
+        type="button"
+        aria-label="Open city inspector"
+        aria-controls="city-inspector-panel"
+        title="Open city inspector"
+        hidden
+      >Inspector</button>
 
       <button id="settings-scrim" class="settings-scrim" type="button" aria-label="Close simulation settings" hidden></button>
       <aside id="settings-drawer" class="settings-drawer hud-panel" aria-labelledby="settings-title" hidden>
@@ -323,16 +389,6 @@
           <input id="transit-headway-control" type="range" min="4" max="30" value="12" />
           <small id="transit-headway-preview">About 5 departures per hour.</small>
         </label>
-        <label class="drawer-control" for="road-capacity-control">
-          <span>Road capacity <output id="road-capacity-output">100%</output></span>
-          <input id="road-capacity-control" type="range" min="60" max="160" value="100" />
-          <small id="road-capacity-preview">Baseline vehicle and delivery capacity.</small>
-        </label>
-        <label class="drawer-control" for="zoning-control">
-          <span>Zoning strictness <output id="zoning-output">100%</output></span>
-          <input id="zoning-control" type="range" min="50" max="150" value="100" />
-          <small id="zoning-preview">Baseline limits on long-term development.</small>
-        </label>
         <label class="drawer-control" for="simulation-seed-control">
           <span>Simulation seed</span>
           <input id="simulation-seed-control" type="number" min="1" max="2147483647" value="20260728" />
@@ -351,9 +407,10 @@
       </aside>
 
       <div id="entity-tooltip" class="entity-tooltip" role="tooltip" hidden></div>
+      <div id="stat-tooltip" class="stat-tooltip" role="tooltip" hidden></div>
 
-      <section class="metrics hud-panel" aria-labelledby="metrics-title">
-        <div class="metrics-heading">
+      <details id="performance-panel" class="metrics hud-panel" aria-labelledby="metrics-title">
+        <summary id="performance-summary" class="metrics-heading">
           <div>
             <p id="metrics-kicker" class="panel-kicker">Modified design</p>
             <h2 id="metrics-title">Performance snapshot</h2>
@@ -366,91 +423,54 @@
               Modified
             </button>
           </div>
-        </div>
+          <button
+            id="performance-minimize-button"
+            class="icon-button panel-minimize-button performance-minimize-button"
+            type="button"
+            aria-label="Minimize performance snapshot"
+            aria-controls="performance-panel"
+            title="Minimize performance snapshot"
+          >×</button>
+        </summary>
         <div class="metrics-content">
           <div class="city-system-grid" aria-label="City economy and infrastructure">
-            <article>
-              <span>Population</span>
-              <strong id="city-population">0</strong>
-            </article>
-            <article>
+            <article data-stat="output" data-stat-scope="city" tabindex="0">
               <span>Daily output</span>
-              <strong id="city-output">$0</strong>
+              <strong id="city-output" data-stat-value>$0</strong>
             </article>
-            <article>
+            <article data-stat="unemployment" data-stat-scope="city" tabindex="0">
               <span>Unemployment</span>
-              <strong id="city-unemployment">0%</strong>
+              <strong id="city-unemployment" data-stat-value>0%</strong>
             </article>
-            <article>
+            <article data-stat="trafficCost" data-stat-scope="city" tabindex="0">
               <span>Traffic cost</span>
-              <strong id="city-traffic-cost">$0/day</strong>
+              <strong id="city-traffic-cost" data-stat-value>$0/day</strong>
             </article>
-            <article>
-              <span>Imported goods</span>
-              <strong id="city-imports">0%</strong>
-            </article>
-            <article>
+            <article data-stat="migration" data-stat-scope="city" tabindex="0">
               <span>Net migration</span>
-              <strong id="city-migration">0/yr</strong>
+              <strong id="city-migration" data-stat-value>0/yr</strong>
             </article>
           </div>
-          <p id="representation-note" class="representation-note">
-            Visible agents are a live sample of citywide activity.
-          </p>
           <div class="metric-grid">
-          <article class="metric-card">
+          <article class="metric-card" data-stat="vehicleTravelSeconds" data-stat-scope="live" tabindex="0">
             <span>Average vehicle trip</span>
-            <strong id="vehicle-time">0.0 s</strong>
-            <small>Across the campus district</small>
+            <strong id="vehicle-time" data-stat-value>0.0 s</strong>
           </article>
-          <article class="metric-card">
-            <span>Average speed</span>
-            <strong id="average-speed">0.0 mph</strong>
-            <small>Moving vehicles</small>
-          </article>
-          <article class="metric-card">
-            <span>Congestion</span>
-            <strong id="congestion">0%</strong>
-            <small>Citywide road pressure</small>
-          </article>
-          <article class="metric-card">
-            <span>Intersection delay</span>
-            <strong id="intersection-delay">0.0 s</strong>
-            <small>Average control delay</small>
-          </article>
-          <article class="metric-card">
+          <article class="metric-card" data-stat="pedestrianWaitSeconds" data-stat-scope="live" tabindex="0">
             <span>Pedestrian wait</span>
-            <strong id="pedestrian-wait">0.0 s</strong>
-            <small>Average crossing delay</small>
+            <strong id="pedestrian-wait" data-stat-value>0.0 s</strong>
           </article>
-          <article class="metric-card">
-            <span>Potential conflicts</span>
-            <strong id="conflicts">0</strong>
-            <small>Per simulation window</small>
+          <article class="metric-card" data-stat="potentialConflicts" data-stat-scope="live" tabindex="0">
+            <span>Safety conflicts</span>
+            <strong id="conflicts" data-stat-value>0</strong>
           </article>
-          <article class="metric-card">
+          <article class="metric-card" data-stat="throughputPerHour" data-stat-scope="live" tabindex="0">
             <span>Throughput</span>
-            <strong id="throughput">0</strong>
-            <small>People per hour</small>
-          </article>
-          <article class="metric-card">
-            <span>Active vehicles</span>
-            <strong id="active-vehicles">0</strong>
-            <small>Live agents</small>
-          </article>
-          <article class="metric-card">
-            <span>Active pedestrians</span>
-            <strong id="active-pedestrians">0</strong>
-            <small>Live agents</small>
-          </article>
-          <article class="metric-card">
-            <span>Crossings complete</span>
-            <strong id="crossings-completed">0</strong>
-            <small>Since reset</small>
+            <strong id="throughput" data-stat-value>0</strong>
           </article>
           </div>
         </div>
-      </section>
+      </details>
 
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -44,6 +44,17 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     housingOccupancyPercent: metrics.housingOccupancyPercent,
     municipalBalance: metrics.municipalBalance,
     happiness: metrics.happiness,
+    unemploymentPercent: metrics.unemploymentPercent,
+    goodsImportedDaily: metrics.goodsImportedDaily,
+    goodsConsumedDaily: metrics.goodsConsumedDaily,
+    annualizedNetMigration: metrics.annualizedNetMigration,
+    averageTrafficDelayMinutes: metrics.averageTrafficDelayMinutes,
+    commuteTripsDaily: metrics.commuteTripsDaily,
+    shoppingTripsDaily: metrics.shoppingTripsDaily,
+    vehicleTripsDaily: metrics.vehicleTripsDaily,
+    pedestrianTripsDaily: metrics.pedestrianTripsDaily,
+    freightTripsDaily: metrics.freightTripsDaily,
+    civicServiceCoveragePercent: metrics.civicServiceCoveragePercent,
   }];
 
   return {
@@ -198,7 +209,7 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
     goodsConsumedDaily: 0,
     goodsImportedDaily: 0,
     goodsExportedDaily: 0,
-    averageWageDaily: definition.averageIncome / 260,
+    averageWageDaily: definition.averageIncome / 365,
     householdWealth: households * 420,
     householdIncomeDaily: 0,
     householdSpendingDaily: 0,

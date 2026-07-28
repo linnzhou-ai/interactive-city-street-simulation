@@ -100,6 +100,13 @@ interface SpatialBounds {
   maxZ: number;
 }
 
+interface FlowParticle {
+  mesh: THREE.Mesh;
+  curve: THREE.QuadraticBezierCurve3;
+  offset: number;
+  speed: number;
+}
+
 type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
 type EntityHoverHandler = (
   selection: SceneHoverSelection | null,
@@ -128,7 +135,11 @@ export class ThreeRenderer {
   private readonly analysisGroup = new THREE.Group();
   private readonly trafficFocusGroup = new THREE.Group();
   private readonly entityMarkerGroup = new THREE.Group();
+  private readonly personIconGroup = new THREE.Group();
   private readonly entityFlowGroup = new THREE.Group();
+  private readonly flowParticles: FlowParticle[] = [];
+  private readonly flowUp = new THREE.Vector3(0, 1, 0);
+  private readonly flowTangent = new THREE.Vector3();
   private readonly entityHighlightGroup = new THREE.Group();
   private readonly trafficGroup = new THREE.Group();
   private readonly pedestrianGroup = new THREE.Group();
@@ -140,6 +151,13 @@ export class ThreeRenderer {
   private readonly buildingGroups = new Map<string, THREE.Group>();
   private readonly personInstanceIds: string[] = [];
   private readonly visiblePersonPoints: Array<{ id: string; x: number; z: number }> = [];
+  private readonly personIconPool: THREE.Sprite[] = [];
+  private readonly favoritePersonIds = new Set<string>();
+  private readonly personIconMaterials = {
+    standard: createPersonIconMaterial("#58d7bd", "#102b2e", false),
+    selected: createPersonIconMaterial("#8af5da", "#f5fff9", false),
+    favorite: createPersonIconMaterial("#f1c75b", "#30250f", true),
+  };
   private readonly agentTransform = new THREE.Object3D();
   private readonly agentColor = new THREE.Color();
   private readonly signalAssemblies: SignalAssembly[] = [];
@@ -152,9 +170,9 @@ export class ThreeRenderer {
   private readonly entityOverlayMaterials = Array.from(
     { length: 11 },
     (_, index) => new THREE.MeshBasicMaterial({
-      color: scoreColor(index / 10),
+      color: entityScoreColor(index / 10),
       transparent: true,
-      opacity: 0.56,
+      opacity: 0.82,
       depthWrite: false,
       side: THREE.DoubleSide,
     }),
@@ -164,7 +182,7 @@ export class ThreeRenderer {
     (_, index) => new THREE.MeshBasicMaterial({
       color: scoreColor(1 - index / 10),
       transparent: true,
-      opacity: 0.62,
+      opacity: 0.68,
       depthWrite: false,
       side: THREE.DoubleSide,
     }),
@@ -197,6 +215,7 @@ export class ThreeRenderer {
   private flowSignature = "";
   private trafficFocusSignature = "";
   private cameraMode: CameraMode = "orbit";
+  private buildMode = true;
   private flySpeedScale = 1.2;
   private flyYaw = 0;
   private flyPitch = -0.55;
@@ -249,6 +268,7 @@ export class ThreeRenderer {
       this.analysisGroup,
       this.trafficFocusGroup,
       this.entityMarkerGroup,
+      this.personIconGroup,
       this.entityFlowGroup,
       this.entityHighlightGroup,
       this.trafficGroup,
@@ -327,6 +347,20 @@ export class ThreeRenderer {
     this.controls.update();
   }
 
+  focusBuilding(
+    building: Pick<DetailedBuilding, "x" | "z" | "height">,
+  ): void {
+    const altitude = THREE.MathUtils.clamp(200 + building.height * 1.4, 250, 350);
+    this.flyTo(worldToGeo(building.x, building.z), altitude);
+  }
+
+  focusPerson(personId: string): boolean {
+    const point = this.visiblePersonPoints.find((candidate) => candidate.id === personId);
+    if (!point) return false;
+    this.flyTo(worldToGeo(point.x, point.z), 145);
+    return true;
+  }
+
   setSelectionHandler(handler: (feature: DistrictFeature) => void): void {
     this.selectionHandler = handler;
   }
@@ -344,10 +378,17 @@ export class ThreeRenderer {
   }
 
   setBuildMode(enabled: boolean): void {
+    this.buildMode = enabled;
     this.entityMarkerGroup.visible = !enabled;
     this.entityFlowGroup.visible = !enabled;
     this.entityHighlightGroup.visible = true;
+    this.updatePersonIconGroupVisibility();
     this.updateFeatureHighlights();
+  }
+
+  setFavoritePeople(personIds: readonly string[]): void {
+    this.favoritePersonIds.clear();
+    for (const personId of personIds) this.favoritePersonIds.add(personId);
   }
 
   setCameraMode(mode: CameraMode): void {
@@ -358,6 +399,7 @@ export class ThreeRenderer {
     this.walkVelocity.set(0, 0, 0);
     this.looking = false;
     this.controls.enabled = mode === "orbit";
+    this.updatePersonIconGroupVisibility();
     this.canvas.style.cursor = mode === "orbit" ? "grab" : "crosshair";
     if (previousMode === "walk" && document.pointerLockElement === this.canvas) {
       document.exitPointerLock();
@@ -470,40 +512,6 @@ export class ThreeRenderer {
           createSegmentMesh(feature, ROAD_WIDTH * 0.78, 0.32, material),
         );
       }
-      return;
-    }
-    const material = new THREE.MeshBasicMaterial({
-      color:
-        mode === "pedestrians" ? "#59bdd7" : "#ef5c4f",
-      transparent: true,
-      opacity: mode === "conflicts" ? 0.38 : 0.3,
-      depthWrite: false,
-    });
-    if (mode === "conflicts") {
-      for (const [index, feature] of this.features
-        .filter((candidate) => candidate.kind === "intersection")
-        .entries()) {
-        if (index % 2 !== 0) continue;
-        const position = geoToWorld(feature.path[0]);
-        const marker = new THREE.Mesh(new THREE.CircleGeometry(15, 24), material);
-        marker.rotation.x = -Math.PI / 2;
-        marker.position.set(position.x, 0.42, position.z);
-        this.analysisGroup.add(marker);
-      }
-      return;
-    }
-    for (const [index, feature] of this.features
-      .filter((candidate) => candidate.kind === "street")
-      .entries()) {
-      if (index % 4 !== 0) continue;
-      this.analysisGroup.add(
-        createSegmentMesh(
-          feature,
-          ROAD_WIDTH * 0.52,
-          0.3,
-          material,
-        ),
-      );
     }
   }
 
@@ -520,17 +528,25 @@ export class ThreeRenderer {
     }
     for (const building of buildings) {
       const residents = peopleByHome.get(building.id) ?? [];
+      if (!entityOverlayApplies(mode, building, residents)) continue;
       const value = entityOverlayScore(mode, building, residents);
       const material = this.entityOverlayMaterials[Math.round(value * 10)];
-      const radius = clamp(Math.min(building.width, building.depth) * 0.3, 5, 19);
-      const marker = new THREE.Mesh(new THREE.CircleGeometry(radius, 24), material);
-      marker.rotation.x = -Math.PI / 2;
-      marker.position.set(building.x, building.height + 1.1, building.z);
-      this.analysisGroup.add(marker);
+      const shell = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          Math.max(5, building.width + 1.4),
+          Math.max(5, building.height + 1.4),
+          Math.max(5, building.depth + 1.4),
+        ),
+        material,
+      );
+      shell.position.set(building.x, building.height / 2 + 0.3, building.z);
+      shell.renderOrder = 3;
+      this.analysisGroup.add(shell);
     }
   }
 
   private rebuildEntitySelection(): void {
+    this.flowParticles.length = 0;
     clearGroup(this.entityFlowGroup);
     clearGroup(this.entityHighlightGroup);
     if (!this.selectedEntity || !this.lastState) return;
@@ -580,7 +596,7 @@ export class ThreeRenderer {
         return connection.fromBuildingId === this.selectedEntity?.id
           || connection.toBuildingId === this.selectedEntity?.id;
       })
-      .slice(0, 28);
+      .slice(0, 10);
     const buildingById = new Map(state.buildings.map((building) => [building.id, building]));
     for (const connection of connections) {
       const from = flowPoint(connection.fromBuildingId, buildingById, connection.toBuildingId, true);
@@ -597,62 +613,80 @@ export class ThreeRenderer {
   ): void {
     const color = flowColor(kind);
     const middle = from.clone().lerp(to, 0.5);
-    middle.y += Math.min(58, 16 + from.distanceTo(to) * 0.08);
+    middle.y += Math.min(80, 24 + from.distanceTo(to) * 0.11);
     const curve = new THREE.QuadraticBezierCurve3(from, middle, to);
     const points = curve.getPoints(28);
     const line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(points),
       new THREE.LineDashedMaterial({
         color,
-        dashSize: 8,
-        gapSize: 5,
+        dashSize: 12,
+        gapSize: 7,
         linewidth: 2,
         transparent: true,
-        opacity: 0.94,
+        opacity: 1,
         depthTest: false,
       }),
     );
     line.computeLineDistances();
-    line.renderOrder = 5;
+    line.renderOrder = 6;
     this.entityFlowGroup.add(line);
+    const ribbonRadius = clamp(2.4 + Math.log2(volume + 1) * 0.3, 3.1, 5.6);
+    const outline = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 24, ribbonRadius + 1.5, 8, false),
+      new THREE.MeshBasicMaterial({
+        color: "#071417",
+        depthTest: false,
+        transparent: true,
+        opacity: 0.58,
+      }),
+    );
+    outline.renderOrder = 4;
+    this.entityFlowGroup.add(outline);
     const ribbon = new THREE.Mesh(
       new THREE.TubeGeometry(
         curve,
         24,
-        clamp(0.8 + Math.log2(volume + 1) * 0.12, 1, 1.8),
-        6,
+        ribbonRadius,
+        8,
         false,
       ),
       new THREE.MeshBasicMaterial({
         color,
         depthTest: false,
         transparent: true,
-        opacity: 0.48,
+        opacity: 0.9,
       }),
     );
-    ribbon.renderOrder = 4;
+    ribbon.renderOrder = 5;
     this.entityFlowGroup.add(ribbon);
-    const dotGeometry = new THREE.SphereGeometry(
-      clamp(2.5 + Math.log2(volume + 1) * 0.3, 3, 5),
-      8,
-      6,
+    const particleSize = clamp(10 + Math.log2(volume + 1) * 1.1, 12, 20);
+    const particleGeometry = new THREE.ConeGeometry(
+      particleSize * 0.48,
+      particleSize * 1.35,
+      10,
     );
-    const dotMaterial = new THREE.MeshBasicMaterial({
-      color,
+    const particleMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.42),
       depthTest: false,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.98,
     });
-    for (let index = 2; index < points.length - 2; index += 4) {
-      const dot = new THREE.Mesh(dotGeometry, dotMaterial);
-      dot.position.copy(points[index]);
-      dot.renderOrder = 5;
-      this.entityFlowGroup.add(dot);
+    for (let index = 0; index < 3; index += 1) {
+      const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+      particle.renderOrder = 6;
+      this.entityFlowGroup.add(particle);
+      this.flowParticles.push({
+        mesh: particle,
+        curve,
+        offset: index / 3,
+        speed: kind === "supply" ? 0.13 : 0.2,
+      });
     }
 
     const previous = points.at(-2) ?? from;
     const direction = to.clone().sub(previous).normalize();
-    const size = clamp(3.5 + Math.log2(volume + 1), 4, 9);
+    const size = clamp(13 + Math.log2(volume + 1) * 1.2, 15, 24);
     const arrowhead = new THREE.Mesh(
       new THREE.ConeGeometry(size * 0.6, size * 1.6, 12),
       new THREE.MeshBasicMaterial({ color, depthTest: false }),
@@ -695,9 +729,19 @@ export class ThreeRenderer {
       this.flowSignature = flowSignature;
       this.rebuildEntitySelection();
     }
+    this.updateFlowAnimation(now / 1_000);
 
     this.updateCollisionDebug();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateFlowAnimation(elapsedSeconds: number): void {
+    for (const particle of this.flowParticles) {
+      const progress = (elapsedSeconds * particle.speed + particle.offset) % 1;
+      particle.curve.getPoint(progress, particle.mesh.position);
+      particle.curve.getTangent(progress, this.flowTangent).normalize();
+      particle.mesh.quaternion.setFromUnitVectors(this.flowUp, this.flowTangent);
+    }
   }
 
   private buildLightingAndSky(): void {
@@ -1708,6 +1752,12 @@ export class ThreeRenderer {
   ): EntitySelection | null {
     this.setPointerFromClient(clientX, clientY, bounds);
     this.raycaster.setFromCamera(this.pointer, this.camera);
+    if (this.personIconGroup.visible) {
+      const iconHit = this.raycaster.intersectObjects(this.personIconPool, false)
+        .find((hit) => hit.object.visible);
+      const iconPersonId = iconHit?.object.userData.entityId as string | undefined;
+      if (iconPersonId) return { kind: "person", id: iconPersonId };
+    }
     const nearbyPerson = this.nearestVisiblePerson(clientX, clientY, bounds);
     if (nearbyPerson) return { kind: "person", id: nearbyPerson };
     const buildingHit = this.raycaster.intersectObjects(this.selectableBuildings, false)[0];
@@ -2127,12 +2177,30 @@ export class ThreeRenderer {
   ): void {
     const count = Math.min(pedestrians.length, PEDESTRIAN_INSTANCE_CAPACITY);
     this.visiblePersonPoints.length = 0;
+    const visiblePersonIds = new Set<string>();
+    let iconCount = 0;
     for (let index = 0; index < count; index += 1) {
       const pedestrian = pedestrians[index];
       const person = people.length > 0 ? people[pedestrian.id % people.length] : undefined;
       this.personInstanceIds[index] = person?.id ?? "";
-      if (person) {
+      if (person && !visiblePersonIds.has(person.id)) {
+        visiblePersonIds.add(person.id);
         this.visiblePersonPoints.push({ id: person.id, x: pedestrian.x, z: pedestrian.z });
+        const icon = this.personIconPool[iconCount] ?? this.createPersonIcon();
+        icon.position.set(pedestrian.x, 3.1, pedestrian.z);
+        icon.scale.set(
+          this.selectedEntity?.kind === "person" && this.selectedEntity.id === person.id ? 0.052 : 0.044,
+          this.selectedEntity?.kind === "person" && this.selectedEntity.id === person.id ? 0.066 : 0.056,
+          1,
+        );
+        icon.material = this.favoritePersonIds.has(person.id)
+          ? this.personIconMaterials.favorite
+          : this.selectedEntity?.kind === "person" && this.selectedEntity.id === person.id
+            ? this.personIconMaterials.selected
+            : this.personIconMaterials.standard;
+        icon.userData.entityId = person.id;
+        icon.visible = true;
+        iconCount += 1;
       }
       const heightScale = 0.92 + pedestrian.variant * 0.035;
       const scale: readonly [number, number, number] = [1, heightScale, 1];
@@ -2167,8 +2235,25 @@ export class ThreeRenderer {
         ),
       );
     }
+    for (let index = iconCount; index < this.personIconPool.length; index += 1) {
+      this.personIconPool[index].visible = false;
+      this.personIconPool[index].userData.entityId = undefined;
+    }
     updateInstanceCount(this.pedestrianBodies, count);
     updateInstanceCount(this.pedestrianHeads, count);
+  }
+
+  private createPersonIcon(): THREE.Sprite {
+    const icon = new THREE.Sprite(this.personIconMaterials.standard);
+    icon.center.set(0.5, 0);
+    icon.renderOrder = 24;
+    this.personIconPool.push(icon);
+    this.personIconGroup.add(icon);
+    return icon;
+  }
+
+  private updatePersonIconGroupVisibility(): void {
+    this.personIconGroup.visible = !this.buildMode && this.cameraMode === "orbit";
   }
 
   private setAgentMatrix(
@@ -2728,6 +2813,81 @@ function box(
   return new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
 }
 
+function createPersonIconMaterial(
+  fill: string,
+  outline: string,
+  favorite: boolean,
+): THREE.SpriteMaterial {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 160;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Unable to create person marker texture.");
+
+  context.lineJoin = "round";
+  context.lineWidth = 8;
+  context.strokeStyle = outline;
+  context.fillStyle = fill;
+  context.beginPath();
+  context.arc(64, 58, 43, Math.PI * 0.13, Math.PI * 0.87, true);
+  context.lineTo(64, 148);
+  context.lineTo(22, 76);
+  context.closePath();
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = outline;
+  context.beginPath();
+  context.arc(64, 48, 13, 0, Math.PI * 2);
+  context.fill();
+  context.beginPath();
+  context.roundRect(42, 65, 44, 36, 16);
+  context.fill();
+
+  if (favorite) {
+    drawMarkerStar(context, 98, 25, 14, "#fff8d5", outline);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  return new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    sizeAttenuation: false,
+    toneMapped: false,
+  });
+}
+
+function drawMarkerStar(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  fill: string,
+  outline: string,
+): void {
+  context.beginPath();
+  for (let point = 0; point < 10; point += 1) {
+    const angle = -Math.PI / 2 + point * Math.PI / 5;
+    const pointRadius = point % 2 === 0 ? radius : radius * 0.45;
+    const pointX = x + Math.cos(angle) * pointRadius;
+    const pointY = y + Math.sin(angle) * pointRadius;
+    if (point === 0) context.moveTo(pointX, pointY);
+    else context.lineTo(pointX, pointY);
+  }
+  context.closePath();
+  context.lineWidth = 4;
+  context.strokeStyle = outline;
+  context.fillStyle = fill;
+  context.fill();
+  context.stroke();
+}
+
 function clearGroup(group: THREE.Group): void {
   for (const child of [...group.children]) {
     group.remove(child);
@@ -2737,12 +2897,10 @@ function clearGroup(group: THREE.Group): void {
 
 function isEntityOverlay(mode: MapOverlayMode): boolean {
   return [
-    "economy",
     "profitability",
     "land-value",
     "employment",
-    "happiness",
-    "migration",
+    "wellbeing",
     "goods",
   ].includes(mode);
 }
@@ -2766,28 +2924,56 @@ function entityOverlayScore(
   residents: readonly DetailedPerson[],
 ): number {
   const accounting = building.accounting;
-  if (mode === "economy") return clamp(accounting.operatingRevenue / 6_000, 0, 1);
   if (mode === "profitability") {
     const margin = accounting.profit / Math.max(1, accounting.operatingRevenue);
     return clamp((margin + 0.35) / 0.7, 0, 1);
   }
   if (mode === "land-value") return clamp((building.landValue - 80) / 440, 0, 1);
   if (mode === "employment") return clamp(accounting.staffingRatio, 0, 1);
-  if (mode === "happiness") {
-    return residents.length > 0
-      ? clamp(residents.reduce((total, person) => total + person.happiness, 0) / residents.length / 100, 0, 1)
-      : clamp(accounting.serviceQuality, 0, 1);
-  }
-  if (mode === "migration") {
+  if (mode === "wellbeing") {
+    const happiness = residents.reduce((total, person) => total + person.happiness, 0)
+      / Math.max(1, residents.length)
+      / 100;
     const leaving = residents.filter((person) => person.migrationStatus !== "staying").length;
-    return 1 - clamp(leaving / Math.max(1, residents.length), 0, 1);
+    const retention = 1 - clamp(leaving / Math.max(1, residents.length), 0, 1);
+    return clamp(happiness * 0.75 + retention * 0.25, 0, 1);
   }
-  if (mode === "goods") return clamp(building.goodsInventory / 100, 0, 1);
+  if (mode === "goods") {
+    return clamp(accounting.goodsReceived / Math.max(1, accounting.goodsDemanded), 0, 1);
+  }
   return 0.5;
+}
+
+function entityOverlayApplies(
+  mode: MapOverlayMode,
+  building: Readonly<DetailedBuilding>,
+  residents: readonly DetailedPerson[],
+): boolean {
+  if (mode === "profitability") {
+    return ["retail", "office", "industrial", "parking"].includes(building.function);
+  }
+  if (mode === "employment") return building.accounting.requiredWorkers > 0;
+  if (mode === "goods") return building.accounting.goodsDemanded > 0;
+  if (mode === "wellbeing") return residents.length > 0;
+  return mode === "land-value";
 }
 
 function scoreColor(value: number): THREE.Color {
   return new THREE.Color().setHSL(clamp(value, 0, 1) * 0.32, 0.72, 0.5);
+}
+
+function entityScoreColor(value: number): THREE.Color {
+  const normalized = clamp(value, 0, 1);
+  if (normalized <= 0.5) {
+    return new THREE.Color("#d31845").lerp(
+      new THREE.Color("#df9200"),
+      normalized * 2,
+    );
+  }
+  return new THREE.Color("#df9200").lerp(
+    new THREE.Color("#008d5a"),
+    (normalized - 0.5) * 2,
+  );
 }
 
 function buildingFunctionColor(buildingFunction: EntityBuildingDefinition["function"]): string {
@@ -2808,9 +2994,9 @@ function buildingFunctionColor(buildingFunction: EntityBuildingDefinition["funct
 }
 
 function flowColor(kind: BuildingConnectionKind): string {
-  if (kind === "commute") return "#62c7ff";
-  if (kind === "customer") return "#ffd166";
-  return "#f28a76";
+  if (kind === "commute") return "#00b7ff";
+  if (kind === "customer") return "#ffb000";
+  return "#ff5f4a";
 }
 
 function flowPoint(

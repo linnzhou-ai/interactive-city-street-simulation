@@ -17,6 +17,7 @@ import type {
   TimeHorizon,
 } from "../models/cityTypes";
 import type {
+  BuildingAccessibility,
   BuildingTrafficAttribution,
   EntityBuildingDefinition,
   EntityConnection,
@@ -293,16 +294,32 @@ export class Simulation {
     const detailedTimeSlot = Math.floor(this.state.cityElapsedMinutes / 5);
     if (detailedTimeSlot !== this.lastDetailedTimeSlot) {
       this.lastDetailedTimeSlot = detailedTimeSlot;
+      const cityPolicy = this.cityPolicy();
       this.state.entities = advanceDetailedTime(
         this.state.entities,
         this.state.city,
         completedDays,
         START_MINUTE + this.state.cityElapsedMinutes,
         {
-          roadCapacityScale: this.cityPolicy().roadCapacityScale ?? 1,
+          roadCapacityScale: cityPolicy.roadCapacityScale ?? 1,
           transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
           zoningStrictness: this.settings.zoningStrictness,
           congestionPercent: this.state.city.metrics.congestionPercent,
+          accessibilityByBuilding: this.calculateAccessibilityProfiles(),
+          externalJobCapacityScale: clamp(
+            0.82
+              + 12 / this.settings.transitHeadwayMinutes * 0.18
+              - this.state.city.metrics.congestionPercent * 0.003,
+            0.45,
+            1.35,
+          ),
+          externalSupplyScale: clamp(
+            0.72
+              + (cityPolicy.roadCapacityScale ?? 1) * 0.34
+              - this.state.city.metrics.congestionPercent * 0.0025,
+            0.4,
+            1.35,
+          ),
         },
       );
     }
@@ -323,6 +340,86 @@ export class Simulation {
       endpoint(connection.fromBuildingId),
       endpoint(connection.toBuildingId),
     );
+  }
+
+  private calculateAccessibilityProfiles(): ReadonlyMap<string, BuildingAccessibility> {
+    const profiles = new Map<string, BuildingAccessibility>();
+    const routeAggregates = new Map<string, {
+      volume: number;
+      weightedDelay: number;
+      weightedCongestion: number;
+    }>();
+    const roadTraffic = new Map(
+      this.state.roadTraffic.map((road) => [road.segmentId, road]),
+    );
+    const buildingIds = new Set(
+      this.state.entities.buildings.map((building) => building.id),
+    );
+    for (const connection of this.state.entities.connections.slice(0, 64)) {
+      const segments = this.routeForConnection(connection);
+      if (segments.length === 0) continue;
+      const routeDelay = segments.reduce(
+        (total, segmentId) => total + (roadTraffic.get(segmentId)?.averageDelaySeconds ?? 0),
+        0,
+      ) / 60;
+      const routeCongestion = segments.reduce(
+        (total, segmentId) => total + (roadTraffic.get(segmentId)?.congestionPercent ?? 0),
+        0,
+      ) / segments.length;
+      for (const buildingId of [connection.fromBuildingId, connection.toBuildingId]) {
+        if (!buildingIds.has(buildingId)) continue;
+        const aggregate = routeAggregates.get(buildingId) ?? {
+          volume: 0,
+          weightedDelay: 0,
+          weightedCongestion: 0,
+        };
+        aggregate.volume += connection.volume;
+        aggregate.weightedDelay += routeDelay * connection.volume;
+        aggregate.weightedCongestion += routeCongestion * connection.volume;
+        routeAggregates.set(buildingId, aggregate);
+      }
+    }
+    const congestion = clamp(this.state.city.metrics.congestionPercent, 0, 100);
+    const transitBonus = clamp(
+      (12 / this.settings.transitHeadwayMinutes - 0.55) * 18,
+      0,
+      18,
+    );
+    const roadCapacityBonus = clamp((this.settings.roadCapacity - 100) * 0.12, -7, 7);
+    for (const building of this.state.entities.buildings) {
+      const aggregate = routeAggregates.get(building.id);
+      const routeDelay = aggregate && aggregate.volume > 0
+        ? aggregate.weightedDelay / aggregate.volume
+        : this.state.city.metrics.averageTrafficDelayMinutes;
+      const routeCongestion = aggregate && aggregate.volume > 0
+        ? aggregate.weightedCongestion / aggregate.volume
+        : congestion;
+      const congestionPenalty = clamp(
+        routeDelay * 2.8 + routeCongestion * 0.24,
+        0,
+        48,
+      );
+      const centralityBonus = clamp(
+        12 - Math.hypot(building.x, building.z) / 150,
+        0,
+        12,
+      );
+      const workers = clamp(82 + transitBonus + centralityBonus * 0.35 - congestionPenalty, 18, 100);
+      const customers = clamp(80 + transitBonus * 0.55 + centralityBonus - congestionPenalty * 0.82, 18, 100);
+      const freight = clamp(78 + roadCapacityBonus - congestionPenalty * 1.08, 15, 100);
+      const services = clamp(82 + transitBonus * 0.72 + centralityBonus * 0.65 - congestionPenalty * 0.68, 20, 100);
+      profiles.set(building.id, {
+        overall: roundOneDecimal((workers + customers + freight + services) / 4),
+        workers: roundOneDecimal(workers),
+        customers: roundOneDecimal(customers),
+        freight: roundOneDecimal(freight),
+        services: roundOneDecimal(services),
+        averageTravelMinutes: roundOneDecimal(routeDelay),
+        congestionPenalty: roundOneDecimal(congestionPenalty),
+        transitBonus: roundOneDecimal(transitBonus),
+      });
+    }
+    return profiles;
   }
 
   private cityPolicy(): Partial<CityPolicySettings> {
