@@ -43,10 +43,19 @@ pnpm check
 
 - `Orbit`: drag to rotate and scroll to zoom.
 - `Fly`: drag to look, use `W/A/S/D` to move, `E/Q` to rise or descend, and
-  hold `Shift` for a speed boost. Scroll adjusts fly speed.
+  hold `Shift` for a speed boost. Scroll adjusts fly speed. A swept sphere
+  collider prevents ground and building penetration.
+- `Walk`: click the viewport for pointer-lock mouse look, use `W/A/S/D` to
+  walk, hold `Shift` to run, and press `Space` for a small jump. Gravity,
+  human-scale collision, and safe Fly/Walk transitions keep the player on
+  roads, sidewalks, plazas, and open ground.
 - Search flies the camera to a Penn landmark, street, or intersection.
 - `Build`: select an existing 3D street and apply interventions.
 - `Simulate`: run, pause, reset, adjust demand, compare baseline/modified
   results, and inspect localized analysis overlays.
+
+Append `?collisionDebug=1` to the local URL to show building collision boxes,
+the player collider, ground ray, current mode, and grounded state. Debug
+visualization is disabled by default.
 
 See [docs/architecture.md](docs/architecture.md) for subsystem boundaries.

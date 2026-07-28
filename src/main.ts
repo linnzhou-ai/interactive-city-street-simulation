@@ -21,6 +21,7 @@ const buildModeButton = requireElement<HTMLButtonElement>("build-mode-button");
 const simulateModeButton = requireElement<HTMLButtonElement>("simulate-mode-button");
 const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button");
 const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
+const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
 const environmentMode = requireElement<HTMLElement>("environment-mode");
 const runButton = requireElement<HTMLButtonElement>("run-button");
 const pauseButton = requireElement<HTMLButtonElement>("pause-button");
@@ -78,6 +79,7 @@ buildModeButton.addEventListener("click", () => setAppMode("build"));
 simulateModeButton.addEventListener("click", () => setAppMode("simulate"));
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
+walkCameraButton.addEventListener("click", () => setCameraMode("walk"));
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -216,6 +218,7 @@ function setCameraMode(mode: CameraMode): void {
   document.body.dataset.cameraMode = mode;
   orbitCameraButton.setAttribute("aria-pressed", String(mode === "orbit"));
   flyCameraButton.setAttribute("aria-pressed", String(mode === "fly"));
+  walkCameraButton.setAttribute("aria-pressed", String(mode === "walk"));
   renderer.setCameraMode(mode);
 }
 

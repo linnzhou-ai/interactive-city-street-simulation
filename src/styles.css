@@ -618,6 +618,20 @@ input[type="range"] {
   pointer-events: none;
 }
 
+.collision-debug-status {
+  position: fixed;
+  z-index: 6;
+  bottom: 3.5rem;
+  left: 50%;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid rgb(255 112 77 / 55%);
+  border-radius: 8px;
+  color: #ffe0d5;
+  background: rgb(25 17 15 / 88%);
+  font: 600 0.68rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  transform: translateX(-50%);
+}
+
 .scene-title #scene-subtitle {
   margin: 0.18rem 0 0;
   color: #b5c8bf;
@@ -657,7 +671,8 @@ input[type="range"] {
   pointer-events: none;
 }
 
-.fly-hint {
+.fly-hint,
+.walk-hint {
   display: none;
 }
 
@@ -666,6 +681,15 @@ body[data-camera-mode="fly"] .orbit-hint {
 }
 
 body[data-camera-mode="fly"] .fly-hint {
+  display: block;
+}
+
+body[data-camera-mode="walk"] .orbit-hint,
+body[data-camera-mode="walk"] .fly-hint {
+  display: none;
+}
+
+body[data-camera-mode="walk"] .walk-hint {
   display: block;
 }
 

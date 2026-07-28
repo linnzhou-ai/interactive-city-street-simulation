@@ -34,8 +34,24 @@ The renderer generates:
 
 - **Orbit** uses damped Three.js orbit controls.
 - **Fly** uses drag-to-look, `W/A/S/D`, `E/Q`, `Shift`, and altitude-dependent
-  speed.
+  speed. Movement is split into swept substeps and resolved against nearby
+  collision volumes with axis sliding.
+- **Walk** uses pointer-lock mouse look, a human-scale capsule, gravity,
+  walkable-surface sampling, safe spawn resolution, and optional jumping.
 - **Build** selects road meshes and renders modifications above the existing
   3D street.
 - **Simulate** preserves the deterministic simulation and metrics while agents
   move across district-scale routes.
+
+## Collision
+
+Rendering and collision remain separate. Generated building volumes register
+simplified world-space bounding boxes after scene generation. A spatial hash
+provides the broad phase, so movement checks only nearby buildings. Roads,
+sidewalks, plazas, lawns, and open ground register independent walkable surface
+heights.
+
+`src/core/collision.ts` owns the substepped sliding resolver used to prevent
+high-speed tunneling. The developer-only `collisionDebug=1` query parameter
+visualizes the collision boxes, player collider, ground probe, navigation mode,
+and grounded state.

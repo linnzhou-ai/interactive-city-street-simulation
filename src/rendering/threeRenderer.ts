@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  resolveSubsteppedMovement,
+} from "../core/collision";
+import {
   PENN_AVENUES,
   PENN_CENTER,
   PENN_LANDMARKS,
@@ -22,11 +25,30 @@ import type {
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 const METERS_PER_DEGREE_LONGITUDE =
   METERS_PER_DEGREE_LATITUDE * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
-const ROAD_HEIGHT = 0.08;
 const ROAD_WIDTH = 15;
 const MAJOR_ROAD_WIDTH = 22;
 const SIDEWALK_WIDTH = 6;
 const WORLD_SIZE = 5_200;
+const RENDER_HEIGHTS = {
+  ground: -0.08,
+  lawn: 0.02,
+  blockCenter: 0.15,
+  roadCenter: 0.04,
+  roadSurface: 0.08,
+  intersectionSurface: 0.105,
+  sidewalkCenter: 0.15,
+  sidewalkSurface: 0.29,
+  roadMarking: 0.14,
+  crosswalk: 0.18,
+  selectionSurface: 0.155,
+} as const;
+const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
+const FLY_COLLIDER_RADIUS = 0.45;
+const WALK_COLLIDER_RADIUS = 0.38;
+const WALK_PLAYER_HEIGHT = 1.78;
+const WALK_EYE_HEIGHT = 1.68;
+const WALK_GRAVITY = 18;
+const MAX_COLLISION_STEP = 0.18;
 
 interface MovingAgent {
   object: THREE.Group;
@@ -47,6 +69,21 @@ interface SignalLamp {
   axis: DistrictFeature["axis"];
 }
 
+interface CollisionVolume extends SpatialBounds {
+  box: THREE.Box3;
+}
+
+interface WalkableSurface extends SpatialBounds {
+  height: number;
+}
+
+interface SpatialBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
 type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
 
 export class ThreeRenderer {
@@ -56,6 +93,7 @@ export class ThreeRenderer {
   private readonly controls: OrbitControls;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
+  private readonly collisionClosest = new THREE.Vector3();
   private readonly features = PENN_ROAD_GRAPH;
   private readonly featureMeshes = new Map<string, THREE.Mesh>();
   private readonly selectableRoads: THREE.Mesh[] = [];
@@ -67,6 +105,12 @@ export class ThreeRenderer {
   private readonly pedestrianAgents: MovingAgent[] = [];
   private readonly signalLamps: SignalLamp[] = [];
   private readonly flyKeys = new Set<string>();
+  private readonly collisionIndex = new SpatialHash<CollisionVolume>(96);
+  private readonly walkableIndex = new SpatialHash<WalkableSurface>(96);
+  private readonly collisionDebugGroup = new THREE.Group();
+  private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
+    "collisionDebug",
+  );
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
   private selectedFeatureId: string | null = null;
   private buildMode = true;
@@ -74,6 +118,11 @@ export class ThreeRenderer {
   private flySpeedScale = 1;
   private flyYaw = 0;
   private flyPitch = -0.55;
+  private walkVerticalVelocity = 0;
+  private grounded = false;
+  private collisionDebugPlayer: THREE.Mesh | null = null;
+  private collisionDebugRay: THREE.Line | null = null;
+  private collisionDebugStatus: HTMLOutputElement | null = null;
   private looking = false;
   private lastPointer = new THREE.Vector2();
   private pointerDown = new THREE.Vector2();
@@ -115,6 +164,8 @@ export class ThreeRenderer {
     this.buildLandmarks();
     this.buildTreesAndStreetFurniture();
     this.buildParkedCars();
+    this.buildCollisionIndexes();
+    this.buildCollisionDebug();
     this.buildSignals();
     this.buildMovingVehicles();
     this.buildPedestrians();
@@ -157,17 +208,26 @@ export class ThreeRenderer {
   }
 
   setCameraMode(mode: CameraMode): void {
+    const previousMode = this.cameraMode;
     this.cameraMode = mode;
     this.flyKeys.clear();
     this.looking = false;
     this.controls.enabled = mode === "orbit";
     this.canvas.style.cursor = mode === "orbit" ? "grab" : "crosshair";
-    if (mode === "fly") {
+    if (previousMode === "walk" && document.pointerLockElement === this.canvas) {
+      document.exitPointerLock();
+    }
+    if (mode === "fly" || mode === "walk") {
       const direction = new THREE.Vector3();
       this.camera.getWorldDirection(direction);
       this.flyYaw = Math.atan2(-direction.x, -direction.z);
       this.flyPitch = Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1));
+      if (mode === "walk") this.enterWalkMode();
       this.applyFlyRotation();
+    } else {
+      const direction = new THREE.Vector3();
+      this.camera.getWorldDirection(direction);
+      this.controls.target.copy(this.camera.position).addScaledVector(direction, 45);
     }
   }
 
@@ -238,7 +298,8 @@ export class ThreeRenderer {
     const now = performance.now();
     const frameSeconds = Math.min((now - this.lastFrameTimestamp) / 1000, 0.1);
     this.lastFrameTimestamp = now;
-    this.updateFlyCamera(frameSeconds);
+    if (this.cameraMode === "fly") this.updateFlyCamera(frameSeconds);
+    if (this.cameraMode === "walk") this.updateWalkCamera(frameSeconds);
 
     const elapsedDelta = state.elapsedSeconds - this.lastElapsedSeconds;
     if (elapsedDelta < 0) this.resetAgents();
@@ -259,6 +320,7 @@ export class ThreeRenderer {
     this.updateSignals(state.signalPhase);
 
     if (this.cameraMode === "orbit") this.controls.update();
+    this.updateCollisionDebug();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -306,8 +368,9 @@ export class ThreeRenderer {
       this.materials.ground,
     );
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.08;
+    ground.position.y = RENDER_HEIGHTS.ground;
     ground.receiveShadow = true;
+    ground.userData.walkable = true;
     this.scene.add(ground);
 
     const campusLawn = new THREE.Mesh(
@@ -315,8 +378,9 @@ export class ThreeRenderer {
       this.materials.campusGrass,
     );
     campusLawn.rotation.x = -Math.PI / 2;
-    campusLawn.position.set(-70, 0.015, 140);
+    campusLawn.position.set(-70, RENDER_HEIGHTS.lawn, 140);
     campusLawn.receiveShadow = true;
+    campusLawn.userData.walkable = true;
     this.scene.add(campusLawn);
 
     for (const [x, z, width, depth] of [
@@ -330,7 +394,8 @@ export class ThreeRenderer {
         this.materials.lawn,
       );
       lawn.rotation.x = -Math.PI / 2;
-      lawn.position.set(x, 0.02, z);
+      lawn.position.set(x, RENDER_HEIGHTS.lawn, z);
+      lawn.userData.walkable = true;
       this.scene.add(lawn);
     }
   }
@@ -342,6 +407,7 @@ export class ThreeRenderer {
       const material = this.materials.asphalt.clone();
       const road = createSegmentMesh(feature, width, ROAD_HEIGHT, material);
       road.userData.featureId = feature.id;
+      road.userData.walkable = true;
       road.receiveShadow = true;
       this.featureMeshes.set(feature.id, road);
       this.selectableRoads.push(road);
@@ -362,9 +428,10 @@ export class ThreeRenderer {
           this.materials.sidewalk,
         );
         sidewalk.position.copy(center).addScaledVector(normal, sidewalkOffset * side);
-        sidewalk.position.y = 0.15;
+        sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
         sidewalk.rotation.y = angle;
         sidewalk.receiveShadow = true;
+        sidewalk.userData.walkable = true;
         this.scene.add(sidewalk);
       }
 
@@ -375,7 +442,7 @@ export class ThreeRenderer {
         this.materials.yellowLine,
       );
       centerLine.position.copy(center);
-      centerLine.position.y = 0.14;
+      centerLine.position.y = RENDER_HEIGHTS.roadMarking;
       centerLine.rotation.y = angle;
       this.scene.add(centerLine);
 
@@ -383,7 +450,7 @@ export class ThreeRenderer {
         for (const laneOffset of [-width * 0.25, width * 0.25]) {
           const laneLine = box(length * 0.94, 0.02, 0.14, this.materials.whiteLine);
           laneLine.position.copy(center).addScaledVector(normal, laneOffset);
-          laneLine.position.y = 0.15;
+          laneLine.position.y = RENDER_HEIGHTS.roadMarking + 0.01;
           laneLine.rotation.y = angle;
           this.scene.add(laneLine);
         }
@@ -394,6 +461,20 @@ export class ThreeRenderer {
       (candidate) => candidate.kind === "intersection",
     )) {
       const position = geoToWorld(feature.path[0]);
+      const intersection = box(
+        MAJOR_ROAD_WIDTH + 0.8,
+        0.05,
+        MAJOR_ROAD_WIDTH + 0.8,
+        this.materials.asphalt,
+      );
+      intersection.position.set(
+        position.x,
+        RENDER_HEIGHTS.intersectionSurface - 0.025,
+        position.z,
+      );
+      intersection.receiveShadow = true;
+      intersection.userData.walkable = true;
+      this.scene.add(intersection);
       if (position.length() > 930) continue;
       this.addCrosswalk(position.x, position.z);
     }
@@ -402,11 +483,11 @@ export class ThreeRenderer {
   private addCrosswalk(x: number, z: number): void {
     for (let index = -3; index <= 3; index += 1) {
       const stripeA = box(1.35, 0.025, 6.2, this.materials.whiteLine);
-      stripeA.position.set(x + index * 2.25, 0.18, z - 10.5);
+      stripeA.position.set(x + index * 2.25, RENDER_HEIGHTS.crosswalk, z - 10.5);
       const stripeB = stripeA.clone();
       stripeB.position.z = z + 10.5;
       const stripeC = box(6.2, 0.025, 1.35, this.materials.whiteLine);
-      stripeC.position.set(x - 10.5, 0.18, z + index * 2.25);
+      stripeC.position.set(x - 10.5, RENDER_HEIGHTS.crosswalk, z + index * 2.25);
       const stripeD = stripeC.clone();
       stripeD.position.x = x + 10.5;
       this.scene.add(stripeA, stripeB, stripeC, stripeD);
@@ -439,8 +520,9 @@ export class ThreeRenderer {
         if (blockWidth < 22 || blockDepth < 22) continue;
 
         const paving = box(blockWidth, 0.16, blockDepth, this.materials.blockPaving);
-        paving.position.set(blockCenter.x, 0.15, blockCenter.z);
+        paving.position.set(blockCenter.x, RENDER_HEIGHTS.blockCenter, blockCenter.z);
         paving.receiveShadow = true;
+        paving.userData.walkable = true;
         this.scene.add(paving);
 
         if (this.nearLandmark(blockCenter.x, blockCenter.z, 80)) continue;
@@ -566,6 +648,7 @@ export class ThreeRenderer {
     volume.position.set(x, height / 2, z);
     volume.castShadow = shadows;
     volume.receiveShadow = true;
+    volume.userData.collidable = true;
     group.add(volume);
     return volume;
   }
@@ -587,6 +670,7 @@ export class ThreeRenderer {
     roof.rotation.y = Math.PI / 4;
     roof.position.set(x, y + 2.5, z);
     roof.castShadow = true;
+    roof.userData.collidable = true;
     group.add(roof);
   }
 
@@ -699,6 +783,7 @@ export class ThreeRenderer {
     const field = new THREE.Mesh(new THREE.PlaneGeometry(145, 72), this.materials.field);
     field.rotation.x = -Math.PI / 2;
     field.position.y = 0.3;
+    field.userData.walkable = true;
     group.add(field);
     const stadium = new THREE.Mesh(
       new THREE.TorusGeometry(51, 12, 10, 64),
@@ -1024,6 +1109,10 @@ export class ThreeRenderer {
   private bindInput(): void {
     this.canvas.addEventListener("pointerdown", (event) => {
       this.pointerDown.set(event.clientX, event.clientY);
+      if (this.cameraMode === "walk") {
+        if (document.pointerLockElement !== this.canvas) void this.canvas.requestPointerLock();
+        return;
+      }
       if (this.cameraMode !== "fly") return;
       this.looking = true;
       this.lastPointer.set(event.clientX, event.clientY);
@@ -1048,6 +1137,7 @@ export class ThreeRenderer {
         this.canvas.releasePointerCapture(event.pointerId);
         return;
       }
+      if (this.cameraMode === "walk") return;
       if (Math.hypot(event.clientX - this.pointerDown.x, event.clientY - this.pointerDown.y) < 5) {
         this.pickFeature(event);
       }
@@ -1060,20 +1150,49 @@ export class ThreeRenderer {
         this.flySpeedScale = THREE.MathUtils.clamp(
           this.flySpeedScale * (event.deltaY > 0 ? 0.84 : 1.18),
           0.2,
-          5,
+          2.5,
         );
       },
       { passive: false },
     );
     window.addEventListener("keydown", (event) => {
-      if (this.cameraMode !== "fly" || isTypingTarget(event.target)) return;
-      if (isFlyKey(event.code)) {
+      if (
+        (this.cameraMode !== "fly" && this.cameraMode !== "walk") ||
+        isTypingTarget(event.target)
+      ) {
+        return;
+      }
+      if (isMovementKey(event.code)) {
         event.preventDefault();
         this.flyKeys.add(event.code);
+        if (this.cameraMode === "walk" && event.code === "Space" && this.grounded) {
+          this.walkVerticalVelocity = 5.6;
+          this.grounded = false;
+        }
       }
     });
     window.addEventListener("keyup", (event) => this.flyKeys.delete(event.code));
     window.addEventListener("blur", () => this.flyKeys.clear());
+    document.addEventListener("mousemove", (event) => {
+      if (
+        this.cameraMode !== "walk" ||
+        document.pointerLockElement !== this.canvas
+      ) {
+        return;
+      }
+      this.flyYaw -= event.movementX * 0.0022;
+      this.flyPitch = THREE.MathUtils.clamp(
+        this.flyPitch - event.movementY * 0.0022,
+        -Math.PI / 2 + 0.08,
+        Math.PI / 2 - 0.08,
+      );
+      this.applyFlyRotation();
+    });
+    document.addEventListener("pointerlockchange", () => {
+      if (this.cameraMode !== "walk") return;
+      this.canvas.style.cursor =
+        document.pointerLockElement === this.canvas ? "none" : "crosshair";
+    });
   }
 
   private pickFeature(event: PointerEvent): void {
@@ -1092,21 +1211,190 @@ export class ThreeRenderer {
   }
 
   private updateFlyCamera(deltaSeconds: number): void {
-    if (this.cameraMode !== "fly") return;
+    const movementDelta = Math.min(deltaSeconds, 0.025);
     const altitude = Math.max(2, this.camera.position.y);
     const baseSpeed =
       altitude < 12 ? 7 : altitude < 120 ? 7 + altitude * 0.3 : Math.min(520, 38 + altitude * 0.42);
     const boost = this.flyKeys.has("ShiftLeft") || this.flyKeys.has("ShiftRight") ? 4 : 1;
-    const distance = baseSpeed * this.flySpeedScale * boost * deltaSeconds;
+    const distance = baseSpeed * this.flySpeedScale * boost * movementDelta;
     const forward = new THREE.Vector3();
     this.camera.getWorldDirection(forward);
     const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
-    if (this.flyKeys.has("KeyW")) this.camera.position.addScaledVector(forward, distance);
-    if (this.flyKeys.has("KeyS")) this.camera.position.addScaledVector(forward, -distance);
-    if (this.flyKeys.has("KeyA")) this.camera.position.addScaledVector(right, -distance);
-    if (this.flyKeys.has("KeyD")) this.camera.position.addScaledVector(right, distance);
-    if (this.flyKeys.has("KeyE")) this.camera.position.y += distance;
-    if (this.flyKeys.has("KeyQ")) this.camera.position.y = Math.max(2.2, this.camera.position.y - distance);
+    const displacement = new THREE.Vector3();
+    if (this.flyKeys.has("KeyW")) displacement.addScaledVector(forward, distance);
+    if (this.flyKeys.has("KeyS")) displacement.addScaledVector(forward, -distance);
+    if (this.flyKeys.has("KeyA")) displacement.addScaledVector(right, -distance);
+    if (this.flyKeys.has("KeyD")) displacement.addScaledVector(right, distance);
+    if (this.flyKeys.has("KeyE")) displacement.y += distance;
+    if (this.flyKeys.has("KeyQ")) displacement.y -= distance;
+    this.movePlayerWithCollision(displacement, "fly");
+  }
+
+  private updateWalkCamera(deltaSeconds: number): void {
+    const forward = new THREE.Vector3(-Math.sin(this.flyYaw), 0, -Math.cos(this.flyYaw));
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const walking = new THREE.Vector3();
+    if (this.flyKeys.has("KeyW")) walking.add(forward);
+    if (this.flyKeys.has("KeyS")) walking.sub(forward);
+    if (this.flyKeys.has("KeyA")) walking.sub(right);
+    if (this.flyKeys.has("KeyD")) walking.add(right);
+    if (walking.lengthSq() > 0) {
+      const running =
+        this.flyKeys.has("ShiftLeft") || this.flyKeys.has("ShiftRight");
+      walking.normalize().multiplyScalar((running ? 6.2 : 3.4) * deltaSeconds);
+      this.movePlayerWithCollision(walking, "walk");
+    }
+
+    const groundHeight = this.getWalkableHeight(
+      this.camera.position.x,
+      this.camera.position.z,
+    );
+    const targetEyeHeight = groundHeight + WALK_EYE_HEIGHT;
+    if (this.grounded && this.walkVerticalVelocity <= 0) {
+      const step = targetEyeHeight - this.camera.position.y;
+      if (Math.abs(step) <= 0.36) {
+        this.camera.position.y = targetEyeHeight;
+        this.walkVerticalVelocity = 0;
+      } else {
+        this.grounded = false;
+      }
+    }
+
+    if (!this.grounded) {
+      this.walkVerticalVelocity -= WALK_GRAVITY * deltaSeconds;
+      const beforeY = this.camera.position.y;
+      this.movePlayerWithCollision(
+        new THREE.Vector3(0, this.walkVerticalVelocity * deltaSeconds, 0),
+        "walk",
+      );
+      if (this.walkVerticalVelocity > 0 && this.camera.position.y === beforeY) {
+        this.walkVerticalVelocity = 0;
+      }
+      if (
+        this.walkVerticalVelocity <= 0 &&
+        this.camera.position.y <= targetEyeHeight + 0.04
+      ) {
+        this.camera.position.y = targetEyeHeight;
+        this.walkVerticalVelocity = 0;
+        this.grounded = true;
+      }
+    }
+  }
+
+  private movePlayerWithCollision(
+    displacement: THREE.Vector3,
+    mode: "fly" | "walk",
+  ): void {
+    this.camera.position.copy(
+      resolveSubsteppedMovement(
+        this.camera.position,
+        displacement,
+        (candidate) => this.canOccupy(candidate, mode),
+        MAX_COLLISION_STEP,
+      ),
+    );
+  }
+
+  private canOccupy(position: THREE.Vector3, mode: "fly" | "walk"): boolean {
+    const radius = mode === "fly" ? FLY_COLLIDER_RADIUS : WALK_COLLIDER_RADIUS;
+    const groundHeight = this.getWalkableHeight(position.x, position.z);
+    if (
+      (mode === "fly" && position.y - radius < groundHeight) ||
+      (mode === "walk" && position.y - WALK_EYE_HEIGHT < groundHeight - 0.05)
+    ) {
+      return false;
+    }
+
+    const volumes = this.collisionIndex.query(
+      position.x - radius,
+      position.x + radius,
+      position.z - radius,
+      position.z + radius,
+    );
+    if (mode === "fly") {
+      for (const volume of volumes) {
+        volume.box.clampPoint(position, this.collisionClosest);
+        if (
+          this.collisionClosest.distanceToSquared(position) <
+          radius * radius
+        ) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    const bottom = position.y - WALK_EYE_HEIGHT;
+    const top = bottom + WALK_PLAYER_HEIGHT;
+    for (const volume of volumes) {
+      const box = volume.box;
+      if (top <= box.min.y || bottom >= box.max.y) continue;
+      if (
+        position.x > box.min.x - radius &&
+        position.x < box.max.x + radius &&
+        position.z > box.min.z - radius &&
+        position.z < box.max.z + radius
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private enterWalkMode(): void {
+    const safe = this.findSafeWalkPosition(
+      this.camera.position.x,
+      this.camera.position.z,
+    );
+    this.camera.position.set(safe.x, safe.height + WALK_EYE_HEIGHT, safe.z);
+    this.walkVerticalVelocity = 0;
+    this.grounded = true;
+  }
+
+  private findSafeWalkPosition(
+    startX: number,
+    startZ: number,
+  ): { x: number; z: number; height: number } {
+    const candidates: Array<{ x: number; z: number }> = [{ x: startX, z: startZ }];
+    for (let radius = 3; radius <= 72; radius += 3) {
+      for (let index = 0; index < 16; index += 1) {
+        const angle = (index / 16) * Math.PI * 2;
+        candidates.push({
+          x: startX + Math.cos(angle) * radius,
+          z: startZ + Math.sin(angle) * radius,
+        });
+      }
+    }
+    for (const candidate of candidates) {
+      const height = this.getWalkableHeight(candidate.x, candidate.z);
+      const eye = new THREE.Vector3(candidate.x, height + WALK_EYE_HEIGHT, candidate.z);
+      if (this.canOccupy(eye, "walk")) return { ...candidate, height };
+    }
+
+    const safeStreet =
+      this.features.find((feature) => feature.id === "walnut-34-36") ??
+      this.features.find((feature) => feature.kind === "street");
+    const safePoint = safeStreet ? segmentCenter(safeStreet) : new THREE.Vector3();
+    return {
+      x: safePoint.x,
+      z: safePoint.z,
+      height: this.getWalkableHeight(safePoint.x, safePoint.z),
+    };
+  }
+
+  private getWalkableHeight(x: number, z: number): number {
+    let height: number = RENDER_HEIGHTS.ground;
+    for (const surface of this.walkableIndex.query(x, x, z, z)) {
+      if (
+        x >= surface.minX &&
+        x <= surface.maxX &&
+        z >= surface.minZ &&
+        z <= surface.maxZ
+      ) {
+        height = Math.max(height, surface.height);
+      }
+    }
+    return height;
   }
 
   private applyFlyRotation(): void {
@@ -1135,13 +1423,13 @@ export class ThreeRenderer {
       const overlay = createSegmentMesh(
         feature,
         roadWidth(feature) + design.laneDelta * 3.2,
-        0.22,
+        0.04,
         this.materials.editedAsphalt,
       );
-      overlay.position.y = 0.18;
+      overlay.position.y = RENDER_HEIGHTS.roadSurface + 0.025;
       this.designGroup.add(overlay);
       const line = createSegmentMesh(feature, 0.22, 0.03, this.materials.yellowLine);
-      line.position.y = 0.34;
+      line.position.y = RENDER_HEIGHTS.selectionSurface + 0.01;
       this.designGroup.add(line);
     }
     if (design.bikeLane) {
@@ -1153,7 +1441,7 @@ export class ThreeRenderer {
           0.04,
           this.materials.bikeLane,
         );
-        lane.position.y = 0.35;
+        lane.position.y = RENDER_HEIGHTS.selectionSurface + 0.015;
         this.designGroup.add(lane);
       }
     }
@@ -1166,7 +1454,7 @@ export class ThreeRenderer {
           0.32,
           this.materials.sidewalk,
         );
-        walk.position.y = 0.18;
+        walk.position.y = RENDER_HEIGHTS.sidewalkCenter + 0.03;
         this.designGroup.add(walk);
       }
     }
@@ -1189,7 +1477,11 @@ export class ThreeRenderer {
   private addCrosswalkToGroup(x: number, z: number, group: THREE.Group): void {
     for (let index = -3; index <= 3; index += 1) {
       const stripe = box(1.35, 0.03, 8, this.materials.whiteLine);
-      stripe.position.set(x + index * 2.25, 0.36, z);
+      stripe.position.set(
+        x + index * 2.25,
+        RENDER_HEIGHTS.selectionSurface + 0.025,
+        z,
+      );
       group.add(stripe);
     }
   }
@@ -1244,6 +1536,124 @@ export class ThreeRenderer {
     }
   }
 
+  private buildCollisionIndexes(): void {
+    this.scene.updateMatrixWorld(true);
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (object.userData.collidable === true) {
+        const collisionBox = new THREE.Box3().setFromObject(object);
+        if (!collisionBox.isEmpty()) {
+          this.collisionIndex.insert({
+            box: collisionBox,
+            minX: collisionBox.min.x,
+            maxX: collisionBox.max.x,
+            minZ: collisionBox.min.z,
+            maxZ: collisionBox.max.z,
+          });
+        }
+      }
+      if (object.userData.walkable === true) {
+        const surfaceBox = new THREE.Box3().setFromObject(object);
+        if (!surfaceBox.isEmpty()) {
+          this.walkableIndex.insert({
+            minX: surfaceBox.min.x,
+            maxX: surfaceBox.max.x,
+            minZ: surfaceBox.min.z,
+            maxZ: surfaceBox.max.z,
+            height: surfaceBox.max.y,
+          });
+        }
+      }
+    });
+  }
+
+  private buildCollisionDebug(): void {
+    if (!this.collisionDebugEnabled) return;
+    let helperCount = 0;
+    for (const volume of this.collisionIndex.getAll()) {
+      if (helperCount >= 260) break;
+      const center = volume.box.getCenter(new THREE.Vector3());
+      if (Math.hypot(center.x, center.z) > 1_150) continue;
+      this.collisionDebugGroup.add(
+        new THREE.Box3Helper(volume.box, new THREE.Color("#ff704d")),
+      );
+      helperCount += 1;
+    }
+
+    this.collisionDebugPlayer = new THREE.Mesh(
+      new THREE.CapsuleGeometry(WALK_COLLIDER_RADIUS, 1.02, 6, 10),
+      new THREE.MeshBasicMaterial({
+        color: "#54e8bd",
+        wireframe: true,
+        depthTest: false,
+      }),
+    );
+    this.collisionDebugPlayer.renderOrder = 50;
+    this.collisionDebugGroup.add(this.collisionDebugPlayer);
+
+    this.collisionDebugRay = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(),
+        new THREE.Vector3(0, -2, 0),
+      ]),
+      new THREE.LineBasicMaterial({
+        color: "#f6d260",
+        depthTest: false,
+      }),
+    );
+    this.collisionDebugRay.renderOrder = 50;
+    this.collisionDebugGroup.add(this.collisionDebugRay);
+    this.scene.add(this.collisionDebugGroup);
+
+    this.collisionDebugStatus = document.createElement("output");
+    this.collisionDebugStatus.className = "collision-debug-status";
+    document.body.append(this.collisionDebugStatus);
+  }
+
+  private updateCollisionDebug(): void {
+    if (!this.collisionDebugEnabled || !this.collisionDebugPlayer) return;
+    const mode = this.cameraMode;
+    const centerY =
+      mode === "walk"
+        ? this.camera.position.y - WALK_EYE_HEIGHT + WALK_PLAYER_HEIGHT / 2
+        : this.camera.position.y;
+    this.collisionDebugPlayer.position.set(
+      this.camera.position.x,
+      centerY,
+      this.camera.position.z,
+    );
+    this.collisionDebugPlayer.scale.setScalar(
+      mode === "fly" ? FLY_COLLIDER_RADIUS / WALK_COLLIDER_RADIUS : 1,
+    );
+    const playerMaterial = this.collisionDebugPlayer
+      .material as THREE.MeshBasicMaterial;
+    playerMaterial.color.set(
+      mode === "walk" && this.grounded ? "#54e8bd" : "#66b8ff",
+    );
+
+    if (this.collisionDebugRay) {
+      this.collisionDebugRay.geometry.setFromPoints([
+        this.camera.position.clone(),
+        new THREE.Vector3(
+          this.camera.position.x,
+          this.getWalkableHeight(
+            this.camera.position.x,
+            this.camera.position.z,
+          ),
+          this.camera.position.z,
+        ),
+      ]);
+    }
+    if (this.collisionDebugStatus) {
+      this.collisionDebugStatus.value = [
+        `mode: ${mode}`,
+        `grounded: ${this.grounded}`,
+        `height: ${this.camera.position.y.toFixed(2)} m`,
+        `collision boxes: ${this.collisionIndex.size}`,
+      ].join(" · ");
+    }
+  }
+
   private nearLandmark(x: number, z: number, radius: number): boolean {
     return PENN_LANDMARKS.some((landmark) => {
       const position = geoToWorld(landmark);
@@ -1270,6 +1680,7 @@ export class ThreeRenderer {
         Math.sin(angle) * radius,
       );
       building.rotation.y = rng() * Math.PI;
+      building.userData.collidable = true;
       this.scene.add(building);
     }
   }
@@ -1559,7 +1970,61 @@ function wrapProgress(value: number): number {
   return ((value % 1) + 1) % 1;
 }
 
-function isFlyKey(code: string): boolean {
+class SpatialHash<T extends SpatialBounds> {
+  private readonly cells = new Map<string, Set<T>>();
+  private readonly items = new Set<T>();
+
+  constructor(private readonly cellSize: number) {}
+
+  get size(): number {
+    return this.items.size;
+  }
+
+  insert(item: T): void {
+    this.items.add(item);
+    for (const key of this.keysForBounds(
+      item.minX,
+      item.maxX,
+      item.minZ,
+      item.maxZ,
+    )) {
+      const cell = this.cells.get(key) ?? new Set<T>();
+      cell.add(item);
+      this.cells.set(key, cell);
+    }
+  }
+
+  query(minX: number, maxX: number, minZ: number, maxZ: number): Set<T> {
+    const results = new Set<T>();
+    for (const key of this.keysForBounds(minX, maxX, minZ, maxZ)) {
+      for (const item of this.cells.get(key) ?? []) results.add(item);
+    }
+    return results;
+  }
+
+  getAll(): ReadonlySet<T> {
+    return this.items;
+  }
+
+  private keysForBounds(
+    minX: number,
+    maxX: number,
+    minZ: number,
+    maxZ: number,
+  ): string[] {
+    const keys: string[] = [];
+    const startX = Math.floor(minX / this.cellSize);
+    const endX = Math.floor(maxX / this.cellSize);
+    const startZ = Math.floor(minZ / this.cellSize);
+    const endZ = Math.floor(maxZ / this.cellSize);
+    for (let x = startX; x <= endX; x += 1) {
+      for (let z = startZ; z <= endZ; z += 1) keys.push(`${x}:${z}`);
+    }
+    return keys;
+  }
+}
+
+function isMovementKey(code: string): boolean {
   return [
     "KeyW",
     "KeyA",
@@ -1569,13 +2034,15 @@ function isFlyKey(code: string): boolean {
     "KeyQ",
     "ShiftLeft",
     "ShiftRight",
+    "Space",
   ].includes(code);
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
   return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement
+    target instanceof HTMLElement &&
+    target.closest(
+      "input, textarea, select, button, a, [contenteditable='true']",
+    ) !== null
   );
 }

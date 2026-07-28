@@ -1,5 +1,5 @@
 export type AppMode = "build" | "simulate";
-export type CameraMode = "orbit" | "fly";
+export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
 export type MapOverlayMode = "none" | "congestion" | "pedestrians" | "conflicts";
 export type SignalPhase = "east-west" | "north-south" | "pedestrians";
