@@ -1,6 +1,7 @@
 import type {
   DesignImpact,
   ManualSignalTarget,
+  PlacedBuilding,
   ScenarioSettings,
   SignalControlMode,
   SignalSnapshot,
@@ -8,6 +9,11 @@ import type {
   SimulationMetrics,
   SimulationState,
 } from "../models/types";
+import {
+  EMPTY_BUILDING_ACTIVITY,
+  summarizeBuildingActivity,
+  type BuildingActivitySummary,
+} from "./buildingActivity";
 import { LiveTrafficSystem } from "./liveTraffic";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
@@ -56,6 +62,9 @@ export class Simulation {
   private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
   private state: SimulationState = createInitialState(this.traffic);
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
+  private buildingActivity: BuildingActivitySummary = {
+    ...EMPTY_BUILDING_ACTIVITY,
+  };
 
   getState(): Readonly<SimulationState> {
     return this.state;
@@ -67,6 +76,10 @@ export class Simulation {
 
   getBaselineMetrics(): SimulationMetrics {
     return calculateMetrics(this.settings, EMPTY_DESIGN_IMPACT);
+  }
+
+  getBuildingActivity(): Readonly<BuildingActivitySummary> {
+    return this.buildingActivity;
   }
 
   getSignal(intersectionId: string): SignalSnapshot | undefined {
@@ -166,11 +179,28 @@ export class Simulation {
     this.updateMetrics();
   }
 
+  setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
+    this.buildingActivity = summarizeBuildingActivity(buildings);
+    this.traffic.setBuildingDestinations(buildings);
+    this.updateMetrics();
+  }
+
   update(deltaSeconds: number): void {
     if (!this.state.running || deltaSeconds <= 0) return;
     const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
     this.state.elapsedSeconds += simulationDelta;
-    this.traffic.update(simulationDelta, this.settings);
+    this.traffic.update(simulationDelta, {
+      ...this.settings,
+      vehicleVolume: Math.min(
+        3,
+        this.settings.vehicleVolume + this.buildingActivity.vehicleDemandBoost,
+      ),
+      pedestrianVolume: Math.min(
+        3,
+        this.settings.pedestrianVolume +
+          this.buildingActivity.pedestrianDemandBoost,
+      ),
+    });
     this.syncTrafficState();
   }
 

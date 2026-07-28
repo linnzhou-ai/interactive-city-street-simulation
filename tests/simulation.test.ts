@@ -107,4 +107,28 @@ describe("Simulation", () => {
     expect(simulation.getBaselineMetrics()).toEqual(baseline);
     expect(simulation.getState().metrics).not.toEqual(baseline);
   });
+
+  it("connects placed building roles to district activity", () => {
+    const simulation = new Simulation();
+    simulation.setPlacedBuildings([
+      {
+        id: "industry",
+        kind: "industrial",
+        floors: 6,
+        x: 10,
+        z: 20,
+        rotation: 0,
+        color: "#a66b4e",
+      },
+    ]);
+
+    expect(simulation.getBuildingActivity()).toMatchObject({
+      jobs: 60,
+      dailyVisitors: 24,
+      dailyFreightTrips: 96,
+    });
+    expect(simulation.getBuildingActivity().vehicleDemandBoost).toBeGreaterThan(
+      0,
+    );
+  });
 });

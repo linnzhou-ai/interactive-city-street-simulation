@@ -1,4 +1,5 @@
 import "./styles.css";
+import { deriveBuildingRole } from "./core/buildingActivity";
 import { Simulation } from "./core/simulation";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
@@ -40,6 +41,10 @@ const selectedBuildingFloors = requireElement<HTMLInputElement>("selected-buildi
 const selectedBuildingColor = requireElement<HTMLInputElement>("selected-building-color");
 const rotateBuildingButton = requireElement<HTMLButtonElement>("rotate-building-button");
 const deleteBuildingButton = requireElement<HTMLButtonElement>("delete-building-button");
+const buildingResidentsOutput = requireElement<HTMLElement>("building-residents-output");
+const buildingJobsOutput = requireElement<HTMLElement>("building-jobs-output");
+const buildingVisitorsOutput = requireElement<HTMLElement>("building-visitors-output");
+const buildingFreightOutput = requireElement<HTMLElement>("building-freight-output");
 const speedControl = requireElement<HTMLInputElement>("speed-control");
 const speedOutput = requireElement<HTMLOutputElement>("speed-output");
 const vehicleVolumeControl = requireElement<HTMLInputElement>("vehicle-volume-control");
@@ -86,6 +91,10 @@ const baselineMetricsButton = requireElement<HTMLButtonElement>("baseline-metric
 const modifiedMetricsButton = requireElement<HTMLButtonElement>("modified-metrics-button");
 const metricsKicker = requireElement<HTMLElement>("metrics-kicker");
 const analysisOverlay = requireElement<HTMLSelectElement>("analysis-overlay");
+const districtResidentsOutput = requireElement<HTMLElement>("district-residents-output");
+const districtJobsOutput = requireElement<HTMLElement>("district-jobs-output");
+const districtVisitorsOutput = requireElement<HTMLElement>("district-visitors-output");
+const districtFreightOutput = requireElement<HTMLElement>("district-freight-output");
 const locationSearch = requireElement<HTMLFormElement>("location-search");
 const locationSearchInput = requireElement<HTMLInputElement>("location-search-input");
 const locationOptions = requireElement<HTMLDataListElement>("location-options");
@@ -139,6 +148,7 @@ resetDesignButton.addEventListener("click", () => {
   selectedPlacedBuildingId = null;
   renderer.setPlacedBuildings([]);
   renderer.setSelectedPlacedBuilding(null);
+  syncBuildingActivity();
   syncDesign();
   selectionStatus.textContent = "All placed buildings and street interventions were reset.";
 });
@@ -473,6 +483,7 @@ function placeBuilding(x: number, z: number): void {
   };
   placedBuildings.set(building.id, building);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
+  syncBuildingActivity();
   selectPlacedBuilding(building.id);
   selectionStatus.textContent = `${formatBuildingKind(building.kind)} building placed. Drag it to fine-tune the position.`;
 }
@@ -488,6 +499,7 @@ function movePlacedBuilding(id: string, x: number, z: number): void {
   const current = placedBuildings.get(id);
   if (!current) return;
   placedBuildings.set(id, { ...current, x, z });
+  syncBuildingActivity();
   if (selectedPlacedBuildingId === id) {
     buildingPositionOutput.textContent = formatBuildingPosition(x, z);
   }
@@ -505,6 +517,7 @@ function updateSelectedBuilding(): void {
   selectedBuildingFloors.value = String(updated.floors);
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
+  syncBuildingActivity();
   renderer.setSelectedPlacedBuilding(updated.id);
   renderPlacedBuildingSelection(updated);
 }
@@ -519,6 +532,7 @@ function rotateSelectedBuilding(): void {
   };
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
+  syncBuildingActivity();
   renderer.setSelectedPlacedBuilding(updated.id);
   renderPlacedBuildingSelection(updated);
 }
@@ -529,6 +543,7 @@ function deleteSelectedBuilding(): void {
   selectedPlacedBuildingId = null;
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   renderer.setSelectedPlacedBuilding(null);
+  syncBuildingActivity();
   updateSelectionPanel();
   selectionStatus.textContent = "Building removed.";
 }
@@ -545,6 +560,11 @@ function renderPlacedBuildingSelection(building: PlacedBuilding): void {
   selectedBuildingFloors.value = String(building.floors);
   selectedBuildingColor.value = building.color;
   buildingPositionOutput.textContent = formatBuildingPosition(building.x, building.z);
+  const role = deriveBuildingRole(building);
+  buildingResidentsOutput.textContent = role.residents.toLocaleString();
+  buildingJobsOutput.textContent = role.jobs.toLocaleString();
+  buildingVisitorsOutput.textContent = role.dailyVisitors.toLocaleString();
+  buildingFreightOutput.textContent = role.dailyFreightTrips.toLocaleString();
   buildToolButtons.forEach((button) => {
     button.disabled = true;
   });
@@ -554,6 +574,20 @@ function renderPlacedBuildingSelection(building: PlacedBuilding): void {
     createSummaryTag(formatBuildingKind(building.kind), true),
   );
   selectionStatus.textContent = "Edit the building here, drag it in the 3D view, or press R to rotate.";
+}
+
+function syncBuildingActivity(): void {
+  simulation.setPlacedBuildings([...placedBuildings.values()]);
+  updateBuildingActivitySummary();
+}
+
+function updateBuildingActivitySummary(): void {
+  const activity = simulation.getBuildingActivity();
+  districtResidentsOutput.textContent = activity.residents.toLocaleString();
+  districtJobsOutput.textContent = activity.jobs.toLocaleString();
+  districtVisitorsOutput.textContent = activity.dailyVisitors.toLocaleString();
+  districtFreightOutput.textContent =
+    activity.dailyFreightTrips.toLocaleString();
 }
 
 function createSummaryTag(text: string, active: boolean): HTMLSpanElement {

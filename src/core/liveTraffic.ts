@@ -6,6 +6,7 @@ import {
 import type {
   ManualSignalTarget,
   PedestrianSnapshot,
+  PlacedBuilding,
   ScenarioSettings,
   SignalControlMode,
   SignalPhase,
@@ -62,6 +63,18 @@ interface GridNode {
   row: number;
   x: number;
   z: number;
+}
+
+interface BuildingNode {
+  id: string;
+  kind: PlacedBuilding["kind"];
+  node: GridNode;
+  weight: number;
+}
+
+interface VehicleRoute {
+  path: readonly GridNode[];
+  freight: boolean;
 }
 
 interface VehicleAgent {
@@ -244,6 +257,7 @@ export class LiveTrafficSystem {
   private completedPedestrianTravelSeconds = 0;
   private completedPedestrianWaitSeconds = 0;
   private crossingsCompleted = 0;
+  private buildingNodes: BuildingNode[] = [];
 
   constructor(seed: number) {
     this.random = new RandomSource(seed);
@@ -299,6 +313,15 @@ export class LiveTrafficSystem {
     timing: Partial<SignalTiming>,
   ): void {
     this.controllers.get(intersectionId)?.setTiming(timing);
+  }
+
+  setBuildingDestinations(buildings: readonly PlacedBuilding[]): void {
+    this.buildingNodes = buildings.map((building) => ({
+      id: building.id,
+      kind: building.kind,
+      node: this.nearestNode(building.x, building.z),
+      weight: Math.max(1, building.floors),
+    }));
   }
 
   setAllSignalCycles(totalSeconds: number): void {
@@ -427,18 +450,17 @@ export class LiveTrafficSystem {
     demand: number,
     speedLimitMph: number,
   ): void {
-    const level = clampDemand(demand);
     this.nextVehicleSpawnSeconds -= deltaSeconds;
-    const target = VEHICLE_TARGETS[level];
+    const target = Math.round(interpolateDemand(VEHICLE_TARGETS, demand));
     while (this.nextVehicleSpawnSeconds <= 0 && this.vehicles.length < target) {
       const route = this.createVehicleRoute();
-      if (this.canSpawnVehicle(route)) {
-        const kind = this.random.pick(VEHICLE_KINDS);
+      if (this.canSpawnVehicle(route.path)) {
+        const kind = route.freight ? "truck" : this.random.pick(VEHICLE_KINDS);
         const desiredSpeed =
           speedLimitMph * 0.44704 * (0.82 + this.random.next() * 0.16);
         this.vehicles.push({
           id: this.nextVehicleId,
-          path: route,
+          path: route.path,
           segmentIndex: 0,
           distanceOnSegment: 0,
           speed: 0,
@@ -454,21 +476,20 @@ export class LiveTrafficSystem {
       }
       this.nextVehicleSpawnSeconds += randomArrival(
         this.random,
-        VEHICLE_SPAWN_RATES[level],
+        interpolateDemand(VEHICLE_SPAWN_RATES, demand),
       );
     }
     if (this.nextVehicleSpawnSeconds <= 0) {
       this.nextVehicleSpawnSeconds = randomArrival(
         this.random,
-        VEHICLE_SPAWN_RATES[level],
+        interpolateDemand(VEHICLE_SPAWN_RATES, demand),
       );
     }
   }
 
   private updatePedestrianSpawner(deltaSeconds: number, demand: number): void {
-    const level = clampDemand(demand);
     this.nextPedestrianSpawnSeconds -= deltaSeconds;
-    const target = PEDESTRIAN_TARGETS[level];
+    const target = Math.round(interpolateDemand(PEDESTRIAN_TARGETS, demand));
     while (
       this.nextPedestrianSpawnSeconds <= 0 &&
       this.pedestrians.length < target
@@ -494,13 +515,13 @@ export class LiveTrafficSystem {
       }
       this.nextPedestrianSpawnSeconds += randomArrival(
         this.random,
-        PEDESTRIAN_SPAWN_RATES[level],
+        interpolateDemand(PEDESTRIAN_SPAWN_RATES, demand),
       );
     }
     if (this.nextPedestrianSpawnSeconds <= 0) {
       this.nextPedestrianSpawnSeconds = randomArrival(
         this.random,
-        PEDESTRIAN_SPAWN_RATES[level],
+        interpolateDemand(PEDESTRIAN_SPAWN_RATES, demand),
       );
     }
   }
@@ -679,7 +700,37 @@ export class LiveTrafficSystem {
     }
   }
 
-  private createVehicleRoute(): readonly GridNode[] {
+  private createVehicleRoute(): VehicleRoute {
+    if (this.buildingNodes.length > 0 && this.random.next() < 0.72) {
+      const destination = this.pickBuildingNode([
+        "commercial",
+        "industrial",
+        "civic",
+        "residential",
+      ]);
+      const residentialOrigin = this.pickBuildingNode(["residential"]);
+      const origin =
+        residentialOrigin &&
+        residentialOrigin.node.id !== destination?.node.id &&
+        this.random.next() < 0.65
+          ? residentialOrigin.node
+          : this.randomBoundaryNode();
+      if (
+        destination &&
+        origin.id !== destination.node.id &&
+        manhattanDistance(origin, destination.node) >= 1
+      ) {
+        return {
+          path: createManhattanPath(
+            this.nodes,
+            origin,
+            destination.node,
+            this.random.next() < 0.5,
+          ),
+          freight: destination.kind === "industrial",
+        };
+      }
+    }
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const origin = this.randomBoundaryNode();
       const destination = this.randomBoundaryNode();
@@ -687,23 +738,54 @@ export class LiveTrafficSystem {
         origin.id !== destination.id &&
         manhattanDistance(origin, destination) >= 5
       ) {
+        return {
+          path: createManhattanPath(
+            this.nodes,
+            origin,
+            destination,
+            this.random.next() < 0.5,
+          ),
+          freight: false,
+        };
+      }
+    }
+    return {
+      path: createManhattanPath(
+        this.nodes,
+        this.nodes[0][0],
+        this.nodes[this.nodes.length - 1][this.nodes[0].length - 1],
+        true,
+      ),
+      freight: false,
+    };
+  }
+
+  private createPedestrianRoute(): readonly GridNode[] {
+    if (this.buildingNodes.length > 0 && this.random.next() < 0.78) {
+      const destination = this.pickBuildingNode([
+        "commercial",
+        "civic",
+        "residential",
+        "industrial",
+      ]);
+      const originBuilding = this.pickBuildingNode(["residential"]);
+      const origin =
+        originBuilding && originBuilding.node.id !== destination?.node.id
+          ? originBuilding.node
+          : this.randomNode();
+      if (
+        destination &&
+        origin.id !== destination.node.id &&
+        manhattanDistance(origin, destination.node) >= 1
+      ) {
         return createManhattanPath(
           this.nodes,
           origin,
-          destination,
+          destination.node,
           this.random.next() < 0.5,
         );
       }
     }
-    return createManhattanPath(
-      this.nodes,
-      this.nodes[0][0],
-      this.nodes[this.nodes.length - 1][this.nodes[0].length - 1],
-      true,
-    );
-  }
-
-  private createPedestrianRoute(): readonly GridNode[] {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const origin = this.randomNode();
       const destination = this.randomNode();
@@ -747,6 +829,38 @@ export class LiveTrafficSystem {
     ];
   }
 
+  private nearestNode(x: number, z: number): GridNode {
+    let nearest = this.nodes[0][0];
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const node of this.nodes.flat()) {
+      const candidateDistance = Math.hypot(node.x - x, node.z - z);
+      if (candidateDistance < nearestDistance) {
+        nearest = node;
+        nearestDistance = candidateDistance;
+      }
+    }
+    return nearest;
+  }
+
+  private pickBuildingNode(
+    preferredKinds: readonly PlacedBuilding["kind"][],
+  ): BuildingNode | undefined {
+    const preferred = this.buildingNodes.filter((building) =>
+      preferredKinds.includes(building.kind),
+    );
+    const candidates = preferred.length > 0 ? preferred : this.buildingNodes;
+    const totalWeight = candidates.reduce(
+      (sum, building) => sum + building.weight,
+      0,
+    );
+    let target = this.random.next() * totalWeight;
+    for (const building of candidates) {
+      target -= building.weight;
+      if (target <= 0) return building;
+    }
+    return candidates[candidates.length - 1];
+  }
+
   private canSpawnVehicle(route: readonly GridNode[]): boolean {
     const key = `${route[0].id}>${route[1].id}`;
     return !this.vehicles.some(
@@ -770,11 +884,11 @@ export class LiveTrafficSystem {
   ): void {
     this.nextVehicleSpawnSeconds = randomArrival(
       this.random,
-      VEHICLE_SPAWN_RATES[clampDemand(vehicleDemand)],
+      interpolateDemand(VEHICLE_SPAWN_RATES, vehicleDemand),
     );
     this.nextPedestrianSpawnSeconds = randomArrival(
       this.random,
-      PEDESTRIAN_SPAWN_RATES[clampDemand(pedestrianDemand)],
+      interpolateDemand(PEDESTRIAN_SPAWN_RATES, pedestrianDemand),
     );
   }
 }
@@ -966,6 +1080,7 @@ function vehicleLength(kind: VehicleKind): number {
   if (kind === "suv") return 4.8;
   if (kind === "van") return 5.4;
   if (kind === "bus") return 9.8;
+  if (kind === "truck") return 7.2;
   return 4.4;
 }
 
@@ -982,8 +1097,12 @@ function randomArrival(random: RandomSource, ratePerSecond: number): number {
   return -Math.log(Math.max(1e-9, 1 - random.next())) / ratePerSecond;
 }
 
-function clampDemand(value: number): 1 | 2 | 3 {
-  return Math.round(clamp(value, 1, 3)) as 1 | 2 | 3;
+function interpolateDemand(values: readonly number[], demand: number): number {
+  const sanitized = clamp(demand, 1, 3);
+  const lower = Math.floor(sanitized);
+  const upper = Math.ceil(sanitized);
+  const progress = sanitized - lower;
+  return values[lower] + (values[upper] - values[lower]) * progress;
 }
 
 function moveToward(current: number, target: number, maximumDelta: number): number {

@@ -200,6 +200,12 @@
               <input id="selected-building-color" type="color" value="#bf765f" />
             </label>
           </div>
+          <dl class="building-role-stats" aria-label="Building activity">
+            <div><dt>Residents</dt><dd id="building-residents-output">0</dd></div>
+            <div><dt>Jobs</dt><dd id="building-jobs-output">0</dd></div>
+            <div><dt>Daily visits</dt><dd id="building-visitors-output">0</dd></div>
+            <div><dt>Freight trips</dt><dd id="building-freight-output">0</dd></div>
+          </dl>
           <div class="building-editor-actions">
             <button id="rotate-building-button" type="button">Rotate 90°</button>
             <button id="delete-building-button" class="danger-button" type="button">Bulldoze</button>
@@ -339,6 +345,18 @@
             </label>
           </div>
         </div>
+        <section class="development-impact" aria-labelledby="development-impact-title">
+          <div>
+            <span>Placed development</span>
+            <strong id="development-impact-title">Live building demand</strong>
+          </div>
+          <dl>
+            <div><dt>Residents</dt><dd id="district-residents-output">0</dd></div>
+            <div><dt>Jobs</dt><dd id="district-jobs-output">0</dd></div>
+            <div><dt>Visits/day</dt><dd id="district-visitors-output">0</dd></div>
+            <div><dt>Freight/day</dt><dd id="district-freight-output">0</dd></div>
+          </dl>
+        </section>
         <div class="signal-phase">
           <span>Current phase</span>
           <strong id="signal-phase">East–west traffic</strong>

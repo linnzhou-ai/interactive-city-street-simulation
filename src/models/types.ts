@@ -14,7 +14,7 @@ export type ManualSignalTarget = "ns-green" | "ew-green" | "all-red";
 export type FeatureKind = "street" | "intersection";
 export type FeatureAxis = "x" | "z";
 export type LaneDirection = "two-way" | "forward" | "reverse";
-export type VehicleKind = "sedan" | "compact" | "suv" | "van" | "bus";
+export type VehicleKind = "sedan" | "compact" | "suv" | "van" | "bus" | "truck";
 export type BuildingKind = "residential" | "commercial" | "industrial" | "civic";
 
 export interface PlacedBuilding {

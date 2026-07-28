@@ -112,4 +112,25 @@ describe("LiveTrafficSystem", () => {
     expect(traffic.getMetrics().congestion).toBeGreaterThan(0);
     expect(traffic.getMetrics().potentialConflicts).toBe(0);
   });
+
+  it("sends freight vehicles toward placed industrial buildings", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    traffic.setBuildingDestinations([
+      {
+        id: "industry",
+        kind: "industrial",
+        floors: 8,
+        x: 0,
+        z: 0,
+        rotation: 0,
+        color: "#a66b4e",
+      },
+    ]);
+
+    traffic.update(90, settings);
+
+    expect(
+      traffic.getVehicles().some((vehicle) => vehicle.kind === "truck"),
+    ).toBe(true);
+  });
 });

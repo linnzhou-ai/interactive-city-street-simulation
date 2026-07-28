@@ -598,6 +598,40 @@ body[data-app-mode="simulate"] .selection-panel {
   margin-top: 0.65rem;
 }
 
+.building-role-stats,
+.development-impact dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.38rem;
+  margin: 0.65rem 0 0;
+}
+
+.building-role-stats div,
+.development-impact dl div {
+  padding: 0.42rem;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 7px;
+  background: rgb(3 12 15 / 28%);
+}
+
+.building-role-stats dt,
+.development-impact dt {
+  color: #82998f;
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.building-role-stats dd,
+.development-impact dd {
+  margin: 0.12rem 0 0;
+  color: #a5efda;
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
 .building-editor-actions button {
   padding: 0.48rem;
   font-size: 0.61rem;
@@ -615,6 +649,32 @@ body[data-app-mode="simulate"] .selection-panel {
   padding: 0.7rem;
   border-radius: 10px;
   background: rgb(255 255 255 / 6%);
+}
+
+.development-impact {
+  margin-top: 0.85rem;
+  padding: 0.68rem;
+  border: 1px solid rgb(113 221 190 / 14%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 5%);
+}
+
+.development-impact > div {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.development-impact > div span {
+  color: #82998f;
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.development-impact > div strong {
+  color: #dbe9e3;
+  font-size: 0.68rem;
 }
 
 .signal-editor[hidden] {

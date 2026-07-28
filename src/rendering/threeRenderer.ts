@@ -2178,8 +2178,10 @@ function updateCarAppearance(
         ? [1.06, 1.2, 1.12]
         : kind === "van"
           ? [1.08, 1.28, 1.28]
-          : kind === "bus"
+      : kind === "bus"
             ? [1.15, 1.35, 2.2]
+            : kind === "truck"
+              ? [1.12, 1.35, 1.65]
             : [1, 1, 1];
   object.scale.set(scale[0], scale[1], scale[2]);
 }
