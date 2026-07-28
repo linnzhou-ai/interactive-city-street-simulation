@@ -969,7 +969,55 @@ export class ThreeRenderer {
       return;
     }
 
+    if (isBuildingDesign(cell.element)) {
+      this.buildGridBuilding(cell);
+      return;
+    }
+
     this.buildGridSignal(cell);
+  }
+
+  private buildGridBuilding(cell: GridCellDesign): void {
+    if (!isBuildingDesign(cell.element)) return;
+    const { x, z } = this.getBuildCellPosition(cell.row, cell.column);
+    const group = new THREE.Group();
+    group.position.set(x, 0, z);
+    group.rotation.y = cell.rotation * (Math.PI / 2);
+    this.buildGridGroup.add(group);
+
+    const floors = Math.max(1, Math.min(12, Math.round(cell.floors ?? 4)));
+    const color = cell.color ?? defaultGridBuildingColor(cell.element);
+    const industrial = cell.element === "industrial-building";
+    const civic = cell.element === "civic-building";
+    const commercial = cell.element === "commercial-building";
+    const width = industrial ? 3.25 : commercial ? 2.9 : civic ? 3 : 2.55;
+    const depth = industrial ? 3.1 : civic ? 2.75 : 2.35;
+    const floorHeight = industrial ? 0.46 : 0.64;
+    const height = Math.max(1.5, floors * floorHeight);
+
+    this.addBox(0, 0.5, 0, BUILD_CELL_SIZE - 0.22, 0.15, BUILD_CELL_SIZE - 0.22, "#819576", false, group);
+    this.addBox(0, 0.62 + height / 2, 0, width, height, depth, color, true, group);
+    this.addBox(
+      0,
+      0.67 + height,
+      0,
+      width + (civic ? 0.25 : 0.08),
+      civic ? 0.28 : 0.18,
+      depth + (civic ? 0.25 : 0.08),
+      commercial ? "#b9d8e3" : "#3e4b4e",
+      true,
+      group,
+    );
+
+    const windowColor = commercial ? "#9dd8e6" : "#f3d993";
+    const windowStep = Math.max(1, Math.ceil(floors / 6));
+    for (let floor = 0; floor < floors; floor += windowStep) {
+      const y = 0.88 + floor * floorHeight;
+      for (const offset of [-0.68, 0.68]) {
+        this.addBox(offset, y, depth / 2 + 0.025, 0.38, 0.26, 0.04, windowColor, false, group);
+      }
+    }
+    this.addBox(0, 0.98, depth / 2 + 0.04, 0.5, 0.78, 0.08, "#27363a", false, group);
   }
 
   private buildGridSignal(signal: GridSignalDesign): void {
@@ -1081,6 +1129,26 @@ export class ThreeRenderer {
     parent.add(object);
     return object;
   }
+}
+
+type GridBuildingDesign =
+  | "residential-building"
+  | "commercial-building"
+  | "industrial-building"
+  | "civic-building";
+
+function isBuildingDesign(value: string): value is GridBuildingDesign {
+  return value === "residential-building"
+    || value === "commercial-building"
+    || value === "industrial-building"
+    || value === "civic-building";
+}
+
+function defaultGridBuildingColor(value: GridBuildingDesign): string {
+  if (value === "residential-building") return "#d47f6a";
+  if (value === "commercial-building") return "#6d9fc4";
+  if (value === "industrial-building") return "#b77b58";
+  return "#7f93c6";
 }
 
 const EMPTY_SCENE_VISUAL_METRICS: SceneVisualMetrics = {

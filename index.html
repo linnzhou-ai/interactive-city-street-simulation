@@ -111,6 +111,36 @@
             <span>Bulldoze</span><small>Erase</small>
           </button>
         </div>
+        <p class="build-section-label">Buildings</p>
+        <div class="building-tool-grid" aria-label="Building design tools">
+          <button type="button" data-design-tool="residential-building" aria-pressed="false">
+            <span class="building-swatch residential-building-swatch"></span>
+            <span>Residential</span>
+          </button>
+          <button type="button" data-design-tool="commercial-building" aria-pressed="false">
+            <span class="building-swatch commercial-building-swatch"></span>
+            <span>Commercial</span>
+          </button>
+          <button type="button" data-design-tool="industrial-building" aria-pressed="false">
+            <span class="building-swatch industrial-building-swatch"></span>
+            <span>Industrial</span>
+          </button>
+          <button type="button" data-design-tool="civic-building" aria-pressed="false">
+            <span class="building-swatch civic-building-swatch"></span>
+            <span>Civic</span>
+          </button>
+        </div>
+        <div class="building-customization" aria-label="Building customization">
+          <label for="building-floors-control">
+            <span>Floors</span>
+            <input id="building-floors-control" type="number" min="1" max="12" step="1" value="4" />
+          </label>
+          <label for="building-color-control">
+            <span>Color</span>
+            <input id="building-color-control" type="color" value="#d47f6a" />
+          </label>
+          <small>Change these controls before placing, or select an existing building and edit it live.</small>
+        </div>
         <button id="reset-design-button" class="reset-design-button" type="button">Clear build grid</button>
       </aside>
 

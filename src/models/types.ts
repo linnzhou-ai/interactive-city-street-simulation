@@ -10,7 +10,11 @@ export type DesignElement =
   | "asphalt"
   | "sidewalk"
   | "crosswalk"
-  | "signal";
+  | "signal"
+  | "residential-building"
+  | "commercial-building"
+  | "industrial-building"
+  | "civic-building";
 export type IntersectionLayout = "four-way" | "t-junction" | "straight";
 export type BuildTool = DesignElement | "erase";
 
@@ -19,6 +23,8 @@ export interface GridCellDesign {
   column: number;
   element: DesignElement;
   rotation: number;
+  floors?: number;
+  color?: string;
 }
 
 export interface GridSignalDesign {

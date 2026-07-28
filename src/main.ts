@@ -36,6 +36,11 @@ import {
 } from "./rendering/threeRenderer";
 
 type Layer = "overview" | "people" | "economy" | "infrastructure" | "land-use";
+type BuildingBuildTool =
+  | "residential-building"
+  | "commercial-building"
+  | "industrial-building"
+  | "civic-building";
 
 interface DisplayItem {
   label: string;
@@ -61,6 +66,8 @@ const buildGrid = requireElement<HTMLElement>("build-grid");
 const selectedBuildTool = requireElement<HTMLElement>("selected-build-tool");
 const resetDesignButton = requireElement<HTMLButtonElement>("reset-design-button");
 const rotateLayoutButton = requireElement<HTMLButtonElement>("rotate-layout-button");
+const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
+const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const mobilePanelButton = requireElement<HTMLButtonElement>("mobile-panel-button");
 const settingsButton = requireElement<HTMLButtonElement>("settings-button");
 const settingsClose = requireElement<HTMLButtonElement>("settings-close");
@@ -284,6 +291,8 @@ resetDesignButton.addEventListener("click", () => {
   selectedGridCell = null;
   syncBuildGrid();
 });
+buildingFloorsControl.addEventListener("input", updateSelectedBuildingCustomization);
+buildingColorControl.addEventListener("input", updateSelectedBuildingCustomization);
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -1260,6 +1269,9 @@ function createBuildGrid(): void {
 function selectBuildTool(tool: BuildTool): void {
   activeBuildTool = tool;
   selectedBuildTool.textContent = formatBuildTool(tool);
+  if (isBuildingBuildTool(tool)) {
+    buildingColorControl.value = defaultBuildingColor(tool);
+  }
   for (const button of designToolButtons) {
     const buttonTool = button.dataset.designTool ?? button.dataset.buildTool;
     const selected = buttonTool === tool;
@@ -1278,8 +1290,32 @@ function paintGridCell(row: number, column: number): void {
   } else if (activeBuildTool === "signal") {
     gridSignals.set(key, { row, column, rotation: 0 });
   } else {
-    gridCells.set(key, { row, column, element: activeBuildTool, rotation: 0 });
+    gridCells.set(key, {
+      row,
+      column,
+      element: activeBuildTool,
+      rotation: 0,
+      ...(isBuildingBuildTool(activeBuildTool)
+        ? {
+            floors: clampBuildingFloors(Number(buildingFloorsControl.value)),
+            color: buildingColorControl.value,
+          }
+        : {}),
+    });
   }
+  syncBuildGrid();
+}
+
+function updateSelectedBuildingCustomization(): void {
+  if (!selectedGridCell) return;
+  const key = gridCellKey(selectedGridCell.row, selectedGridCell.column);
+  const current = gridCells.get(key);
+  if (!current || !isBuildingBuildTool(current.element)) return;
+  gridCells.set(key, {
+    ...current,
+    floors: clampBuildingFloors(Number(buildingFloorsControl.value)),
+    color: buildingColorControl.value,
+  });
   syncBuildGrid();
 }
 
@@ -1382,8 +1418,10 @@ function syncBuildGrid(): void {
     const signal = gridSignals.get(gridCellKey(row, column));
     cellButton.dataset.element = design?.element ?? "empty";
     cellButton.dataset.rotation = String(design?.rotation ?? 0);
+    cellButton.dataset.floors = String(design?.floors ?? 0);
     cellButton.dataset.signal = String(Boolean(signal));
     cellButton.style.setProperty("--signal-rotation", `${(signal?.rotation ?? 0) * 90}deg`);
+    cellButton.style.setProperty("--building-color", design?.color ?? "transparent");
     cellButton.setAttribute(
       "aria-selected",
       String(selectedGridCell?.row === row && selectedGridCell.column === column),
@@ -1391,6 +1429,8 @@ function syncBuildGrid(): void {
     cellButton.setAttribute(
       "aria-label",
       `Grid row ${row + 1}, column ${column + 1}: ${design?.element ?? "empty"}${
+        design && isBuildingBuildTool(design.element) ? `, ${design.floors ?? 1} floors` : ""
+      }${
         signal ? " with traffic signal" : ""
       }`,
     );
@@ -1408,7 +1448,29 @@ function isBuildTool(value: string | undefined): value is BuildTool {
     || value === "sidewalk"
     || value === "crosswalk"
     || value === "signal"
+    || value === "residential-building"
+    || value === "commercial-building"
+    || value === "industrial-building"
+    || value === "civic-building"
     || value === "erase";
+}
+
+function isBuildingBuildTool(value: string | undefined): value is BuildingBuildTool {
+  return value === "residential-building"
+    || value === "commercial-building"
+    || value === "industrial-building"
+    || value === "civic-building";
+}
+
+function defaultBuildingColor(tool: BuildingBuildTool): string {
+  if (tool === "residential-building") return "#d47f6a";
+  if (tool === "commercial-building") return "#6d9fc4";
+  if (tool === "industrial-building") return "#b77b58";
+  return "#7f93c6";
+}
+
+function clampBuildingFloors(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.min(12, Math.round(value))) : 1;
 }
 
 function isIntersectionLayout(value: string | undefined): value is IntersectionLayout {
@@ -1422,6 +1484,10 @@ function formatBuildTool(tool: BuildTool): string {
   if (tool === "asphalt") return "Intersection tile";
   if (tool === "sidewalk") return "Sidewalk";
   if (tool === "crosswalk") return "Crosswalk";
+  if (tool === "residential-building") return "Residential building";
+  if (tool === "commercial-building") return "Commercial building";
+  if (tool === "industrial-building") return "Industrial building";
+  if (tool === "civic-building") return "Civic building";
   return "Traffic signal";
 }
 
