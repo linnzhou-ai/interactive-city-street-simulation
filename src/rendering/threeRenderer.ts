@@ -668,7 +668,17 @@ export class ThreeRenderer {
     material: THREE.Material,
     shadows: boolean,
   ): THREE.Mesh {
-    const volume = box(width, height, depth, material);
+    const volume = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, depth),
+      [
+        material,
+        material,
+        this.materials.rooftop,
+        material,
+        material,
+        material,
+      ],
+    );
     volume.position.set(x, height / 2, z);
     volume.castShadow = shadows;
     volume.receiveShadow = true;
