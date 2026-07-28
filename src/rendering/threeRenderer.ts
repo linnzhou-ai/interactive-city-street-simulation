@@ -108,6 +108,12 @@ interface ExpansionRoadInteractionHandlers {
   onRejected: (reason: string) => void;
 }
 
+interface ExpansionJunction {
+  x: number;
+  z: number;
+  roadIds: Set<string>;
+}
+
 interface BuildingPlacementResult {
   valid: boolean;
   reason: string;
@@ -323,8 +329,10 @@ export class ThreeRenderer {
     this.expansionRoadData.clear();
     for (const road of roads) {
       this.expansionRoadData.set(road.id, { ...road });
-      this.addExpansionRoad(road);
     }
+    const junctions = findExpansionJunctions(roads);
+    for (const road of roads) this.addExpansionRoad(road, junctions);
+    for (const junction of junctions) this.addExpansionJunction(junction);
   }
 
   validateExpansionRoad(
@@ -752,7 +760,10 @@ export class ThreeRenderer {
     this.expansionGuideGroup.visible = false;
   }
 
-  private addExpansionRoad(road: ExpansionRoad): void {
+  private addExpansionRoad(
+    road: ExpansionRoad,
+    junctions: readonly ExpansionJunction[],
+  ): void {
     const group = new THREE.Group();
     group.userData.expansionRoadId = road.id;
     const asphalt = createWorldSegmentMesh(
@@ -769,18 +780,28 @@ export class ThreeRenderer {
     asphalt.userData.walkable = true;
     group.add(asphalt);
 
-    const centerLine = createWorldSegmentMesh(
-      road.startX,
-      road.startZ,
-      road.endX,
-      road.endZ,
-      0.24,
-      0.03,
-      this.materials.yellowLine,
-      2,
+    const connectedJunctions = junctions.filter((junction) =>
+      junction.roadIds.has(road.id),
     );
-    centerLine.position.y = RENDER_HEIGHTS.roadMarking;
-    group.add(centerLine);
+    const visiblePieces = splitRoadAroundJunctions(
+      road,
+      connectedJunctions,
+      road.width / 2 + 1,
+    );
+    for (const piece of visiblePieces) {
+      const centerLine = createWorldSegmentMesh(
+        piece.startX,
+        piece.startZ,
+        piece.endX,
+        piece.endZ,
+        0.24,
+        0.03,
+        this.materials.yellowLine,
+        2,
+      );
+      centerLine.position.y = RENDER_HEIGHTS.roadMarking;
+      group.add(centerLine);
+    }
 
     const dx = road.endX - road.startX;
     const dz = road.endZ - road.startZ;
@@ -789,19 +810,78 @@ export class ThreeRenderer {
     const nz = length > 0 ? dx / length : 0;
     const sidewalkOffset = road.width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
     for (const side of [-1, 1]) {
-      const sidewalk = createWorldSegmentMesh(
-        road.startX + nx * sidewalkOffset * side,
-        road.startZ + nz * sidewalkOffset * side,
-        road.endX + nx * sidewalkOffset * side,
-        road.endZ + nz * sidewalkOffset * side,
-        SIDEWALK_WIDTH,
-        0.28,
-        this.materials.sidewalk,
+      for (const piece of visiblePieces) {
+        const sidewalk = createWorldSegmentMesh(
+          piece.startX + nx * sidewalkOffset * side,
+          piece.startZ + nz * sidewalkOffset * side,
+          piece.endX + nx * sidewalkOffset * side,
+          piece.endZ + nz * sidewalkOffset * side,
+          SIDEWALK_WIDTH,
+          0.28,
+          this.materials.sidewalk,
+        );
+        sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
+        sidewalk.receiveShadow = true;
+        sidewalk.userData.walkable = true;
+        group.add(sidewalk);
+      }
+    }
+    this.expansionRoadGroup.add(group);
+  }
+
+  private addExpansionJunction(junction: ExpansionJunction): void {
+    const connectedRoads = Array.from(junction.roadIds)
+      .map((id) => this.expansionRoadData.get(id))
+      .filter((road): road is ExpansionRoad => road !== undefined);
+    if (connectedRoads.length < 2) return;
+    const width = Math.max(...connectedRoads.map((road) => road.width)) + 1;
+    const group = new THREE.Group();
+    group.userData.expansionJunction = true;
+
+    const asphalt = box(width, 0.08, width, this.materials.asphalt);
+    asphalt.position.set(junction.x, 0.12, junction.z);
+    asphalt.receiveShadow = true;
+    asphalt.userData.walkable = true;
+    group.add(asphalt);
+
+    const cornerOffset = width / 2 + SIDEWALK_WIDTH / 2;
+    for (const xSign of [-1, 1]) {
+      for (const zSign of [-1, 1]) {
+        const corner = box(
+          SIDEWALK_WIDTH,
+          0.28,
+          SIDEWALK_WIDTH,
+          this.materials.sidewalk,
+        );
+        corner.position.set(
+          junction.x + cornerOffset * xSign,
+          RENDER_HEIGHTS.sidewalkCenter,
+          junction.z + cornerOffset * zSign,
+        );
+        corner.receiveShadow = true;
+        corner.userData.walkable = true;
+        group.add(corner);
+      }
+    }
+
+    const directions = junctionDirections(junction, connectedRoads);
+    const lineOffset = width / 2 + 1.2;
+    for (const direction of directions) {
+      const horizontalApproach = direction === "west" || direction === "east";
+      const stopLine = box(
+        horizontalApproach ? 0.45 : width - 1,
+        0.025,
+        horizontalApproach ? width - 1 : 0.45,
+        this.materials.whiteLine,
       );
-      sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
-      sidewalk.receiveShadow = true;
-      sidewalk.userData.walkable = true;
-      group.add(sidewalk);
+      stopLine.position.set(
+        junction.x +
+          (direction === "west" ? -lineOffset : direction === "east" ? lineOffset : 0),
+        RENDER_HEIGHTS.roadMarking + 0.01,
+        junction.z +
+          (direction === "north" ? -lineOffset : direction === "south" ? lineOffset : 0),
+      );
+      group.add(stopLine);
     }
     this.expansionRoadGroup.add(group);
   }
@@ -2831,6 +2911,157 @@ function distanceToSegment(
     1,
   );
   return Math.hypot(pointX - (startX + dx * t), pointZ - (startZ + dz * t));
+}
+
+function findExpansionJunctions(
+  roads: readonly ExpansionRoad[],
+): ExpansionJunction[] {
+  const junctions = new Map<string, ExpansionJunction>();
+  const addJunction = (
+    x: number,
+    z: number,
+    firstRoadId: string,
+    secondRoadId: string,
+  ) => {
+    const key = `${x.toFixed(2)}:${z.toFixed(2)}`;
+    const junction = junctions.get(key) ?? {
+      x,
+      z,
+      roadIds: new Set<string>(),
+    };
+    junction.roadIds.add(firstRoadId);
+    junction.roadIds.add(secondRoadId);
+    junctions.set(key, junction);
+  };
+
+  for (let firstIndex = 0; firstIndex < roads.length; firstIndex += 1) {
+    const first = roads[firstIndex];
+    for (let secondIndex = firstIndex + 1; secondIndex < roads.length; secondIndex += 1) {
+      const second = roads[secondIndex];
+      for (const [x, z] of [
+        [first.startX, first.startZ],
+        [first.endX, first.endZ],
+      ] as const) {
+        if (
+          distanceToSegment(
+            x,
+            z,
+            second.startX,
+            second.startZ,
+            second.endX,
+            second.endZ,
+          ) <= 0.25
+        ) {
+          addJunction(x, z, first.id, second.id);
+        }
+      }
+      for (const [x, z] of [
+        [second.startX, second.startZ],
+        [second.endX, second.endZ],
+      ] as const) {
+        if (
+          distanceToSegment(
+            x,
+            z,
+            first.startX,
+            first.startZ,
+            first.endX,
+            first.endZ,
+          ) <= 0.25
+        ) {
+          addJunction(x, z, first.id, second.id);
+        }
+      }
+
+      const firstHorizontal =
+        Math.abs(first.endX - first.startX) >=
+        Math.abs(first.endZ - first.startZ);
+      const secondHorizontal =
+        Math.abs(second.endX - second.startX) >=
+        Math.abs(second.endZ - second.startZ);
+      if (firstHorizontal === secondHorizontal) continue;
+      const horizontal = firstHorizontal ? first : second;
+      const vertical = firstHorizontal ? second : first;
+      const x = vertical.startX;
+      const z = horizontal.startZ;
+      if (
+        x >= Math.min(horizontal.startX, horizontal.endX) - 0.25 &&
+        x <= Math.max(horizontal.startX, horizontal.endX) + 0.25 &&
+        z >= Math.min(vertical.startZ, vertical.endZ) - 0.25 &&
+        z <= Math.max(vertical.startZ, vertical.endZ) + 0.25
+      ) {
+        addJunction(x, z, first.id, second.id);
+      }
+    }
+  }
+  return [...junctions.values()];
+}
+
+function splitRoadAroundJunctions(
+  road: ExpansionRoad,
+  junctions: readonly ExpansionJunction[],
+  padding: number,
+): Array<Pick<ExpansionRoad, "startX" | "startZ" | "endX" | "endZ">> {
+  const dx = road.endX - road.startX;
+  const dz = road.endZ - road.startZ;
+  const length = Math.hypot(dx, dz);
+  if (length <= 0.1) return [];
+  const unitX = dx / length;
+  const unitZ = dz / length;
+  const intervals = junctions
+    .map((junction) => {
+      const center =
+        (junction.x - road.startX) * unitX +
+        (junction.z - road.startZ) * unitZ;
+      return {
+        start: THREE.MathUtils.clamp(center - padding, 0, length),
+        end: THREE.MathUtils.clamp(center + padding, 0, length),
+      };
+    })
+    .sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const interval of intervals) {
+    const previous = merged[merged.length - 1];
+    if (previous && interval.start <= previous.end) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      merged.push({ ...interval });
+    }
+  }
+  const visible: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const interval of merged) {
+    if (interval.start - cursor > 0.5) {
+      visible.push({ start: cursor, end: interval.start });
+    }
+    cursor = Math.max(cursor, interval.end);
+  }
+  if (length - cursor > 0.5) visible.push({ start: cursor, end: length });
+  return visible.map((piece) => ({
+    startX: road.startX + unitX * piece.start,
+    startZ: road.startZ + unitZ * piece.start,
+    endX: road.startX + unitX * piece.end,
+    endZ: road.startZ + unitZ * piece.end,
+  }));
+}
+
+function junctionDirections(
+  junction: ExpansionJunction,
+  roads: readonly ExpansionRoad[],
+): Set<"north" | "south" | "east" | "west"> {
+  const directions = new Set<"north" | "south" | "east" | "west">();
+  for (const road of roads) {
+    for (const [x, z] of [
+      [road.startX, road.startZ],
+      [road.endX, road.endZ],
+    ] as const) {
+      const dx = x - junction.x;
+      const dz = z - junction.z;
+      if (Math.abs(dx) > 0.5) directions.add(dx < 0 ? "west" : "east");
+      if (Math.abs(dz) > 0.5) directions.add(dz < 0 ? "north" : "south");
+    }
+  }
+  return directions;
 }
 
 function worldToGeo(x: number, z: number): GeoPoint {

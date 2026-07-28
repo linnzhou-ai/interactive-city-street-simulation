@@ -530,17 +530,17 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
     setExpansionRoadToolActive(true);
     buildWorkspaceHelp.textContent =
-      "The amber boundary protects the original city. Roads snap to the small 20 m grid.";
+      "Roads snap to the 20 m grid. Connections generate intersections and sidewalks automatically.";
     selectionTitle.textContent = "Expansion zone";
     selectionDescription.textContent =
-      "Drag along the grid to make straight 90° roads, or place a building.";
+      "Drag 90° roads together; intersections and sidewalks rebuild automatically.";
     featureKind.textContent = "Build area";
     featureKind.dataset.kind = "building";
     buildingEditor.hidden = true;
     signalEditor.hidden = true;
     designSummary.replaceChildren();
     selectionStatus.textContent =
-      "Draw along the small grid outside the protected city. Roads stay horizontal or vertical.";
+      "Connect or cross roads outside the protected city to generate a finished intersection.";
   } else {
     setExpansionRoadToolActive(false);
     renderer.setSelectedFeature(selectedFeature?.id ?? null);
@@ -575,7 +575,7 @@ function setExpansionRoadToolActive(active: boolean): void {
 function updateExpansionRoadCount(): void {
   expansionRoadCount.textContent = `${expansionRoads.size} road${
     expansionRoads.size === 1 ? "" : "s"
-  } · 20 m grid · 90° corners`;
+  } · auto junctions · auto sidewalks`;
 }
 
 function setCameraMode(mode: CameraMode): void {
