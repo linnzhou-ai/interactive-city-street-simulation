@@ -25,6 +25,7 @@ import type {
   SimulationState,
   VehicleKind,
   VehicleSnapshot,
+  WeatherMode,
 } from "../models/types";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
@@ -85,7 +86,9 @@ type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
 interface BuildingInteractionHandlers {
   onPlace: (x: number, z: number) => void;
   onSelect: (id: string | null) => void;
+  onMoveStart: (id: string) => void;
   onMove: (id: string, x: number, z: number) => void;
+  onMoveEnd: (id: string) => void;
   onPlacementRejected: (reason: string) => void;
 }
 
@@ -122,6 +125,13 @@ export class ThreeRenderer {
   private readonly collisionIndex = new SpatialHash<CollisionVolume>(96);
   private readonly walkableIndex = new SpatialHash<WalkableSurface>(96);
   private readonly collisionDebugGroup = new THREE.Group();
+  private readonly hemisphereLight = new THREE.HemisphereLight(
+    "#dff3ff",
+    "#536044",
+    2.35,
+  );
+  private readonly sunLight = new THREE.DirectionalLight("#fff3d6", 4.8);
+  private readonly rainPoints = createRainPoints();
   private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
     "collisionDebug",
   );
@@ -181,6 +191,7 @@ export class ThreeRenderer {
       this.trafficGroup,
       this.pedestrianGroup,
       this.placedBuildingGroup,
+      this.rainPoints,
     );
     this.buildLightingAndSky();
     this.buildGround();
@@ -333,8 +344,43 @@ export class ThreeRenderer {
     for (const group of this.placedBuildingMeshes.values()) {
       const marker = group.getObjectByName("building-activity-marker");
       if (marker) marker.visible = !enabled;
+      const entrance = group.getObjectByName("building-entrance-glow");
+      if (entrance) entrance.visible = !enabled;
     }
     this.updateFeatureHighlights();
+  }
+
+  setEnvironment(timeOfDayHours: number, weather: WeatherMode): void {
+    const hour = ((timeOfDayHours % 24) + 24) % 24;
+    const daylight = THREE.MathUtils.clamp(
+      (Math.cos(((hour - 12) / 12) * Math.PI) + 0.15) / 1.15,
+      0.04,
+      1,
+    );
+    const night = new THREE.Color("#101b2c");
+    const day =
+      weather === "fog"
+        ? new THREE.Color("#aebdbc")
+        : weather === "rain"
+          ? new THREE.Color("#71858c")
+          : new THREE.Color("#b8cfd0");
+    const sky = night.clone().lerp(day, daylight);
+    this.scene.background = sky;
+    this.scene.fog = new THREE.FogExp2(
+      sky,
+      weather === "fog" ? 0.00105 : weather === "rain" ? 0.00048 : 0.00026,
+    );
+    this.hemisphereLight.intensity = 0.35 + daylight * 2;
+    this.sunLight.intensity =
+      (weather === "rain" ? 1.7 : weather === "fog" ? 1.15 : 4.8) * daylight;
+    const sunAngle = ((hour - 6) / 12) * Math.PI;
+    this.sunLight.position.set(
+      Math.cos(sunAngle) * 850,
+      180 + Math.sin(sunAngle) * 900,
+      470,
+    );
+    this.renderer.toneMappingExposure = 0.58 + daylight * 0.5;
+    this.rainPoints.visible = weather === "rain";
   }
 
   setCameraMode(mode: CameraMode): void {
@@ -432,29 +478,51 @@ export class ThreeRenderer {
     this.syncVehicles(state.vehicles);
     this.syncPedestrians(state.pedestrians);
     this.updateSignals(state.signals);
+    this.updateEnvironmentEffects(frameSeconds, state.elapsedSeconds);
 
     if (this.cameraMode === "orbit") this.controls.update();
     this.updateCollisionDebug();
     this.renderer.render(this.scene, this.camera);
   }
 
-  private buildLightingAndSky(): void {
-    const hemisphere = new THREE.HemisphereLight("#dff3ff", "#536044", 2.35);
-    this.scene.add(hemisphere);
+  private updateEnvironmentEffects(
+    frameSeconds: number,
+    elapsedSeconds: number,
+  ): void {
+    if (this.rainPoints.visible) {
+      const positions = this.rainPoints.geometry.getAttribute(
+        "position",
+      ) as THREE.BufferAttribute;
+      for (let index = 0; index < positions.count; index += 1) {
+        const nextY = positions.getY(index) - frameSeconds * 115;
+        positions.setY(index, nextY < 0 ? 150 + (index % 70) : nextY);
+      }
+      positions.needsUpdate = true;
+    }
+    const pulse = 0.42 + (Math.sin(elapsedSeconds * 4) + 1) * 0.18;
+    for (const group of this.placedBuildingMeshes.values()) {
+      const entrance = group.getObjectByName("building-entrance-glow");
+      if (!(entrance instanceof THREE.Mesh)) continue;
+      const material = entrance.material as THREE.MeshBasicMaterial;
+      material.opacity = pulse;
+    }
+  }
 
-    const sun = new THREE.DirectionalLight("#fff3d6", 4.8);
-    sun.position.set(-620, 1_050, 470);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -1_050;
-    sun.shadow.camera.right = 1_050;
-    sun.shadow.camera.top = 1_050;
-    sun.shadow.camera.bottom = -1_050;
-    sun.shadow.camera.near = 100;
-    sun.shadow.camera.far = 2_500;
-    sun.shadow.bias = -0.00035;
-    sun.shadow.normalBias = 0.06;
-    this.scene.add(sun);
+  private buildLightingAndSky(): void {
+    this.scene.add(this.hemisphereLight);
+
+    this.sunLight.position.set(-620, 1_050, 470);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.camera.left = -1_050;
+    this.sunLight.shadow.camera.right = 1_050;
+    this.sunLight.shadow.camera.top = 1_050;
+    this.sunLight.shadow.camera.bottom = -1_050;
+    this.sunLight.shadow.camera.near = 100;
+    this.sunLight.shadow.camera.far = 2_500;
+    this.sunLight.shadow.bias = -0.00035;
+    this.sunLight.shadow.normalBias = 0.06;
+    this.scene.add(this.sunLight);
 
     const fill = new THREE.DirectionalLight("#b6d4e2", 1.1);
     fill.position.set(900, 420, -700);
@@ -1346,6 +1414,21 @@ export class ThreeRenderer {
     const door = box(2.5, 3.2, 0.2, this.materials.streetMetal);
     door.position.set(0, 2.05, depth / 2 + 0.14);
     group.add(door);
+    const entranceGlow = new THREE.Mesh(
+      new THREE.RingGeometry(1.15, 1.8, 28),
+      new THREE.MeshBasicMaterial({
+        color: "#79f0c9",
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    entranceGlow.name = "building-entrance-glow";
+    entranceGlow.rotation.x = -Math.PI / 2;
+    entranceGlow.position.set(0, 0.42, depth / 2 + 1.2);
+    entranceGlow.visible = !this.buildMode;
+    group.add(entranceGlow);
 
     const selectionRing = new THREE.Mesh(
       new THREE.RingGeometry(Math.max(width, depth) * 0.68, Math.max(width, depth) * 0.82, 40),
@@ -1410,6 +1493,7 @@ export class ThreeRenderer {
           const group = this.placedBuildingMeshes.get(buildingId);
           if (group && this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
             this.draggingBuildingId = buildingId;
+            this.buildingInteractionHandlers?.onMoveStart(buildingId);
             this.dragOffset.copy(group.position).sub(this.placementPoint);
             this.controls.enabled = false;
             this.canvas.setPointerCapture(event.pointerId);
@@ -1479,11 +1563,13 @@ export class ThreeRenderer {
     });
     this.canvas.addEventListener("pointerup", (event) => {
       if (this.draggingBuildingId) {
+        const completedBuildingId = this.draggingBuildingId;
         this.draggingBuildingId = null;
         this.controls.enabled = true;
         if (this.canvas.hasPointerCapture(event.pointerId)) {
           this.canvas.releasePointerCapture(event.pointerId);
         }
+        this.buildingInteractionHandlers?.onMoveEnd(completedBuildingId);
         return;
       }
       if (this.cameraMode === "fly") {
@@ -2346,6 +2432,35 @@ function createBuildingActivityMarker(building: PlacedBuilding): THREE.Sprite {
   marker.scale.set(0.16, 0.04, 1);
   marker.renderOrder = 9;
   return marker;
+}
+
+function createRainPoints(): THREE.Points<
+  THREE.BufferGeometry,
+  THREE.PointsMaterial
+> {
+  const count = 1_600;
+  const positions = new Float32Array(count * 3);
+  const random = seededRandom(20260728);
+  for (let index = 0; index < count; index += 1) {
+    positions[index * 3] = (random() - 0.5) * 2_400;
+    positions[index * 3 + 1] = random() * 190;
+    positions[index * 3 + 2] = (random() - 0.5) * 2_400;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const points = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: "#c9e9f4",
+      size: 1.35,
+      transparent: true,
+      opacity: 0.64,
+      depthWrite: false,
+    }),
+  );
+  points.visible = false;
+  points.frustumCulled = false;
+  return points;
 }
 
 function createCar(color: string, kind: VehicleKind): THREE.Group {

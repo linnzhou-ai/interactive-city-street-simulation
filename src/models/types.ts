@@ -1,6 +1,7 @@
 export type AppMode = "build" | "simulate";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
+export type WeatherMode = "clear" | "rain" | "fog";
 export type MapOverlayMode = "none" | "congestion" | "pedestrians" | "conflicts";
 export type SignalPhase =
   | "ns-green"
@@ -127,11 +128,14 @@ export interface SimulationMetrics {
   activeVehicles: number;
   activePedestrians: number;
   crossingsCompleted: number;
+  buildingArrivals: number;
 }
 
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
+  timeOfDayHours: number;
+  weather: WeatherMode;
   signalPhase: SignalPhase;
   signals: readonly SignalSnapshot[];
   vehicles: readonly VehicleSnapshot[];

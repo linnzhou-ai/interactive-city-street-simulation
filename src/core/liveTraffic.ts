@@ -63,12 +63,15 @@ interface GridNode {
   row: number;
   x: number;
   z: number;
+  portal?: boolean;
 }
 
 interface BuildingNode {
   id: string;
   kind: PlacedBuilding["kind"];
   node: GridNode;
+  curb: GridNode;
+  entrance: GridNode;
   weight: number;
 }
 
@@ -257,6 +260,7 @@ export class LiveTrafficSystem {
   private completedPedestrianTravelSeconds = 0;
   private completedPedestrianWaitSeconds = 0;
   private crossingsCompleted = 0;
+  private buildingArrivals = 0;
   private buildingNodes: BuildingNode[] = [];
 
   constructor(seed: number) {
@@ -281,6 +285,7 @@ export class LiveTrafficSystem {
     this.completedPedestrianTravelSeconds = 0;
     this.completedPedestrianWaitSeconds = 0;
     this.crossingsCompleted = 0;
+    this.buildingArrivals = 0;
     for (const controller of this.controllers.values()) {
       controller.reset();
     }
@@ -316,12 +321,18 @@ export class LiveTrafficSystem {
   }
 
   setBuildingDestinations(buildings: readonly PlacedBuilding[]): void {
-    this.buildingNodes = buildings.map((building) => ({
-      id: building.id,
-      kind: building.kind,
-      node: this.nearestNode(building.x, building.z),
-      weight: Math.max(1, building.floors),
-    }));
+    this.buildingNodes = buildings.map((building) => {
+      const node = this.nearestNode(building.x, building.z);
+      const entrance = createBuildingEntrance(building, node);
+      return {
+        id: building.id,
+        kind: building.kind,
+        node,
+        curb: createBuildingCurb(building.id, entrance, node),
+        entrance,
+        weight: Math.max(1, building.floors),
+      };
+    });
   }
 
   setAllSignalCycles(totalSeconds: number): void {
@@ -442,6 +453,7 @@ export class LiveTrafficSystem {
       activeVehicles: this.vehicles.length,
       activePedestrians: this.pedestrians.length,
       crossingsCompleted: this.crossingsCompleted,
+      buildingArrivals: this.buildingArrivals,
     };
   }
 
@@ -637,6 +649,9 @@ export class LiveTrafficSystem {
       this.completedPedestrianTravelSeconds +=
         this.elapsedSeconds - pedestrian.spawnedAt;
       this.completedPedestrianWaitSeconds += pedestrian.waitSeconds;
+      if (pedestrian.path.at(-1)?.id.endsWith(":entrance")) {
+        this.buildingArrivals += 1;
+      }
       return false;
     });
   }
@@ -659,14 +674,17 @@ export class LiveTrafficSystem {
       if (gap < 1.5) targetSpeed = Math.min(targetSpeed, Math.max(0, gap));
     }
     if (!finalNode && remaining < 11) {
-      const signal = this.controllers.get(end.id)?.getSnapshot();
+      const controller = this.controllers.get(end.id);
+      const signal = controller?.getSnapshot();
       if (
+        controller &&
         pedestrian.committedIntersectionId === null &&
         signal?.phase === "pedestrian-walk"
       ) {
         pedestrian.committedIntersectionId = end.id;
       }
       if (
+        controller &&
         pedestrian.committedIntersectionId !== end.id &&
         signal?.phase !== "pedestrian-walk"
       ) {
@@ -769,21 +787,35 @@ export class LiveTrafficSystem {
         "industrial",
       ]);
       const originBuilding = this.pickBuildingNode(["residential"]);
-      const origin =
-        originBuilding && originBuilding.node.id !== destination?.node.id
+      const useOriginBuilding =
+        originBuilding !== undefined &&
+        originBuilding.node.id !== destination?.node.id;
+      if (destination && !useOriginBuilding && this.random.next() < 0.55) {
+        return [destination.curb, destination.entrance];
+      }
+      const originNode =
+        useOriginBuilding && originBuilding
           ? originBuilding.node
           : this.randomNode();
       if (
         destination &&
-        origin.id !== destination.node.id &&
-        manhattanDistance(origin, destination.node) >= 1
+        originNode.id !== destination.node.id &&
+        manhattanDistance(originNode, destination.node) >= 1
       ) {
-        return createManhattanPath(
+        const streetPath = createManhattanPath(
           this.nodes,
-          origin,
+          originNode,
           destination.node,
           this.random.next() < 0.5,
         );
+        return [
+          ...(useOriginBuilding && originBuilding
+            ? [originBuilding.entrance, originBuilding.curb]
+            : []),
+          ...streetPath,
+          destination.curb,
+          destination.entrance,
+        ];
       }
     }
     for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -1021,6 +1053,14 @@ function positionVehicle(vehicle: VehicleAgent): PositionedAgent {
 function positionPedestrian(pedestrian: PedestrianAgent): PositionedAgent {
   const start = pedestrian.path[pedestrian.segmentIndex];
   const end = pedestrian.path[pedestrian.segmentIndex + 1] ?? start;
+  if (start.portal || end.portal) {
+    return positionAlongPath(
+      pedestrian.path,
+      pedestrian.segmentIndex,
+      pedestrian.distanceOnSegment,
+      0,
+    );
+  }
   const majorRoad =
     start.row === end.row
       ? PENN_STREETS[start.row].name === "Market Street" ||
@@ -1034,6 +1074,48 @@ function positionPedestrian(pedestrian: PedestrianAgent): PositionedAgent {
     pedestrian.distanceOnSegment,
     sidewalkOffset * pedestrian.side,
   );
+}
+
+function createBuildingEntrance(
+  building: PlacedBuilding,
+  nearestNode: GridNode,
+): GridNode {
+  const depth =
+    building.kind === "industrial"
+      ? 19
+      : building.kind === "civic"
+        ? 17
+        : building.kind === "commercial"
+          ? 15
+          : 14;
+  const distanceFromCenter = depth / 2 + 1.2;
+  return {
+    id: `${building.id}:entrance`,
+    column: nearestNode.column,
+    row: nearestNode.row,
+    x: building.x + Math.sin(building.rotation) * distanceFromCenter,
+    z: building.z + Math.cos(building.rotation) * distanceFromCenter,
+    portal: true,
+  };
+}
+
+function createBuildingCurb(
+  buildingId: string,
+  entrance: GridNode,
+  nearestNode: GridNode,
+): GridNode {
+  const dx = entrance.x - nearestNode.x;
+  const dz = entrance.z - nearestNode.z;
+  const length = Math.max(0.001, Math.hypot(dx, dz));
+  const sidewalkDistance = 11.2;
+  return {
+    id: `${buildingId}:curb`,
+    column: nearestNode.column,
+    row: nearestNode.row,
+    x: nearestNode.x + (dx / length) * sidewalkDistance,
+    z: nearestNode.z + (dz / length) * sidewalkDistance,
+    portal: true,
+  };
 }
 
 function positionAlongPath(
@@ -1098,7 +1180,7 @@ function randomArrival(random: RandomSource, ratePerSecond: number): number {
 }
 
 function interpolateDemand(values: readonly number[], demand: number): number {
-  const sanitized = clamp(demand, 1, 3);
+  const sanitized = clamp(demand, 0, 3);
   const lower = Math.floor(sanitized);
   const upper = Math.ceil(sanitized);
   const progress = sanitized - lower;

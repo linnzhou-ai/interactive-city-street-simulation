@@ -8,6 +8,7 @@ import type {
   SignalTiming,
   SimulationMetrics,
   SimulationState,
+  WeatherMode,
 } from "../models/types";
 import {
   EMPTY_BUILDING_ACTIVITY,
@@ -44,11 +45,15 @@ export function createInitialState(
   traffic: TrafficSnapshotSource = new LiveTrafficSystem(
     DEFAULT_SETTINGS.simulationSeed,
   ),
+  timeOfDayHours = 8,
+  weather: WeatherMode = "clear",
 ): SimulationState {
   const signals = traffic.getSignals();
   return {
     running: false,
     elapsedSeconds: 0,
+    timeOfDayHours,
+    weather,
     signalPhase: signals[0]?.phase ?? "ns-green",
     signals,
     vehicles: traffic.getVehicles(),
@@ -153,6 +158,14 @@ export class Simulation {
     this.reset();
   }
 
+  setTimeOfDay(hours: number): void {
+    this.state.timeOfDayHours = normalizeHour(hours);
+  }
+
+  setWeather(weather: WeatherMode): void {
+    this.state.weather = weather;
+  }
+
   setSignalTiming(
     intersectionId: string,
     timing: Partial<SignalTiming>,
@@ -189,16 +202,34 @@ export class Simulation {
     if (!this.state.running || deltaSeconds <= 0) return;
     const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
     this.state.elapsedSeconds += simulationDelta;
+    this.state.timeOfDayHours = normalizeHour(
+      this.state.timeOfDayHours + simulationDelta / 60,
+    );
+    const timeDemand = getTimeDemandAdjustment(this.state.timeOfDayHours);
+    const weatherDemand =
+      this.state.weather === "rain"
+        ? { vehicle: 0.15, pedestrian: -0.65, speed: 0.78 }
+        : this.state.weather === "fog"
+          ? { vehicle: -0.1, pedestrian: -0.25, speed: 0.86 }
+          : { vehicle: 0, pedestrian: 0, speed: 1 };
     this.traffic.update(simulationDelta, {
       ...this.settings,
-      vehicleVolume: Math.min(
+      speedLimitMph: this.settings.speedLimitMph * weatherDemand.speed,
+      vehicleVolume: clamp(
+        this.settings.vehicleVolume +
+          timeDemand.vehicle +
+          weatherDemand.vehicle +
+          this.buildingActivity.vehicleDemandBoost,
+        0,
         3,
-        this.settings.vehicleVolume + this.buildingActivity.vehicleDemandBoost,
       ),
-      pedestrianVolume: Math.min(
-        3,
+      pedestrianVolume: clamp(
         this.settings.pedestrianVolume +
+          timeDemand.pedestrian +
+          weatherDemand.pedestrian +
           this.buildingActivity.pedestrianDemandBoost,
+        0,
+        3,
       ),
     });
     this.syncTrafficState();
@@ -232,6 +263,22 @@ export class Simulation {
       ),
     };
   }
+}
+
+export function getTimeDemandAdjustment(
+  hour: number,
+): { vehicle: number; pedestrian: number } {
+  const normalized = normalizeHour(hour);
+  if ((normalized >= 7 && normalized < 9.5) || (normalized >= 16 && normalized < 19)) {
+    return { vehicle: 0.65, pedestrian: 0.35 };
+  }
+  if (normalized >= 11 && normalized < 14) {
+    return { vehicle: 0.15, pedestrian: 0.55 };
+  }
+  if (normalized >= 22 || normalized < 6) {
+    return { vehicle: -0.85, pedestrian: -1.1 };
+  }
+  return { vehicle: 0, pedestrian: 0 };
 }
 
 export function calculateMetrics(
@@ -305,9 +352,18 @@ export function calculateMetrics(
     activeVehicles: 0,
     activePedestrians: 0,
     crossingsCompleted: 0,
+    buildingArrivals: 0,
   };
 }
 
 function roundOneDecimal(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function normalizeHour(value: number): number {
+  return ((value % 24) + 24) % 24;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }

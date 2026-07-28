@@ -1,5 +1,12 @@
 import "./styles.css";
 import { deriveBuildingRole } from "./core/buildingActivity";
+import {
+  EditHistory,
+  PROJECT_STATE_VERSION,
+  parseProjectSnapshot,
+  type EditorSnapshot,
+  type ProjectSnapshot,
+} from "./core/projectState";
 import { Simulation } from "./core/simulation";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
@@ -15,8 +22,10 @@ import type {
   ManualSignalTarget,
   MapOverlayMode,
   PlacedBuilding,
+  ScenarioSettings,
   SignalControlMode,
   SignalTiming,
+  WeatherMode,
 } from "./models/types";
 import { ThreeRenderer } from "./rendering/threeRenderer";
 
@@ -28,11 +37,20 @@ const simulateModeButton = requireElement<HTMLButtonElement>("simulate-mode-butt
 const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button");
 const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
 const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
+const undoButton = requireElement<HTMLButtonElement>("undo-button");
+const redoButton = requireElement<HTMLButtonElement>("redo-button");
 const environmentMode = requireElement<HTMLElement>("environment-mode");
 const runButton = requireElement<HTMLButtonElement>("run-button");
 const pauseButton = requireElement<HTMLButtonElement>("pause-button");
 const resetButton = requireElement<HTMLButtonElement>("reset-button");
 const resetDesignButton = requireElement<HTMLButtonElement>("reset-design-button");
+const saveSlotControl = requireElement<HTMLSelectElement>("save-slot-control");
+const saveProjectButton = requireElement<HTMLButtonElement>("save-project-button");
+const loadProjectButton = requireElement<HTMLButtonElement>("load-project-button");
+const exportProjectButton = requireElement<HTMLButtonElement>("export-project-button");
+const importProjectButton = requireElement<HTMLButtonElement>("import-project-button");
+const importProjectFile = requireElement<HTMLInputElement>("import-project-file");
+const autosaveStatus = requireElement<HTMLElement>("autosave-status");
 const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const buildingEditor = requireElement<HTMLElement>("building-editor");
@@ -52,6 +70,10 @@ const vehicleVolumeControl = requireElement<HTMLInputElement>("vehicle-volume-co
 const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
 const pedestrianVolumeControl = requireElement<HTMLInputElement>("pedestrian-volume-control");
 const pedestrianVolumeOutput = requireElement<HTMLOutputElement>("pedestrian-volume-output");
+const timeOfDayControl = requireElement<HTMLInputElement>("time-of-day-control");
+const timeOfDayOutput = requireElement<HTMLOutputElement>("time-of-day-output");
+const weatherControl = requireElement<HTMLSelectElement>("weather-control");
+const demandPeriodOutput = requireElement<HTMLElement>("demand-period-output");
 const pedestrianMarkersControl = requireElement<HTMLInputElement>(
   "pedestrian-markers-control",
 );
@@ -88,6 +110,7 @@ const throughput = requireElement<HTMLElement>("throughput");
 const activeVehicles = requireElement<HTMLElement>("active-vehicles");
 const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
 const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
+const buildingArrivals = requireElement<HTMLElement>("building-arrivals");
 const averageSpeed = requireElement<HTMLElement>("average-speed");
 const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
 const rushHourButton = requireElement<HTMLButtonElement>("rush-hour-button");
@@ -117,6 +140,9 @@ const renderer = new ThreeRenderer(canvas);
 const designs = new Map<string, FeatureDesign>();
 const placedBuildings = new Map<string, PlacedBuilding>();
 const features = renderer.getFeatures();
+const editHistory = new EditHistory();
+const AUTOSAVE_KEY = "penn-street-lab:autosave";
+const SAVE_SLOT_PREFIX = "penn-street-lab:slot:";
 let appMode: AppMode = "build";
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
@@ -125,12 +151,22 @@ let selectedPlacedBuildingId: string | null = null;
 let activeBuildingTool: BuildingKind | null = "residential";
 let nextBuildingId = 1;
 let previousTimestamp = performance.now();
+let dragStartSnapshot: EditorSnapshot | null = null;
+let autosaveTimer: number | null = null;
+let lastClockMinute = -1;
 
 buildModeButton.addEventListener("click", () => setAppMode("build"));
 simulateModeButton.addEventListener("click", () => setAppMode("simulate"));
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
 walkCameraButton.addEventListener("click", () => setCameraMode("walk"));
+undoButton.addEventListener("click", undoEdit);
+redoButton.addEventListener("click", redoEdit);
+saveProjectButton.addEventListener("click", saveProjectToSlot);
+loadProjectButton.addEventListener("click", loadProjectFromSlot);
+exportProjectButton.addEventListener("click", exportProject);
+importProjectButton.addEventListener("click", () => importProjectFile.click());
+importProjectFile.addEventListener("change", () => void importProject());
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -144,10 +180,13 @@ pauseButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   simulation.reset();
+  syncEnvironmentControls();
   updateInterface();
 });
 
 resetDesignButton.addEventListener("click", () => {
+  if (designs.size === 0 && placedBuildings.size === 0) return;
+  recordEdit();
   designs.clear();
   placedBuildings.clear();
   selectedPlacedBuildingId = null;
@@ -155,6 +194,7 @@ resetDesignButton.addEventListener("click", () => {
   renderer.setSelectedPlacedBuilding(null);
   syncBuildingActivity();
   syncDesign();
+  finishEdit("Empty design autosaved");
   selectionStatus.textContent = "All placed buildings and street interventions were reset.";
 });
 
@@ -168,8 +208,8 @@ for (const button of buildingToolButtons) {
 buildingFloorsControl.addEventListener("change", () => {
   buildingFloorsControl.value = String(clampFloors(Number(buildingFloorsControl.value)));
 });
-selectedBuildingFloors.addEventListener("input", updateSelectedBuilding);
-selectedBuildingColor.addEventListener("input", updateSelectedBuilding);
+selectedBuildingFloors.addEventListener("change", updateSelectedBuilding);
+selectedBuildingColor.addEventListener("change", updateSelectedBuilding);
 selectedBuildingKind.addEventListener("change", updateSelectedBuilding);
 rotateBuildingButton.addEventListener("click", rotateSelectedBuilding);
 deleteBuildingButton.addEventListener("click", deleteSelectedBuilding);
@@ -178,18 +218,33 @@ speedControl.addEventListener("input", () => {
   const speed = Number(speedControl.value);
   simulation.setSimulationSpeed(speed);
   speedOutput.value = `${speed.toFixed(1)}×`;
+  scheduleAutosave();
 });
 
 vehicleVolumeControl.addEventListener("input", () => {
   const volume = Number(vehicleVolumeControl.value);
   simulation.setVehicleVolume(volume);
   vehicleVolumeOutput.value = formatVolume(volume);
+  scheduleAutosave();
 });
 
 pedestrianVolumeControl.addEventListener("input", () => {
   const volume = Number(pedestrianVolumeControl.value);
   simulation.setPedestrianVolume(volume);
   pedestrianVolumeOutput.value = formatVolume(volume);
+  scheduleAutosave();
+});
+
+timeOfDayControl.addEventListener("input", () => {
+  simulation.setTimeOfDay(Number(timeOfDayControl.value));
+  syncEnvironmentControls();
+  scheduleAutosave();
+});
+
+weatherControl.addEventListener("change", () => {
+  simulation.setWeather(weatherControl.value as WeatherMode);
+  syncEnvironmentControls();
+  scheduleAutosave();
 });
 
 pedestrianMarkersControl.addEventListener("change", () => {
@@ -203,18 +258,21 @@ vehicleMarkersControl.addEventListener("change", () => {
 speedLimitControl.addEventListener("change", () => {
   simulation.setSpeedLimit(Number(speedLimitControl.value));
   speedLimitControl.value = String(simulation.getSettings().speedLimitMph);
+  scheduleAutosave();
 });
 
 signalCycleControl.addEventListener("change", () => {
   simulation.setSignalCycle(Number(signalCycleControl.value));
   signalCycleControl.value = String(simulation.getSettings().signalCycleSeconds);
   updateSelectionPanel();
+  scheduleAutosave();
 });
 
 simulationSeedControl.addEventListener("change", () => {
   simulation.setSimulationSeed(Number(simulationSeedControl.value));
   simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
   updateInterface();
+  scheduleAutosave();
 });
 
 signalModeControl.addEventListener("change", () => {
@@ -291,7 +349,20 @@ renderer.setSelectionHandler((feature) => {
 renderer.setBuildingInteractionHandlers({
   onPlace: (x, z) => placeBuilding(x, z),
   onSelect: (id) => selectPlacedBuilding(id),
+  onMoveStart: () => {
+    dragStartSnapshot = captureEditorSnapshot();
+  },
   onMove: (id, x, z) => movePlacedBuilding(id, x, z),
+  onMoveEnd: () => {
+    if (
+      dragStartSnapshot &&
+      !editorSnapshotsEqual(dragStartSnapshot, captureEditorSnapshot())
+    ) {
+      editHistory.record(dragStartSnapshot);
+      finishEdit("Building move autosaved");
+    }
+    dragStartSnapshot = null;
+  },
   onPlacementRejected: (reason) => {
     selectionStatus.textContent = reason;
   },
@@ -307,6 +378,13 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+  const commandKey = event.metaKey || event.ctrlKey;
+  if (commandKey && event.key.toLowerCase() === "z" && !isTypingTarget(event.target)) {
+    event.preventDefault();
+    if (event.shiftKey) redoEdit();
+    else undoEdit();
+    return;
+  }
   if (
     event.key.toLowerCase() !== "r" ||
     appMode !== "build" ||
@@ -324,7 +402,14 @@ function animationFrame(timestamp: number): void {
   const deltaSeconds = (timestamp - previousTimestamp) / 1000;
   previousTimestamp = timestamp;
   simulation.update(deltaSeconds);
-  renderer.render(simulation.getState());
+  const state = simulation.getState();
+  renderer.render(state);
+  const clockMinute = Math.floor(state.timeOfDayHours * 60);
+  if (clockMinute !== lastClockMinute) {
+    lastClockMinute = clockMinute;
+    syncEnvironmentControls();
+    if (clockMinute % 5 === 0) scheduleAutosave("Clock autosaved");
+  }
   updateMetrics();
   window.requestAnimationFrame(animationFrame);
 }
@@ -351,6 +436,7 @@ function setAppMode(mode: AppMode): void {
     simulationTitle.textContent = "Penn · University City";
     sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
   }
+  updateHistoryButtons();
   updateInterface();
 }
 
@@ -400,6 +486,7 @@ function updateMetrics(): void {
   activeVehicles.textContent = metrics.activeVehicles.toLocaleString();
   activePedestrians.textContent = metrics.activePedestrians.toLocaleString();
   crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
+  buildingArrivals.textContent = metrics.buildingArrivals.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
   updateSelectedSignalStatus();
 }
@@ -503,10 +590,12 @@ function placeBuilding(x: number, z: number): void {
     selectionStatus.textContent = placement.reason;
     return;
   }
+  recordEdit();
   placedBuildings.set(building.id, building);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   syncBuildingActivity();
   selectPlacedBuilding(building.id);
+  finishEdit("Building placement autosaved");
   selectionStatus.textContent = `${formatBuildingKind(building.kind)} building placed. Drag it to fine-tune the position.`;
 }
 
@@ -544,12 +633,14 @@ function updateSelectedBuilding(): void {
     selectionStatus.textContent = placement.reason;
     return;
   }
+  recordEdit();
   selectedBuildingFloors.value = String(updated.floors);
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   syncBuildingActivity();
   renderer.setSelectedPlacedBuilding(updated.id);
   renderPlacedBuildingSelection(updated);
+  finishEdit("Building edit autosaved");
 }
 
 function rotateSelectedBuilding(): void {
@@ -565,21 +656,25 @@ function rotateSelectedBuilding(): void {
     selectionStatus.textContent = placement.reason;
     return;
   }
+  recordEdit();
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   syncBuildingActivity();
   renderer.setSelectedPlacedBuilding(updated.id);
   renderPlacedBuildingSelection(updated);
+  finishEdit("Building rotation autosaved");
 }
 
 function deleteSelectedBuilding(): void {
   if (!selectedPlacedBuildingId) return;
+  recordEdit();
   placedBuildings.delete(selectedPlacedBuildingId);
   selectedPlacedBuildingId = null;
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   renderer.setSelectedPlacedBuilding(null);
   syncBuildingActivity();
   updateSelectionPanel();
+  finishEdit("Building removal autosaved");
   selectionStatus.textContent = "Building removed.";
 }
 
@@ -728,6 +823,7 @@ function applyBuildTool(tool: BuildTool): void {
     return;
   }
 
+  recordEdit();
   const design = getDesign(selectedFeature.id);
   if (tool === "add-lane") design.laneDelta = design.laneDelta === 1 ? 0 : 1;
   if (tool === "remove-lane") design.laneDelta = design.laneDelta === -1 ? 0 : -1;
@@ -739,6 +835,7 @@ function applyBuildTool(tool: BuildTool): void {
 
   designs.set(selectedFeature.id, design);
   syncDesign();
+  finishEdit("Street edit autosaved");
   selectionStatus.textContent = `${formatTool(tool)} applied to ${selectedFeature.name}.`;
 }
 
@@ -794,6 +891,227 @@ function applyScenario(settings: {
   speedLimitControl.value = String(settings.speedLimitMph);
   signalCycleControl.value = String(settings.signalCycle);
   updateInterface();
+  scheduleAutosave();
+}
+
+function captureEditorSnapshot(): EditorSnapshot {
+  return {
+    designs: Array.from(designs, ([id, design]) => [id, { ...design }]),
+    buildings: Array.from(placedBuildings.values(), (building) => ({
+      ...building,
+    })),
+    nextBuildingId,
+  };
+}
+
+function editorSnapshotsEqual(a: EditorSnapshot, b: EditorSnapshot): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function captureProjectSnapshot(): ProjectSnapshot {
+  const state = simulation.getState();
+  return {
+    version: PROJECT_STATE_VERSION,
+    savedAt: new Date().toISOString(),
+    ...captureEditorSnapshot(),
+    settings: { ...simulation.getSettings() },
+    timeOfDayHours: state.timeOfDayHours,
+    weather: state.weather,
+  };
+}
+
+function applyEditorSnapshot(snapshot: EditorSnapshot): void {
+  designs.clear();
+  for (const [id, design] of snapshot.designs) {
+    designs.set(id, { ...design });
+  }
+  placedBuildings.clear();
+  for (const building of snapshot.buildings) {
+    placedBuildings.set(building.id, { ...building });
+  }
+  nextBuildingId = Math.max(1, snapshot.nextBuildingId);
+  selectedPlacedBuildingId = null;
+  renderer.setSelectedPlacedBuilding(null);
+  renderer.setPlacedBuildings([...placedBuildings.values()]);
+  syncBuildingActivity();
+  syncDesign();
+}
+
+function applyProjectSnapshot(snapshot: ProjectSnapshot): void {
+  applyEditorSnapshot(snapshot);
+  applyScenarioSettings(snapshot.settings);
+  simulation.setTimeOfDay(snapshot.timeOfDayHours);
+  simulation.setWeather(snapshot.weather);
+  simulation.start();
+  syncEnvironmentControls();
+  editHistory.clear();
+  updateHistoryButtons();
+  updateInterface();
+}
+
+function applyScenarioSettings(settings: ScenarioSettings): void {
+  simulation.setSimulationSeed(settings.simulationSeed);
+  simulation.setSimulationSpeed(settings.simulationSpeed);
+  simulation.setVehicleVolume(settings.vehicleVolume);
+  simulation.setPedestrianVolume(settings.pedestrianVolume);
+  simulation.setSpeedLimit(settings.speedLimitMph);
+  simulation.setSignalCycle(settings.signalCycleSeconds);
+  syncScenarioControls();
+}
+
+function syncScenarioControls(): void {
+  const settings = simulation.getSettings();
+  speedControl.value = String(settings.simulationSpeed);
+  speedOutput.value = `${settings.simulationSpeed.toFixed(1)}×`;
+  vehicleVolumeControl.value = String(settings.vehicleVolume);
+  vehicleVolumeOutput.value = formatVolume(settings.vehicleVolume);
+  pedestrianVolumeControl.value = String(settings.pedestrianVolume);
+  pedestrianVolumeOutput.value = formatVolume(settings.pedestrianVolume);
+  speedLimitControl.value = String(settings.speedLimitMph);
+  signalCycleControl.value = String(settings.signalCycleSeconds);
+  simulationSeedControl.value = String(settings.simulationSeed);
+}
+
+function recordEdit(): void {
+  editHistory.record(captureEditorSnapshot());
+  updateHistoryButtons();
+}
+
+function finishEdit(message: string): void {
+  updateHistoryButtons();
+  scheduleAutosave(message);
+}
+
+function undoEdit(): void {
+  const previous = editHistory.undo(captureEditorSnapshot());
+  if (!previous) return;
+  applyEditorSnapshot(previous);
+  updateHistoryButtons();
+  scheduleAutosave("Undo autosaved");
+}
+
+function redoEdit(): void {
+  const next = editHistory.redo(captureEditorSnapshot());
+  if (!next) return;
+  applyEditorSnapshot(next);
+  updateHistoryButtons();
+  scheduleAutosave("Redo autosaved");
+}
+
+function updateHistoryButtons(): void {
+  undoButton.disabled = !editHistory.canUndo || appMode !== "build";
+  redoButton.disabled = !editHistory.canRedo || appMode !== "build";
+}
+
+function scheduleAutosave(message = "Changes autosaved"): void {
+  if (autosaveTimer !== null) window.clearTimeout(autosaveTimer);
+  autosaveTimer = window.setTimeout(() => {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(captureProjectSnapshot()));
+      autosaveStatus.textContent = `${message} · ${formatClockTime(new Date())}`;
+    } catch {
+      autosaveStatus.textContent = "Autosave unavailable in this browser.";
+    }
+    autosaveTimer = null;
+  }, 300);
+}
+
+function restoreAutosave(): boolean {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return false;
+    applyProjectSnapshot(parseProjectSnapshot(raw));
+    autosaveStatus.textContent = "Autosaved design restored";
+    return true;
+  } catch {
+    autosaveStatus.textContent = "Autosave could not be restored";
+    return false;
+  }
+}
+
+function saveProjectToSlot(): void {
+  try {
+    localStorage.setItem(
+      `${SAVE_SLOT_PREFIX}${saveSlotControl.value}`,
+      JSON.stringify(captureProjectSnapshot()),
+    );
+    autosaveStatus.textContent = `Saved to slot ${saveSlotControl.value}`;
+  } catch {
+    autosaveStatus.textContent = "This browser could not save the project.";
+  }
+}
+
+function loadProjectFromSlot(): void {
+  try {
+    const raw = localStorage.getItem(`${SAVE_SLOT_PREFIX}${saveSlotControl.value}`);
+    if (!raw) {
+      autosaveStatus.textContent = `Slot ${saveSlotControl.value} is empty`;
+      return;
+    }
+    applyProjectSnapshot(parseProjectSnapshot(raw));
+    scheduleAutosave(`Slot ${saveSlotControl.value} loaded`);
+  } catch {
+    autosaveStatus.textContent = "The selected save is invalid.";
+  }
+}
+
+function exportProject(): void {
+  const blob = new Blob([JSON.stringify(captureProjectSnapshot(), null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `penn-street-design-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  autosaveStatus.textContent = "Design exported as JSON";
+}
+
+async function importProject(): Promise<void> {
+  const file = importProjectFile.files?.[0];
+  if (!file) return;
+  try {
+    applyProjectSnapshot(parseProjectSnapshot(await file.text()));
+    scheduleAutosave("Imported design autosaved");
+  } catch (error) {
+    autosaveStatus.textContent =
+      error instanceof Error ? error.message : "Could not import this design.";
+  } finally {
+    importProjectFile.value = "";
+  }
+}
+
+function syncEnvironmentControls(): void {
+  const state = simulation.getState();
+  timeOfDayControl.value = String(state.timeOfDayHours);
+  timeOfDayOutput.value = formatTimeOfDay(state.timeOfDayHours);
+  weatherControl.value = state.weather;
+  demandPeriodOutput.textContent = formatDemandPeriod(state.timeOfDayHours);
+  renderer.setEnvironment(state.timeOfDayHours, state.weather);
+}
+
+function formatTimeOfDay(hourValue: number): string {
+  const totalMinutes = Math.round(hourValue * 60) % (24 * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const suffix = hours >= 12 ? "PM" : "AM";
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+function formatDemandPeriod(hourValue: number): string {
+  const hour = ((hourValue % 24) + 24) % 24;
+  if ((hour >= 7 && hour < 9.5) || (hour >= 16 && hour < 19)) {
+    return "Rush hour · traffic demand increased";
+  }
+  if (hour >= 11 && hour < 14) return "Lunch period · pedestrian demand increased";
+  if (hour >= 22 || hour < 6) return "Night · district demand reduced";
+  return hour < 12 ? "Morning activity" : "Regular daytime activity";
+}
+
+function formatClockTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function requireElement<T extends Element>(id: string): T {
@@ -950,6 +1268,10 @@ renderer.resize();
 renderer.setSelectedFeature(selectedFeature?.id ?? null);
 initializeSearch();
 setCameraMode(cameraMode);
+if (!restoreAutosave()) {
+  syncScenarioControls();
+  syncEnvironmentControls();
+}
 setAppMode("build");
 simulation.start();
 updateInterface();

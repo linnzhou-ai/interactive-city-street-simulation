@@ -63,6 +63,10 @@
             <button id="build-mode-button" type="button" aria-pressed="true">Build</button>
             <button id="simulate-mode-button" type="button" aria-pressed="false">Simulate</button>
           </div>
+          <div class="edit-history-actions" aria-label="Edit history">
+            <button id="undo-button" type="button" disabled title="Undo (⌘Z)">Undo</button>
+            <button id="redo-button" type="button" disabled title="Redo (⌘Shift Z)">Redo</button>
+          </div>
           <div class="simulation-actions" aria-label="Simulation controls">
             <button id="run-button" class="primary-button" type="button">Run</button>
             <button id="pause-button" type="button">Pause</button>
@@ -82,6 +86,30 @@
         <p class="panel-help">
           Place functional buildings on clear lots, then drag them into position.
         </p>
+        <p class="tool-section-label">Project</p>
+        <div class="project-storage" aria-label="Save and load project">
+          <label for="save-slot-control">
+            <span>Save slot</span>
+            <select id="save-slot-control">
+              <option value="1">Slot 1</option>
+              <option value="2">Slot 2</option>
+              <option value="3">Slot 3</option>
+            </select>
+          </label>
+          <div class="project-storage-actions">
+            <button id="save-project-button" type="button">Save</button>
+            <button id="load-project-button" type="button">Load</button>
+            <button id="export-project-button" type="button">Export</button>
+            <button id="import-project-button" type="button">Import</button>
+          </div>
+          <input
+            id="import-project-file"
+            class="sr-only"
+            type="file"
+            accept="application/json,.json"
+          />
+          <p id="autosave-status" class="autosave-status">Autosave ready</p>
+        </div>
         <p class="tool-section-label">Buildings</p>
         <div class="building-tool-grid" aria-label="Building placement tools">
           <button class="building-tool-button" type="button" data-building-tool="residential" aria-pressed="true">
@@ -325,6 +353,29 @@
               value="2"
             />
           </div>
+          <div class="scenario-control environment-control">
+            <label for="time-of-day-control">
+              <span>Time of day</span>
+              <output id="time-of-day-output" for="time-of-day-control">8:00 AM</output>
+            </label>
+            <input
+              id="time-of-day-control"
+              type="range"
+              min="0"
+              max="23.75"
+              step="0.25"
+              value="8"
+            />
+            <label for="weather-control">
+              <span>Weather</span>
+              <select id="weather-control">
+                <option value="clear">Clear</option>
+                <option value="rain">Rain</option>
+                <option value="fog">Fog</option>
+              </select>
+            </label>
+            <small id="demand-period-output">Morning activity</small>
+          </div>
           <fieldset class="scenario-control marker-controls">
             <legend>Map markers</legend>
             <label class="marker-toggle" for="pedestrian-markers-control">
@@ -471,6 +522,11 @@
             <span>Crossings complete</span>
             <strong id="crossings-completed">0</strong>
             <small>Since reset</small>
+          </article>
+          <article class="metric-card">
+            <span>Building arrivals</span>
+            <strong id="building-arrivals">0</strong>
+            <small>People reaching entrances</small>
           </article>
         </div>
       </section>
