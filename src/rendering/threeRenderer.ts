@@ -17,6 +17,8 @@ import type {
   DistrictFeature,
   EnvironmentMode,
   ExpansionRoad,
+  ExpansionStreetObject,
+  ExpansionStreetObjectKind,
   FeatureDesign,
   GeoPoint,
   MapOverlayMode,
@@ -108,6 +110,16 @@ interface ExpansionRoadInteractionHandlers {
   onRejected: (reason: string) => void;
 }
 
+interface ExpansionStreetObjectInteractionHandlers {
+  onPlace: (
+    kind: ExpansionStreetObjectKind,
+    x: number,
+    z: number,
+    rotation: number,
+  ) => void;
+  onRejected: (reason: string) => void;
+}
+
 interface ExpansionJunction {
   x: number;
   z: number;
@@ -136,6 +148,7 @@ export class ThreeRenderer {
   private readonly pedestrianGroup = new THREE.Group();
   private readonly placedBuildingGroup = new THREE.Group();
   private readonly expansionRoadGroup = new THREE.Group();
+  private readonly expansionStreetObjectGroup = new THREE.Group();
   private readonly expansionGuideGroup = new THREE.Group();
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
   private readonly placedBuildingData = new Map<string, PlacedBuilding>();
@@ -164,11 +177,15 @@ export class ThreeRenderer {
   private buildingInteractionHandlers: BuildingInteractionHandlers | null = null;
   private expansionRoadInteractionHandlers: ExpansionRoadInteractionHandlers | null =
     null;
+  private expansionStreetObjectInteractionHandlers:
+    | ExpansionStreetObjectInteractionHandlers
+    | null = null;
   private selectedFeatureId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
   private buildingPlacementEnabled = false;
   private expansionMode = false;
   private expansionRoadDrawEnabled = false;
+  private expansionStreetObjectPlacementTool: ExpansionStreetObjectKind | null = null;
   private drawingExpansionRoadStart: THREE.Vector3 | null = null;
   private expansionRoadPreview: THREE.Mesh | null = null;
   private pedestrianMarkersVisible = true;
@@ -224,6 +241,7 @@ export class ThreeRenderer {
       this.pedestrianGroup,
       this.placedBuildingGroup,
       this.expansionRoadGroup,
+      this.expansionStreetObjectGroup,
       this.expansionGuideGroup,
       this.rainPoints,
     );
@@ -277,10 +295,19 @@ export class ThreeRenderer {
     this.expansionRoadInteractionHandlers = handlers;
   }
 
+  setExpansionStreetObjectInteractionHandlers(
+    handlers: ExpansionStreetObjectInteractionHandlers,
+  ): void {
+    this.expansionStreetObjectInteractionHandlers = handlers;
+  }
+
   setExpansionMode(enabled: boolean): void {
     this.expansionMode = enabled;
     this.expansionGuideGroup.visible = enabled && this.buildMode;
-    if (!enabled) this.setExpansionRoadDrawEnabled(false);
+    if (!enabled) {
+      this.setExpansionRoadDrawEnabled(false);
+      this.setExpansionStreetObjectPlacementTool(null);
+    }
   }
 
   setExpansionRoadDrawEnabled(enabled: boolean): void {
@@ -291,6 +318,17 @@ export class ThreeRenderer {
         this.expansionRoadDrawEnabled || this.buildingPlacementEnabled
           ? "crosshair"
           : "grab";
+    }
+  }
+
+  setExpansionStreetObjectPlacementTool(
+    tool: ExpansionStreetObjectKind | null,
+  ): void {
+    this.expansionStreetObjectPlacementTool =
+      this.expansionMode && this.buildMode ? tool : null;
+    if (this.cameraMode === "orbit") {
+      this.canvas.style.cursor =
+        this.expansionStreetObjectPlacementTool !== null ? "crosshair" : "grab";
     }
   }
 
@@ -333,6 +371,80 @@ export class ThreeRenderer {
     const junctions = findExpansionJunctions(roads);
     for (const road of roads) this.addExpansionRoad(road, junctions);
     for (const junction of junctions) this.addExpansionJunction(junction);
+  }
+
+  setExpansionStreetObjects(objects: readonly ExpansionStreetObject[]): void {
+    clearGroup(this.expansionStreetObjectGroup);
+    for (const object of objects) {
+      if (object.kind === "crosswalk") {
+        this.expansionStreetObjectGroup.add(this.createExpansionCrosswalk(object));
+      } else {
+        this.expansionStreetObjectGroup.add(this.createExpansionTrafficSignal(object));
+      }
+    }
+  }
+
+  resolveExpansionStreetObjectPlacement(
+    kind: ExpansionStreetObjectKind,
+    x: number,
+    z: number,
+  ): {
+    valid: boolean;
+    reason: string;
+    x: number;
+    z: number;
+    rotation: number;
+  } {
+    if (pointInsideBounds(x, z, CORE_BOUNDS)) {
+      return {
+        valid: false,
+        reason: "Street objects must stay outside the protected original city.",
+        x,
+        z,
+        rotation: 0,
+      };
+    }
+    if (kind === "traffic-signal") {
+      return { valid: true, reason: "", x, z, rotation: 0 };
+    }
+    let nearestRoad: ExpansionRoad | null = null;
+    let nearestPoint = { x, z };
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const road of this.expansionRoadData.values()) {
+      const candidate = closestPointOnSegment(
+        x,
+        z,
+        road.startX,
+        road.startZ,
+        road.endX,
+        road.endZ,
+      );
+      const distance = Math.hypot(x - candidate.x, z - candidate.z);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestRoad = road;
+        nearestPoint = candidate;
+      }
+    }
+    if (!nearestRoad || nearestDistance > nearestRoad.width / 2 + 12) {
+      return {
+        valid: false,
+        reason: "Place crosswalks on or immediately beside an expansion road.",
+        x,
+        z,
+        rotation: 0,
+      };
+    }
+    const horizontal =
+      Math.abs(nearestRoad.endX - nearestRoad.startX) >=
+      Math.abs(nearestRoad.endZ - nearestRoad.startZ);
+    return {
+      valid: true,
+      reason: "",
+      x: nearestPoint.x,
+      z: nearestPoint.z,
+      rotation: horizontal ? 0 : Math.PI / 2,
+    };
   }
 
   validateExpansionRoad(
@@ -494,7 +606,10 @@ export class ThreeRenderer {
   setBuildMode(enabled: boolean): void {
     this.buildMode = enabled;
     this.expansionGuideGroup.visible = enabled && this.expansionMode;
-    if (!enabled) this.setExpansionRoadDrawEnabled(false);
+    if (!enabled) {
+      this.setExpansionRoadDrawEnabled(false);
+      this.setExpansionStreetObjectPlacementTool(null);
+    }
     for (const group of this.placedBuildingMeshes.values()) {
       const marker = group.getObjectByName("building-activity-marker");
       if (marker) marker.visible = !enabled;
@@ -803,29 +918,6 @@ export class ThreeRenderer {
       group.add(centerLine);
     }
 
-    const dx = road.endX - road.startX;
-    const dz = road.endZ - road.startZ;
-    const length = Math.hypot(dx, dz);
-    const nx = length > 0 ? -dz / length : 0;
-    const nz = length > 0 ? dx / length : 0;
-    const sidewalkOffset = road.width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
-    for (const side of [-1, 1]) {
-      for (const piece of visiblePieces) {
-        const sidewalk = createWorldSegmentMesh(
-          piece.startX + nx * sidewalkOffset * side,
-          piece.startZ + nz * sidewalkOffset * side,
-          piece.endX + nx * sidewalkOffset * side,
-          piece.endZ + nz * sidewalkOffset * side,
-          SIDEWALK_WIDTH,
-          0.28,
-          this.materials.sidewalk,
-        );
-        sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
-        sidewalk.receiveShadow = true;
-        sidewalk.userData.walkable = true;
-        group.add(sidewalk);
-      }
-    }
     this.expansionRoadGroup.add(group);
   }
 
@@ -843,26 +935,6 @@ export class ThreeRenderer {
     asphalt.receiveShadow = true;
     asphalt.userData.walkable = true;
     group.add(asphalt);
-
-    const cornerOffset = width / 2 + SIDEWALK_WIDTH / 2;
-    for (const xSign of [-1, 1]) {
-      for (const zSign of [-1, 1]) {
-        const corner = box(
-          SIDEWALK_WIDTH,
-          0.28,
-          SIDEWALK_WIDTH,
-          this.materials.sidewalk,
-        );
-        corner.position.set(
-          junction.x + cornerOffset * xSign,
-          RENDER_HEIGHTS.sidewalkCenter,
-          junction.z + cornerOffset * zSign,
-        );
-        corner.receiveShadow = true;
-        corner.userData.walkable = true;
-        group.add(corner);
-      }
-    }
 
     const directions = junctionDirections(junction, connectedRoads);
     const lineOffset = width / 2 + 1.2;
@@ -884,6 +956,53 @@ export class ThreeRenderer {
       group.add(stopLine);
     }
     this.expansionRoadGroup.add(group);
+  }
+
+  private createExpansionCrosswalk(object: ExpansionStreetObject): THREE.Group {
+    const group = new THREE.Group();
+    group.position.set(object.x, 0, object.z);
+    group.rotation.y = object.rotation;
+    group.userData.expansionStreetObjectId = object.id;
+    for (let index = -3; index <= 3; index += 1) {
+      const stripe = box(1.15, 0.025, 13.5, this.materials.whiteLine);
+      stripe.position.set(index * 1.85, RENDER_HEIGHTS.crosswalk, 0);
+      group.add(stripe);
+    }
+    return group;
+  }
+
+  private createExpansionTrafficSignal(object: ExpansionStreetObject): THREE.Group {
+    const group = new THREE.Group();
+    group.position.set(object.x, 0, object.z);
+    group.rotation.y = object.rotation;
+    group.userData.expansionStreetObjectId = object.id;
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 4.6, 10),
+      this.materials.streetMetal,
+    );
+    pole.position.y = 2.3;
+    pole.castShadow = true;
+    const housing = box(0.72, 2.05, 0.62, this.materials.streetMetal);
+    housing.position.set(0, 4.65, 0);
+    housing.castShadow = true;
+    group.add(pole, housing);
+    const colors = ["#ff352e", "#ffd43b", "#42ef78"] as const;
+    colors.forEach((color, index) => {
+      const lensMaterial = new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: index === 0 ? 2.2 : 0.15,
+        roughness: 0.35,
+      });
+      const lens = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 12, 8),
+        lensMaterial,
+      );
+      lens.scale.z = 0.45;
+      lens.position.set(0, 5.25 - index * 0.58, 0.33);
+      group.add(lens);
+    });
+    return group;
   }
 
   private updateExpansionRoadPreview(start: THREE.Vector3, end: THREE.Vector3): void {
@@ -1902,7 +2021,11 @@ export class ThreeRenderer {
           return;
         }
       }
-      if (this.buildMode && this.cameraMode === "orbit") {
+      if (
+        this.buildMode &&
+        this.cameraMode === "orbit" &&
+        this.expansionStreetObjectPlacementTool === null
+      ) {
         this.updatePointerRay(event);
         const hit = this.raycaster.intersectObjects(
           [...this.placedBuildingMeshes.values()],
@@ -2098,6 +2221,30 @@ export class ThreeRenderer {
   private pickFeature(event: PointerEvent): void {
     if (!this.buildMode || this.cameraMode !== "orbit") return;
     this.updatePointerRay(event);
+    if (
+      this.expansionMode &&
+      this.expansionStreetObjectPlacementTool &&
+      this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)
+    ) {
+      const placement = this.resolveExpansionStreetObjectPlacement(
+        this.expansionStreetObjectPlacementTool,
+        this.placementPoint.x,
+        this.placementPoint.z,
+      );
+      if (placement.valid) {
+        this.expansionStreetObjectInteractionHandlers?.onPlace(
+          this.expansionStreetObjectPlacementTool,
+          placement.x,
+          placement.z,
+          placement.rotation,
+        );
+      } else {
+        this.expansionStreetObjectInteractionHandlers?.onRejected(
+          placement.reason,
+        );
+      }
+      return;
+    }
     const buildingHit = this.raycaster.intersectObjects(
       [...this.placedBuildingMeshes.values()],
       true,
@@ -2911,6 +3058,26 @@ function distanceToSegment(
     1,
   );
   return Math.hypot(pointX - (startX + dx * t), pointZ - (startZ + dz * t));
+}
+
+function closestPointOnSegment(
+  pointX: number,
+  pointZ: number,
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+): { x: number; z: number } {
+  const dx = endX - startX;
+  const dz = endZ - startZ;
+  const lengthSquared = dx * dx + dz * dz;
+  if (lengthSquared === 0) return { x: startX, z: startZ };
+  const t = THREE.MathUtils.clamp(
+    ((pointX - startX) * dx + (pointZ - startZ) * dz) / lengthSquared,
+    0,
+    1,
+  );
+  return { x: startX + dx * t, z: startZ + dz * t };
 }
 
 function findExpansionJunctions(

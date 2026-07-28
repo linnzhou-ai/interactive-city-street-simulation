@@ -38,6 +38,16 @@ export interface ExpansionRoad {
   width: number;
 }
 
+export type ExpansionStreetObjectKind = "crosswalk" | "traffic-signal";
+
+export interface ExpansionStreetObject {
+  id: string;
+  kind: ExpansionStreetObjectKind;
+  x: number;
+  z: number;
+  rotation: number;
+}
+
 export type BuildTool =
   | "add-lane"
   | "remove-lane"

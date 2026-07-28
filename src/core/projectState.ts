@@ -1,5 +1,6 @@
 import type {
   ExpansionRoad,
+  ExpansionStreetObject,
   FeatureDesign,
   PlacedBuilding,
   ScenarioSettings,
@@ -12,8 +13,10 @@ export interface EditorSnapshot {
   designs: Array<[string, FeatureDesign]>;
   buildings: PlacedBuilding[];
   expansionRoads: ExpansionRoad[];
+  expansionStreetObjects: ExpansionStreetObject[];
   nextBuildingId: number;
   nextExpansionRoadId: number;
+  nextExpansionStreetObjectId: number;
 }
 
 export interface ProjectSnapshot extends EditorSnapshot {
@@ -67,8 +70,12 @@ export function cloneEditorSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
     designs: snapshot.designs.map(([id, design]) => [id, { ...design }]),
     buildings: snapshot.buildings.map((building) => ({ ...building })),
     expansionRoads: snapshot.expansionRoads.map((road) => ({ ...road })),
+    expansionStreetObjects: snapshot.expansionStreetObjects.map((object) => ({
+      ...object,
+    })),
     nextBuildingId: snapshot.nextBuildingId,
     nextExpansionRoadId: snapshot.nextExpansionRoadId,
+    nextExpansionStreetObjectId: snapshot.nextExpansionStreetObjectId,
   };
 }
 
@@ -118,22 +125,52 @@ export function parseProjectSnapshot(raw: string): ProjectSnapshot {
     expansionRoads.push({ ...road });
   }
 
+  const expansionStreetObjects: ExpansionStreetObject[] = [];
+  for (const object of Array.isArray(value.expansionStreetObjects)
+    ? value.expansionStreetObjects
+    : []) {
+    if (!isExpansionStreetObject(object)) {
+      throw new Error("This design file contains an invalid expansion street object.");
+    }
+    expansionStreetObjects.push({ ...object });
+  }
+
   return {
     version: PROJECT_STATE_VERSION,
     savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date(0).toISOString(),
     designs,
     buildings,
     expansionRoads,
+    expansionStreetObjects,
     nextBuildingId: Math.max(1, Math.trunc(value.nextBuildingId)),
     nextExpansionRoadId:
       typeof value.nextExpansionRoadId === "number" &&
       Number.isFinite(value.nextExpansionRoadId)
         ? Math.max(1, Math.trunc(value.nextExpansionRoadId))
         : expansionRoads.length + 1,
+    nextExpansionStreetObjectId:
+      typeof value.nextExpansionStreetObjectId === "number" &&
+      Number.isFinite(value.nextExpansionStreetObjectId)
+        ? Math.max(1, Math.trunc(value.nextExpansionStreetObjectId))
+        : expansionStreetObjects.length + 1,
     settings: { ...value.settings },
     timeOfDayHours: normalizeHour(value.timeOfDayHours),
     weather: value.weather,
   };
+}
+
+function isExpansionStreetObject(value: unknown): value is ExpansionStreetObject {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    (value.kind === "crosswalk" || value.kind === "traffic-signal") &&
+    typeof value.x === "number" &&
+    Number.isFinite(value.x) &&
+    typeof value.z === "number" &&
+    Number.isFinite(value.z) &&
+    typeof value.rotation === "number" &&
+    Number.isFinite(value.rotation)
+  );
 }
 
 function isExpansionRoad(value: unknown): value is ExpansionRoad {

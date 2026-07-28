@@ -20,6 +20,8 @@ import type {
   DistrictFeature,
   EnvironmentMode,
   ExpansionRoad,
+  ExpansionStreetObject,
+  ExpansionStreetObjectKind,
   FeatureDesign,
   LaneDirection,
   ManualSignalTarget,
@@ -61,6 +63,10 @@ const drawExpansionRoadButton = requireElement<HTMLButtonElement>(
   "draw-expansion-road-button",
 );
 const expansionRoadCount = requireElement<HTMLElement>("expansion-road-count");
+const placeCrosswalkButton = requireElement<HTMLButtonElement>("place-crosswalk-button");
+const placeTrafficSignalButton = requireElement<HTMLButtonElement>(
+  "place-traffic-signal-button",
+);
 const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const buildingEditor = requireElement<HTMLElement>("building-editor");
@@ -158,6 +164,7 @@ const renderer = new ThreeRenderer(canvas);
 const designs = new Map<string, FeatureDesign>();
 const placedBuildings = new Map<string, PlacedBuilding>();
 const expansionRoads = new Map<string, ExpansionRoad>();
+const expansionStreetObjects = new Map<string, ExpansionStreetObject>();
 const features = renderer.getFeatures();
 const editHistory = new EditHistory();
 const AUTOSAVE_KEY = "penn-street-lab:autosave";
@@ -165,6 +172,7 @@ const SAVE_SLOT_PREFIX = "penn-street-lab:slot:";
 let appMode: AppMode = "build";
 let buildWorkspace: BuildWorkspace = "city-edit";
 let expansionRoadToolActive = false;
+let activeExpansionStreetObjectTool: ExpansionStreetObjectKind | null = null;
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
@@ -172,6 +180,7 @@ let selectedPlacedBuildingId: string | null = null;
 let activeBuildingTool: BuildingKind | null = "residential";
 let nextBuildingId = 1;
 let nextExpansionRoadId = 1;
+let nextExpansionStreetObjectId = 1;
 let previousTimestamp = performance.now();
 let dragStartSnapshot: EditorSnapshot | null = null;
 let autosaveTimer: number | null = null;
@@ -195,6 +204,12 @@ drawExpansionRoadButton.addEventListener("click", () => {
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   setExpansionRoadToolActive(!expansionRoadToolActive);
 });
+placeCrosswalkButton.addEventListener("click", () =>
+  selectExpansionStreetObjectTool("crosswalk"),
+);
+placeTrafficSignalButton.addEventListener("click", () =>
+  selectExpansionStreetObjectTool("traffic-signal"),
+);
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -213,22 +228,32 @@ resetButton.addEventListener("click", () => {
 });
 
 resetDesignButton.addEventListener("click", () => {
-  if (designs.size === 0 && placedBuildings.size === 0 && expansionRoads.size === 0) return;
+  if (
+    designs.size === 0 &&
+    placedBuildings.size === 0 &&
+    expansionRoads.size === 0 &&
+    expansionStreetObjects.size === 0
+  ) {
+    return;
+  }
   recordEdit();
   designs.clear();
   placedBuildings.clear();
   expansionRoads.clear();
+  expansionStreetObjects.clear();
   nextExpansionRoadId = 1;
+  nextExpansionStreetObjectId = 1;
   selectedPlacedBuildingId = null;
   renderer.setPlacedBuildings([]);
   renderer.setExpansionRoads([]);
+  renderer.setExpansionStreetObjects([]);
   renderer.setSelectedPlacedBuilding(null);
   syncBuildingActivity();
   syncDesign();
   finishEdit("Empty design autosaved");
   updateExpansionRoadCount();
   selectionStatus.textContent =
-    "All expansion roads, placed buildings, and street interventions were reset.";
+    "All expansion roads, street objects, placed buildings, and interventions were reset.";
 });
 
 for (const button of buildingToolButtons) {
@@ -431,6 +456,35 @@ renderer.setExpansionRoadInteractionHandlers({
   },
 });
 
+renderer.setExpansionStreetObjectInteractionHandlers({
+  onPlace: (kind, x, z, rotation) => {
+    if (appMode !== "build" || buildWorkspace !== "expansion") return;
+    recordEdit();
+    const object: ExpansionStreetObject = {
+      id: `expansion-street-object-${nextExpansionStreetObjectId++}`,
+      kind,
+      x,
+      z,
+      rotation,
+    };
+    expansionStreetObjects.set(object.id, object);
+    renderer.setExpansionStreetObjects([...expansionStreetObjects.values()]);
+    updateExpansionRoadCount();
+    finishEdit(
+      kind === "crosswalk"
+        ? "Crosswalk placement autosaved"
+        : "Traffic signal placement autosaved",
+    );
+    selectionStatus.textContent =
+      kind === "crosswalk"
+        ? "Crosswalk placed and aligned to the nearest road."
+        : "Traffic signal placed as an independent street object.";
+  },
+  onRejected: (reason) => {
+    selectionStatus.textContent = reason;
+  },
+});
+
 renderer.setEnvironmentStatusHandler((mode, detail) => {
   updateEnvironmentStatus(mode, detail);
 });
@@ -500,6 +554,13 @@ function setAppMode(mode: AppMode): void {
       cameraMode === "orbit" &&
       expansionRoadToolActive,
   );
+  renderer.setExpansionStreetObjectPlacementTool(
+    building &&
+      buildWorkspace === "expansion" &&
+      cameraMode === "orbit"
+      ? activeExpansionStreetObjectTool
+      : null,
+  );
   renderer.setMapOverlay(
     building ? "none" : (analysisOverlay.value as MapOverlayMode),
   );
@@ -530,19 +591,20 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
     setExpansionRoadToolActive(true);
     buildWorkspaceHelp.textContent =
-      "Roads snap to the 20 m grid. Connections generate intersections and sidewalks automatically.";
+      "Roads auto-connect on the 20 m grid. Crosswalks and signals are placed manually.";
     selectionTitle.textContent = "Expansion zone";
     selectionDescription.textContent =
-      "Drag 90° roads together; intersections and sidewalks rebuild automatically.";
+      "Drag 90° roads together, then choose a crosswalk or signal placement tool.";
     featureKind.textContent = "Build area";
     featureKind.dataset.kind = "building";
     buildingEditor.hidden = true;
     signalEditor.hidden = true;
     designSummary.replaceChildren();
     selectionStatus.textContent =
-      "Connect or cross roads outside the protected city to generate a finished intersection.";
+      "Road intersections generate automatically; sidewalks are not added.";
   } else {
     setExpansionRoadToolActive(false);
+    clearExpansionStreetObjectTool();
     renderer.setSelectedFeature(selectedFeature?.id ?? null);
     buildWorkspaceHelp.textContent =
       "Select an original street or intersection to edit it.";
@@ -557,6 +619,7 @@ function setExpansionRoadToolActive(active: boolean): void {
     String(expansionRoadToolActive),
   );
   if (expansionRoadToolActive) {
+    clearExpansionStreetObjectTool();
     activeBuildingTool = null;
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
   }
@@ -572,10 +635,53 @@ function setExpansionRoadToolActive(active: boolean): void {
   );
 }
 
+function selectExpansionStreetObjectTool(
+  tool: ExpansionStreetObjectKind,
+): void {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  if (cameraMode !== "orbit") setCameraMode("orbit");
+  expansionRoadToolActive = false;
+  drawExpansionRoadButton.setAttribute("aria-pressed", "false");
+  renderer.setExpansionRoadDrawEnabled(false);
+  activeBuildingTool = null;
+  buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
+  activeExpansionStreetObjectTool =
+    activeExpansionStreetObjectTool === tool ? null : tool;
+  placeCrosswalkButton.setAttribute(
+    "aria-pressed",
+    String(activeExpansionStreetObjectTool === "crosswalk"),
+  );
+  placeTrafficSignalButton.setAttribute(
+    "aria-pressed",
+    String(activeExpansionStreetObjectTool === "traffic-signal"),
+  );
+  renderer.setBuildingPlacementEnabled(false);
+  renderer.setExpansionStreetObjectPlacementTool(activeExpansionStreetObjectTool);
+  selectionStatus.textContent =
+    activeExpansionStreetObjectTool === "crosswalk"
+      ? "Click an expansion road to place and align a crosswalk."
+      : activeExpansionStreetObjectTool === "traffic-signal"
+        ? "Click any open position outside the protected city to place a signal."
+        : "Choose a road, crosswalk, signal, or building tool.";
+}
+
+function clearExpansionStreetObjectTool(): void {
+  activeExpansionStreetObjectTool = null;
+  placeCrosswalkButton.setAttribute("aria-pressed", "false");
+  placeTrafficSignalButton.setAttribute("aria-pressed", "false");
+  renderer.setExpansionStreetObjectPlacementTool(null);
+}
+
 function updateExpansionRoadCount(): void {
+  const crosswalks = [...expansionStreetObjects.values()].filter(
+    (object) => object.kind === "crosswalk",
+  ).length;
+  const signals = expansionStreetObjects.size - crosswalks;
   expansionRoadCount.textContent = `${expansionRoads.size} road${
     expansionRoads.size === 1 ? "" : "s"
-  } · auto junctions · auto sidewalks`;
+  } · ${crosswalks} crosswalk${crosswalks === 1 ? "" : "s"} · ${signals} signal${
+    signals === 1 ? "" : "s"
+  }`;
 }
 
 function setCameraMode(mode: CameraMode): void {
@@ -597,6 +703,13 @@ function setCameraMode(mode: CameraMode): void {
       buildWorkspace === "expansion" &&
       mode === "orbit" &&
       expansionRoadToolActive,
+  );
+  renderer.setExpansionStreetObjectPlacementTool(
+    appMode === "build" &&
+      buildWorkspace === "expansion" &&
+      mode === "orbit"
+      ? activeExpansionStreetObjectTool
+      : null,
   );
 }
 
@@ -718,6 +831,7 @@ function selectBuildingTool(kind: BuildingKind): void {
   if (cameraMode !== "orbit") setCameraMode("orbit");
   activeBuildingTool = kind;
   setExpansionRoadToolActive(false);
+  clearExpansionStreetObjectTool();
   buildingColorControl.value = defaultBuildingColor(kind);
   renderer.setBuildingPlacementEnabled(appMode === "build" && cameraMode === "orbit");
   renderer.setSelectedFeature(null);
@@ -1063,8 +1177,13 @@ function captureEditorSnapshot(): EditorSnapshot {
     expansionRoads: Array.from(expansionRoads.values(), (road) => ({
       ...road,
     })),
+    expansionStreetObjects: Array.from(
+      expansionStreetObjects.values(),
+      (object) => ({ ...object }),
+    ),
     nextBuildingId,
     nextExpansionRoadId,
+    nextExpansionStreetObjectId,
   };
 }
 
@@ -1097,12 +1216,21 @@ function applyEditorSnapshot(snapshot: EditorSnapshot): void {
   for (const road of snapshot.expansionRoads) {
     expansionRoads.set(road.id, { ...road });
   }
+  expansionStreetObjects.clear();
+  for (const object of snapshot.expansionStreetObjects) {
+    expansionStreetObjects.set(object.id, { ...object });
+  }
   nextBuildingId = Math.max(1, snapshot.nextBuildingId);
   nextExpansionRoadId = Math.max(1, snapshot.nextExpansionRoadId);
+  nextExpansionStreetObjectId = Math.max(
+    1,
+    snapshot.nextExpansionStreetObjectId,
+  );
   selectedPlacedBuildingId = null;
   renderer.setSelectedPlacedBuilding(null);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   renderer.setExpansionRoads([...expansionRoads.values()]);
+  renderer.setExpansionStreetObjects([...expansionStreetObjects.values()]);
   updateExpansionRoadCount();
   syncBuildingActivity();
   syncDesign();

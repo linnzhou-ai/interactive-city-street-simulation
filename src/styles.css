@@ -651,6 +651,15 @@ body[data-app-mode="simulate"] .selection-panel {
   background: repeating-linear-gradient(90deg, #35444a 0 3px, #f4f0e7 3px 6px);
 }
 
+.signal-icon {
+  border: 4px solid #303b3f;
+  background: linear-gradient(#ff5148 0 30%, #ffd24a 30% 65%, #4ae177 65%);
+}
+
+.expansion-street-object-tools {
+  margin-top: 0.4rem;
+}
+
 .island-icon {
   border: 4px solid #34464a;
   border-radius: 50%;

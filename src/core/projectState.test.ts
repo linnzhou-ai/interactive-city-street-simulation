@@ -10,8 +10,10 @@ const EMPTY_EDITOR: EditorSnapshot = {
   designs: [],
   buildings: [],
   expansionRoads: [],
+  expansionStreetObjects: [],
   nextBuildingId: 1,
   nextExpansionRoadId: 1,
+  nextExpansionStreetObjectId: 1,
 };
 
 describe("EditHistory", () => {
@@ -32,8 +34,10 @@ describe("EditHistory", () => {
         },
       ],
       expansionRoads: [],
+      expansionStreetObjects: [],
       nextBuildingId: 2,
       nextExpansionRoadId: 1,
+      nextExpansionStreetObjectId: 1,
     };
     expect(history.undo(edited)?.buildings).toHaveLength(0);
     expect(history.redo(EMPTY_EDITOR)?.buildings).toHaveLength(1);
@@ -100,6 +104,44 @@ describe("parseProjectSnapshot", () => {
     );
     expect(parsed.expansionRoads).toHaveLength(1);
     expect(parsed.nextExpansionRoadId).toBe(2);
+  });
+
+  it("round-trips manually placed crosswalks and signals", () => {
+    const parsed = parseProjectSnapshot(
+      JSON.stringify({
+        version: PROJECT_STATE_VERSION,
+        ...EMPTY_EDITOR,
+        expansionStreetObjects: [
+          {
+            id: "street-object-1",
+            kind: "crosswalk",
+            x: 900,
+            z: 720,
+            rotation: 0,
+          },
+          {
+            id: "street-object-2",
+            kind: "traffic-signal",
+            x: 912,
+            z: 730,
+            rotation: 1.57,
+          },
+        ],
+        nextExpansionStreetObjectId: 3,
+        settings: {
+          simulationSpeed: 1,
+          speedLimitMph: 25,
+          signalCycleSeconds: 83,
+          vehicleVolume: 2,
+          pedestrianVolume: 2,
+          simulationSeed: 42,
+        },
+        timeOfDayHours: 12,
+        weather: "clear",
+      }),
+    );
+    expect(parsed.expansionStreetObjects).toHaveLength(2);
+    expect(parsed.nextExpansionStreetObjectId).toBe(3);
   });
 
   it("rejects malformed building data", () => {

@@ -129,15 +129,32 @@
           hidden
         >
           <span>Draw road</span>
-          <small>Auto-connect · intersections + sidewalks</small>
+          <small>Auto-connect · intersections</small>
         </button>
+        <div
+          class="tool-list compact-tool-list expansion-street-object-tools"
+          aria-label="Expansion street objects"
+          data-build-workspace-section="expansion"
+          hidden
+        >
+          <button id="place-crosswalk-button" class="tool-button" type="button" aria-pressed="false">
+            <span class="tool-icon crossing-icon"></span>
+            <span>Place crosswalk</span>
+            <small>On a road</small>
+          </button>
+          <button id="place-traffic-signal-button" class="tool-button" type="button" aria-pressed="false">
+            <span class="tool-icon signal-icon"></span>
+            <span>Place traffic signal</span>
+            <small>Free position</small>
+          </button>
+        </div>
         <p
           id="expansion-road-count"
           class="placement-help"
           data-build-workspace-section="expansion"
           hidden
         >
-          0 roads · auto junctions · auto sidewalks
+          0 roads · 0 crosswalks · 0 signals
         </p>
         <p class="tool-section-label" data-build-workspace-section="expansion" hidden>
           Buildings
