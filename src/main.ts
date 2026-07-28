@@ -542,8 +542,8 @@ function setAppMode(mode: AppMode): void {
   appMode = mode;
   document.body.dataset.appMode = mode;
   const building = mode === "build";
-  if (building && cameraMode !== "orbit") setCameraMode("orbit");
-  flyCameraButton.disabled = building;
+  if (building && cameraMode === "walk") setCameraMode("orbit");
+  flyCameraButton.disabled = false;
   walkCameraButton.disabled = building;
   buildModeButton.setAttribute("aria-pressed", String(building));
   simulateModeButton.setAttribute("aria-pressed", String(!building));
@@ -621,6 +621,9 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
 
 function setExpansionRoadToolActive(active: boolean): void {
   expansionRoadToolActive = active && buildWorkspace === "expansion";
+  if (expansionRoadToolActive && cameraMode !== "orbit") {
+    setCameraMode("orbit");
+  }
   drawExpansionRoadButton.setAttribute(
     "aria-pressed",
     String(expansionRoadToolActive),
@@ -718,6 +721,10 @@ function setCameraMode(mode: CameraMode): void {
       ? activeExpansionStreetObjectTool
       : null,
   );
+  if (appMode === "build" && mode === "fly") {
+    selectionStatus.textContent =
+      "Fly navigation active. Choose a build tool to return to Orbit placement.";
+  }
 }
 
 function updateEnvironmentStatus(mode: EnvironmentMode, detail: string): void {
