@@ -156,11 +156,63 @@
         </p>
         <div id="design-summary" class="design-summary" aria-label="Current design"></div>
         <div id="signal-editor" class="signal-editor" hidden>
-          <label for="build-signal-cycle">
-            <span>Signal cycle</span>
-            <output id="build-signal-output" for="build-signal-cycle">70 sec</output>
-          </label>
-          <input id="build-signal-cycle" type="range" min="30" max="120" step="5" value="70" />
+          <div class="signal-editor-heading">
+            <strong>Signal control</strong>
+            <label for="signal-mode-control">
+              <span>Mode</span>
+              <select id="signal-mode-control">
+                <option value="automatic">Automatic</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+          </div>
+          <div class="signal-timing-grid">
+            <label for="signal-ns-green">
+              <span>N/S green</span>
+              <span class="number-input-wrap">
+                <input id="signal-ns-green" type="number" min="10" max="120" value="30" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-ew-green">
+              <span>E/W green</span>
+              <span class="number-input-wrap">
+                <input id="signal-ew-green" type="number" min="10" max="120" value="30" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-yellow">
+              <span>Yellow</span>
+              <span class="number-input-wrap">
+                <input id="signal-yellow" type="number" min="2" max="8" step="0.5" value="3" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-all-red">
+              <span>All red</span>
+              <span class="number-input-wrap">
+                <input id="signal-all-red" type="number" min="0.5" max="5" step="0.5" value="1" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-pedestrian">
+              <span>Pedestrian</span>
+              <span class="number-input-wrap">
+                <input id="signal-pedestrian" type="number" min="5" max="60" value="15" />
+                <span>sec</span>
+              </span>
+            </label>
+          </div>
+          <div class="signal-live-status" aria-live="polite">
+            <span>Current <strong id="signal-current-phase">N/S green</strong></span>
+            <span>Next <strong id="signal-next-phase">N/S yellow</strong></span>
+            <span>Remaining <strong id="signal-time-remaining">30.0 sec</strong></span>
+          </div>
+          <div id="manual-signal-controls" class="manual-signal-controls" hidden>
+            <button id="manual-ns-button" type="button">N/S green</button>
+            <button id="manual-ew-button" type="button">E/W green</button>
+            <button id="manual-all-red-button" type="button">All red</button>
+          </div>
         </div>
         <p id="selection-status" class="selection-status" aria-live="polite">
           Click a highlighted road or intersection to edit it in place.
@@ -217,8 +269,22 @@
             <label for="signal-cycle-control">
               <span>Signal cycle</span>
               <span class="number-input-wrap">
-                <input id="signal-cycle-control" type="number" min="10" max="180" value="70" />
+                <input id="signal-cycle-control" type="number" min="30" max="180" value="83" />
                 <span>sec</span>
+              </span>
+            </label>
+          </div>
+          <div class="scenario-control number-control">
+            <label for="simulation-seed-control">
+              <span>Simulation seed</span>
+              <span class="number-input-wrap">
+                <input
+                  id="simulation-seed-control"
+                  type="number"
+                  min="1"
+                  max="2147483647"
+                  value="20260728"
+                />
               </span>
             </label>
           </div>
@@ -292,6 +358,21 @@
             <span>Throughput</span>
             <strong id="throughput">0</strong>
             <small>People per hour</small>
+          </article>
+          <article class="metric-card">
+            <span>Active vehicles</span>
+            <strong id="active-vehicles">0</strong>
+            <small>Live agents</small>
+          </article>
+          <article class="metric-card">
+            <span>Active pedestrians</span>
+            <strong id="active-pedestrians">0</strong>
+            <small>Live agents</small>
+          </article>
+          <article class="metric-card">
+            <span>Crossings complete</span>
+            <strong id="crossings-completed">0</strong>
+            <small>Since reset</small>
           </article>
         </div>
       </section>

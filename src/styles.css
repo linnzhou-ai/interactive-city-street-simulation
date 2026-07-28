@@ -270,6 +270,8 @@ body[data-app-mode="simulate"] .selection-panel {
   top: 6.7rem;
   right: 1rem;
   width: 310px;
+  max-height: calc(100vh - 7.7rem);
+  overflow: auto;
 }
 
 .controls-panel {
@@ -475,6 +477,81 @@ body[data-app-mode="simulate"] .selection-panel {
 .signal-editor output,
 .control-row output {
   color: #72e0c0;
+}
+
+.signal-editor-heading {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.55rem;
+  color: #dbe6e0;
+  font-size: 0.68rem;
+}
+
+.signal-editor-heading label {
+  gap: 0.35rem;
+  font-size: 0.61rem;
+}
+
+.signal-editor select {
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 7px;
+  padding: 0.28rem 1.45rem 0.28rem 0.4rem;
+  color: #f4f7f4;
+  background: rgb(7 17 20 / 72%);
+  font: inherit;
+}
+
+.signal-timing-grid {
+  display: grid;
+  gap: 0.38rem;
+  margin-top: 0.65rem;
+}
+
+.signal-timing-grid label {
+  font-size: 0.61rem;
+}
+
+.signal-timing-grid .number-input-wrap input {
+  width: 3.5rem;
+}
+
+.signal-live-status {
+  display: grid;
+  gap: 0.32rem;
+  margin-top: 0.65rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+}
+
+.signal-live-status span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #91a79d;
+  font-size: 0.59rem;
+}
+
+.signal-live-status strong {
+  color: #9ce8d2;
+  font-size: 0.61rem;
+}
+
+.manual-signal-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+}
+
+.manual-signal-controls[hidden] {
+  display: none;
+}
+
+.manual-signal-controls button {
+  padding: 0.42rem 0.2rem;
+  font-size: 0.56rem;
 }
 
 input[type="range"] {

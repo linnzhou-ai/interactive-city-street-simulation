@@ -2,10 +2,19 @@ export type AppMode = "build" | "simulate";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
 export type MapOverlayMode = "none" | "congestion" | "pedestrians" | "conflicts";
-export type SignalPhase = "east-west" | "north-south" | "pedestrians";
+export type SignalPhase =
+  | "ns-green"
+  | "ns-yellow"
+  | "all-red"
+  | "ew-green"
+  | "ew-yellow"
+  | "pedestrian-walk";
+export type SignalControlMode = "automatic" | "manual";
+export type ManualSignalTarget = "ns-green" | "ew-green" | "all-red";
 export type FeatureKind = "street" | "intersection";
 export type FeatureAxis = "x" | "z";
 export type LaneDirection = "two-way" | "forward" | "reverse";
+export type VehicleKind = "sedan" | "compact" | "suv" | "van" | "bus";
 
 export type BuildTool =
   | "add-lane"
@@ -55,6 +64,45 @@ export interface ScenarioSettings {
   signalCycleSeconds: number;
   vehicleVolume: number;
   pedestrianVolume: number;
+  simulationSeed: number;
+}
+
+export interface SignalTiming {
+  northSouthGreenSeconds: number;
+  eastWestGreenSeconds: number;
+  yellowSeconds: number;
+  allRedSeconds: number;
+  pedestrianSeconds: number;
+}
+
+export interface SignalSnapshot {
+  intersectionId: string;
+  mode: SignalControlMode;
+  phase: SignalPhase;
+  nextPhase: SignalPhase;
+  timeRemainingSeconds: number | null;
+  timing: SignalTiming;
+}
+
+export interface VehicleSnapshot {
+  id: number;
+  x: number;
+  z: number;
+  heading: number;
+  speedMetersPerSecond: number;
+  queued: boolean;
+  kind: VehicleKind;
+  color: string;
+}
+
+export interface PedestrianSnapshot {
+  id: number;
+  x: number;
+  z: number;
+  heading: number;
+  waiting: boolean;
+  color: string;
+  variant: number;
 }
 
 export interface SimulationMetrics {
@@ -65,11 +113,17 @@ export interface SimulationMetrics {
   pedestrianWaitSeconds: number;
   potentialConflicts: number;
   throughputPerHour: number;
+  activeVehicles: number;
+  activePedestrians: number;
+  crossingsCompleted: number;
 }
 
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
   signalPhase: SignalPhase;
+  signals: readonly SignalSnapshot[];
+  vehicles: readonly VehicleSnapshot[];
+  pedestrians: readonly PedestrianSnapshot[];
   metrics: SimulationMetrics;
 }

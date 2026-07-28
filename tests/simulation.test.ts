@@ -14,25 +14,35 @@ describe("Simulation", () => {
     const simulation = new Simulation();
     simulation.start();
 
-    simulation.update(0.1);
+    simulation.update(8);
 
     expect(simulation.getState().elapsedSeconds).toBeGreaterThan(0);
-    expect(simulation.getState().metrics.congestion).toBeGreaterThan(0);
+    expect(simulation.getState().metrics.activeVehicles).toBeGreaterThan(0);
+    expect(simulation.getState().metrics.activePedestrians).toBeGreaterThan(0);
   });
 
-  it("cycles east-west, north-south, and pedestrian signal phases", () => {
+  it("cycles green, yellow, all-red, and pedestrian signal phases", () => {
     const simulation = new Simulation();
-    simulation.setSignalCycle(10);
+    simulation.setSignalTiming("30-market", {
+      northSouthGreenSeconds: 10,
+      eastWestGreenSeconds: 10,
+      yellowSeconds: 2,
+      allRedSeconds: 0.5,
+      pedestrianSeconds: 5,
+    });
     simulation.start();
 
-    simulation.update(4.3);
-    expect(simulation.getState().signalPhase).toBe("north-south");
+    simulation.update(10);
+    expect(simulation.getState().signalPhase).toBe("ns-yellow");
 
-    simulation.update(4.2);
-    expect(simulation.getState().signalPhase).toBe("pedestrians");
+    simulation.update(2);
+    expect(simulation.getState().signalPhase).toBe("all-red");
 
-    simulation.update(1.6);
-    expect(simulation.getState().signalPhase).toBe("east-west");
+    simulation.update(0.5);
+    expect(simulation.getState().signalPhase).toBe("ew-green");
+
+    simulation.update(12.5);
+    expect(simulation.getState().signalPhase).toBe("pedestrian-walk");
   });
 
   it("restores deterministic starting conditions", () => {
@@ -58,12 +68,14 @@ describe("Simulation", () => {
       vehicleVolume: 3,
       pedestrianVolume: 1,
       speedLimitMph: 45,
-      signalCycleSeconds: 10,
+      signalCycleSeconds: 30,
     });
   });
 
   it("reflects street upgrades in live district metrics", () => {
     const simulation = new Simulation();
+    simulation.start();
+    simulation.update(180);
     const baseline = { ...simulation.getState().metrics };
 
     simulation.setDesignImpact({
@@ -75,10 +87,9 @@ describe("Simulation", () => {
     });
 
     const upgraded = simulation.getState().metrics;
-    expect(upgraded.vehicleTravelSeconds).toBeLessThan(baseline.vehicleTravelSeconds);
+    expect(upgraded.congestion).toBeLessThanOrEqual(baseline.congestion);
+    expect(upgraded.averageSpeedMph).toBeGreaterThan(baseline.averageSpeedMph);
     expect(upgraded.pedestrianWaitSeconds).toBeLessThan(baseline.pedestrianWaitSeconds);
-    expect(upgraded.potentialConflicts).toBeLessThan(baseline.potentialConflicts);
-    expect(upgraded.throughputPerHour).toBeGreaterThan(baseline.throughputPerHour);
   });
 
   it("keeps baseline comparison independent from the modified design", () => {

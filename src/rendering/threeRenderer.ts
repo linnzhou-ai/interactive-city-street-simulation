@@ -17,9 +17,11 @@ import type {
   FeatureDesign,
   GeoPoint,
   MapOverlayMode,
-  ScenarioSettings,
-  SignalPhase,
+  PedestrianSnapshot,
+  SignalSnapshot,
   SimulationState,
+  VehicleKind,
+  VehicleSnapshot,
 } from "../models/types";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
@@ -50,23 +52,14 @@ const WALK_EYE_HEIGHT = 1.68;
 const WALK_GRAVITY = 18;
 const MAX_COLLISION_STEP = 0.18;
 
-interface MovingAgent {
-  object: THREE.Group;
-  route: WorldRoute;
-  progress: number;
-  direction: 1 | -1;
-  speed: number;
-}
-
-interface WorldRoute {
-  start: THREE.Vector3;
-  end: THREE.Vector3;
+interface SignalAssembly {
+  intersectionId: string;
   axis: DistrictFeature["axis"];
-}
-
-interface SignalLamp {
-  material: THREE.MeshStandardMaterial;
-  axis: DistrictFeature["axis"];
+  red: THREE.MeshStandardMaterial;
+  yellow: THREE.MeshStandardMaterial;
+  green: THREE.MeshStandardMaterial;
+  walk: THREE.MeshStandardMaterial;
+  dontWalk: THREE.MeshStandardMaterial;
 }
 
 interface CollisionVolume extends SpatialBounds {
@@ -101,9 +94,9 @@ export class ThreeRenderer {
   private readonly analysisGroup = new THREE.Group();
   private readonly trafficGroup = new THREE.Group();
   private readonly pedestrianGroup = new THREE.Group();
-  private readonly vehicleAgents: MovingAgent[] = [];
-  private readonly pedestrianAgents: MovingAgent[] = [];
-  private readonly signalLamps: SignalLamp[] = [];
+  private readonly vehiclePool: THREE.Group[] = [];
+  private readonly pedestrianPool: THREE.Group[] = [];
+  private readonly signalAssemblies: SignalAssembly[] = [];
   private readonly flyKeys = new Set<string>();
   private readonly collisionIndex = new SpatialHash<CollisionVolume>(96);
   private readonly walkableIndex = new SpatialHash<WalkableSurface>(96);
@@ -126,7 +119,6 @@ export class ThreeRenderer {
   private looking = false;
   private lastPointer = new THREE.Vector2();
   private pointerDown = new THREE.Vector2();
-  private lastElapsedSeconds = 0;
   private lastFrameTimestamp = performance.now();
 
   private readonly materials = createWorldMaterials();
@@ -167,8 +159,6 @@ export class ThreeRenderer {
     this.buildCollisionIndexes();
     this.buildCollisionDebug();
     this.buildSignals();
-    this.buildMovingVehicles();
-    this.buildPedestrians();
     this.bindInput();
     this.updateFeatureHighlights();
   }
@@ -291,33 +281,16 @@ export class ThreeRenderer {
     this.renderer.setSize(bounds.width, bounds.height, false);
   }
 
-  render(
-    state: Readonly<SimulationState>,
-    settings: Readonly<ScenarioSettings>,
-  ): void {
+  render(state: Readonly<SimulationState>): void {
     const now = performance.now();
     const frameSeconds = Math.min((now - this.lastFrameTimestamp) / 1000, 0.1);
     this.lastFrameTimestamp = now;
     if (this.cameraMode === "fly") this.updateFlyCamera(frameSeconds);
     if (this.cameraMode === "walk") this.updateWalkCamera(frameSeconds);
 
-    const elapsedDelta = state.elapsedSeconds - this.lastElapsedSeconds;
-    if (elapsedDelta < 0) this.resetAgents();
-    else if (state.running && elapsedDelta > 0) {
-      this.advanceAgents(this.vehicleAgents, elapsedDelta, state.signalPhase, false);
-      this.advanceAgents(this.pedestrianAgents, elapsedDelta, state.signalPhase, true);
-    }
-    this.lastElapsedSeconds = state.elapsedSeconds;
-
-    const vehicleCount = settings.vehicleVolume * 14;
-    const pedestrianCount = settings.pedestrianVolume * 18;
-    this.vehicleAgents.forEach((agent, index) => {
-      agent.object.visible = index < vehicleCount;
-    });
-    this.pedestrianAgents.forEach((agent, index) => {
-      agent.object.visible = index < pedestrianCount;
-    });
-    this.updateSignals(state.signalPhase);
+    this.syncVehicles(state.vehicles);
+    this.syncPedestrians(state.pedestrians);
+    this.updateSignals(state.signals);
 
     if (this.cameraMode === "orbit") this.controls.update();
     this.updateCollisionDebug();
@@ -474,6 +447,8 @@ export class ThreeRenderer {
       );
       intersection.receiveShadow = true;
       intersection.userData.walkable = true;
+      intersection.userData.featureId = feature.id;
+      this.selectableRoads.push(intersection);
       this.scene.add(intersection);
       if (position.length() > 930) continue;
       this.addCrosswalk(position.x, position.z);
@@ -1039,71 +1014,135 @@ export class ThreeRenderer {
   }
 
   private buildSignals(): void {
-    for (const [index, feature] of this.features
-      .filter((candidate) => candidate.kind === "intersection")
-      .entries()) {
+    for (const feature of this.features.filter(
+      (candidate) => candidate.kind === "intersection",
+    )) {
       const position = geoToWorld(feature.path[0]);
-      if (Math.hypot(position.x, position.z) > 930) continue;
-      const group = new THREE.Group();
-      group.position.set(position.x + 8.5, 0.25, position.z + 8.5);
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16, 0.24, 6.8, 9),
-        this.materials.streetMetal,
+      const major =
+        feature.name.startsWith("38th") ||
+        feature.name.startsWith("40th") ||
+        feature.name.includes("Market") ||
+        feature.name.includes("South");
+      for (const [axis, sign] of [
+        ["x", 1],
+        ["x", -1],
+        ["z", 1],
+        ["z", -1],
+      ] as const) {
+        const group = this.createSignalAssembly(
+          feature.id,
+          axis,
+          sign,
+          major,
+        );
+        const corner = signalCorner(axis, sign);
+        group.position.set(
+          position.x + corner.x * 11.2,
+          RENDER_HEIGHTS.sidewalkSurface,
+          position.z + corner.z * 11.2,
+        );
+        group.rotation.y = signalFacingRotation(axis, sign);
+        this.scene.add(group);
+      }
+    }
+  }
+
+  private createSignalAssembly(
+    intersectionId: string,
+    axis: DistrictFeature["axis"],
+    _sign: 1 | -1,
+    mastArm: boolean,
+  ): THREE.Group {
+    const group = new THREE.Group();
+    const poleHeight = 7.2;
+    const armLength = mastArm ? 8.2 : 5.8;
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.24, poleHeight, 10),
+      this.materials.streetMetal,
+    );
+    pole.position.y = poleHeight / 2;
+    const arm = box(
+      armLength,
+      0.25,
+      0.25,
+      this.materials.streetMetal,
+    );
+    arm.position.set(-armLength / 2 + 0.1, poleHeight - 0.35, 0);
+    const bracket = box(0.3, 0.85, 0.3, this.materials.streetMetal);
+    bracket.position.set(-armLength + 0.45, poleHeight - 0.75, 0);
+    const backing = box(1.45, 3.15, 0.18, this.materials.signalHousing);
+    backing.position.set(-armLength + 0.45, poleHeight - 2.15, -0.34);
+    const housing = box(1.2, 2.85, 0.78, this.materials.signalHousing);
+    housing.position.set(-armLength + 0.45, poleHeight - 2.15, 0);
+    const red = createSignalLensMaterial("#d84137");
+    const yellow = createSignalLensMaterial("#e7b73f");
+    const green = createSignalLensMaterial("#3cbd6d");
+    for (const [offset, material] of [
+      [0.86, red],
+      [0, yellow],
+      [-0.86, green],
+    ] as const) {
+      const lens = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.34, 0.34, 0.13, 18),
+        material,
       );
-      pole.position.y = 3.4;
-      pole.castShadow = true;
-      const housing = box(1.1, 2.25, 0.85, this.materials.signalHousing);
-      housing.position.set(0, 6.1, 0);
-      const lampMaterial = new THREE.MeshStandardMaterial({
-        color: "#54db84",
-        emissive: "#158948",
-        emissiveIntensity: 2,
-      });
-      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 8), lampMaterial);
-      lamp.position.set(0, 6.1, 0.48);
-      group.add(pole, housing, lamp);
-      this.signalLamps.push({
-        material: lampMaterial,
-        axis: index % 2 === 0 ? "x" : "z",
-      });
-      this.scene.add(group);
+      lens.rotation.x = Math.PI / 2;
+      lens.position.set(
+        -armLength + 0.45,
+        poleHeight - 2.15 + offset,
+        0.47,
+      );
+      group.add(lens);
     }
-  }
-
-  private buildMovingVehicles(): void {
-    const routes = createWorldRoutes();
-    const colors = ["#de5948", "#2f6e8a", "#e1b24f", "#ece7da", "#33443e", "#824d75"];
-    for (let index = 0; index < 42; index += 1) {
-      const route = routes[index % routes.length];
-      const car = createCar(colors[index % colors.length]);
-      this.trafficGroup.add(car);
-      this.vehicleAgents.push({
-        object: car,
-        route,
-        progress: (index * 0.137) % 1,
-        direction: index % 3 === 0 ? -1 : 1,
-        speed: 0.012 + (index % 5) * 0.0016,
-      });
+    const pedestrianHousing = box(
+      1.15,
+      1.4,
+      0.62,
+      this.materials.signalHousing,
+    );
+    pedestrianHousing.position.set(0, 3.15, 0.08);
+    const walk = createSignalLensMaterial("#eef7ed");
+    const dontWalk = createSignalLensMaterial("#df653f");
+    const walkHead = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 10, 8),
+      walk,
+    );
+    walkHead.position.set(-0.22, 3.42, 0.43);
+    const walkBody = box(0.16, 0.48, 0.08, walk);
+    walkBody.position.set(-0.22, 3.03, 0.43);
+    const hand = new THREE.Group();
+    for (let finger = 0; finger < 4; finger += 1) {
+      const digit = box(0.07, 0.36, 0.08, dontWalk);
+      digit.position.set(0.08 + finger * 0.09, 3.34, 0.44);
+      hand.add(digit);
     }
-    this.resetAgents();
-  }
-
-  private buildPedestrians(): void {
-    const routes = createPedestrianRoutes();
-    const colors = ["#236f75", "#b65a4b", "#d4a646", "#735483", "#39684e"];
-    for (let index = 0; index < 54; index += 1) {
-      const route = routes[index % routes.length];
-      const person = createPerson(colors[index % colors.length], index % 4);
-      this.pedestrianGroup.add(person);
-      this.pedestrianAgents.push({
-        object: person,
-        route,
-        progress: (index * 0.173) % 1,
-        direction: index % 2 === 0 ? 1 : -1,
-        speed: 0.004 + (index % 4) * 0.0005,
-      });
-    }
-    this.resetAgents();
+    const palm = box(0.38, 0.34, 0.08, dontWalk);
+    palm.position.set(0.22, 3.02, 0.44);
+    hand.add(palm);
+    group.add(
+      pole,
+      arm,
+      bracket,
+      backing,
+      housing,
+      pedestrianHousing,
+      walkHead,
+      walkBody,
+      hand,
+    );
+    group.traverse((child) => {
+      if (child instanceof THREE.Mesh) child.castShadow = true;
+    });
+    this.signalAssemblies.push({
+      intersectionId,
+      axis,
+      red,
+      yellow,
+      green,
+      walk,
+      dontWalk,
+    });
+    return group;
   }
 
   private bindInput(): void {
@@ -1486,53 +1525,60 @@ export class ThreeRenderer {
     }
   }
 
-  private advanceAgents(
-    agents: MovingAgent[],
-    deltaSeconds: number,
-    phase: SignalPhase,
-    pedestrians: boolean,
+  private syncVehicles(vehicles: readonly VehicleSnapshot[]): void {
+    while (this.vehiclePool.length < vehicles.length) {
+      const object = createCar("#ffffff", "sedan");
+      this.vehiclePool.push(object);
+      this.trafficGroup.add(object);
+    }
+    for (let index = 0; index < this.vehiclePool.length; index += 1) {
+      const object = this.vehiclePool[index];
+      const vehicle = vehicles[index];
+      object.visible = vehicle !== undefined;
+      if (!vehicle) continue;
+      object.position.set(vehicle.x, 0.25, vehicle.z);
+      object.rotation.y = vehicle.heading;
+      updateCarAppearance(object, vehicle.color, vehicle.kind);
+    }
+  }
+
+  private syncPedestrians(
+    pedestrians: readonly PedestrianSnapshot[],
   ): void {
-    for (const agent of agents) {
-      const green = pedestrians
-        ? phase === "pedestrians"
-        : (agent.route.axis === "x" && phase === "east-west") ||
-          (agent.route.axis === "z" && phase === "north-south");
-      const intersections = 10;
-      const scaled = agent.progress * intersections;
-      const nearSignal = Math.abs(scaled - Math.round(scaled)) < 0.018;
-      if (green || !nearSignal) {
-        agent.progress = wrapProgress(
-          agent.progress + agent.direction * agent.speed * deltaSeconds,
-        );
-      }
-      this.placeAgent(agent, pedestrians);
+    while (this.pedestrianPool.length < pedestrians.length) {
+      const object = createPerson("#ffffff", 0);
+      this.pedestrianPool.push(object);
+      this.pedestrianGroup.add(object);
+    }
+    for (let index = 0; index < this.pedestrianPool.length; index += 1) {
+      const object = this.pedestrianPool[index];
+      const pedestrian = pedestrians[index];
+      object.visible = pedestrian !== undefined;
+      if (!pedestrian) continue;
+      object.position.set(pedestrian.x, 0.28, pedestrian.z);
+      object.rotation.y = pedestrian.heading;
+      updatePersonAppearance(object, pedestrian.color, pedestrian.variant);
     }
   }
 
-  private placeAgent(agent: MovingAgent, pedestrian: boolean): void {
-    const position = agent.route.start.clone().lerp(agent.route.end, agent.progress);
-    if (pedestrian) {
-      const direction = agent.route.end.clone().sub(agent.route.start).normalize();
-      const normal = new THREE.Vector3(-direction.z, 0, direction.x);
-      position.addScaledVector(normal, ROAD_WIDTH / 2 + 4.3);
-    }
-    agent.object.position.set(position.x, pedestrian ? 0.28 : 0.25, position.z);
-    const directionVector = agent.route.end.clone().sub(agent.route.start).multiplyScalar(agent.direction);
-    agent.object.rotation.y = Math.atan2(directionVector.x, directionVector.z);
-  }
-
-  private resetAgents(): void {
-    for (const agent of this.vehicleAgents) this.placeAgent(agent, false);
-    for (const agent of this.pedestrianAgents) this.placeAgent(agent, true);
-  }
-
-  private updateSignals(phase: SignalPhase): void {
-    for (const lamp of this.signalLamps) {
-      const green =
-        (lamp.axis === "x" && phase === "east-west") ||
-        (lamp.axis === "z" && phase === "north-south");
-      lamp.material.color.set(green ? "#58df89" : "#ff5d56");
-      lamp.material.emissive.set(green ? "#168b47" : "#a32222");
+  private updateSignals(signals: readonly SignalSnapshot[]): void {
+    const byIntersection = new Map(
+      signals.map((signal) => [signal.intersectionId, signal]),
+    );
+    for (const assembly of this.signalAssemblies) {
+      const signal = byIntersection.get(assembly.intersectionId);
+      const phase = signal?.phase ?? "all-red";
+      const axisGreen =
+        (assembly.axis === "x" && phase === "ew-green") ||
+        (assembly.axis === "z" && phase === "ns-green");
+      const axisYellow =
+        (assembly.axis === "x" && phase === "ew-yellow") ||
+        (assembly.axis === "z" && phase === "ns-yellow");
+      setSignalLens(assembly.red, !axisGreen && !axisYellow);
+      setSignalLens(assembly.yellow, axisYellow);
+      setSignalLens(assembly.green, axisGreen);
+      setSignalLens(assembly.walk, phase === "pedestrian-walk");
+      setSignalLens(assembly.dontWalk, phase !== "pedestrian-walk");
     }
   }
 
@@ -1866,42 +1912,7 @@ function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
   return start.clone().add(end).multiplyScalar(0.5);
 }
 
-function createWorldRoutes(): WorldRoute[] {
-  const routes: WorldRoute[] = [];
-  for (const street of PENN_STREETS) {
-    routes.push({
-      start: geoToWorld({
-        longitude: PENN_AVENUES[0].longitude,
-        latitude: street.latitude,
-      }),
-      end: geoToWorld({
-        longitude: PENN_AVENUES[PENN_AVENUES.length - 1].longitude,
-        latitude: street.latitude,
-      }),
-      axis: "x",
-    });
-  }
-  for (const avenue of PENN_AVENUES) {
-    routes.push({
-      start: geoToWorld({
-        longitude: avenue.longitude,
-        latitude: PENN_STREETS[0].latitude,
-      }),
-      end: geoToWorld({
-        longitude: avenue.longitude,
-        latitude: PENN_STREETS[PENN_STREETS.length - 1].latitude,
-      }),
-      axis: "z",
-    });
-  }
-  return routes;
-}
-
-function createPedestrianRoutes(): WorldRoute[] {
-  return createWorldRoutes().filter((_, index) => index % 2 === 0 || index < PENN_STREETS.length);
-}
-
-function createCar(color: string): THREE.Group {
+function createCar(color: string, kind: VehicleKind): THREE.Group {
   const group = new THREE.Group();
   const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.34, metalness: 0.08 });
   const glass = new THREE.MeshStandardMaterial({ color: "#aec8ce", roughness: 0.2, metalness: 0.12 });
@@ -1924,6 +1935,8 @@ function createCar(color: string): THREE.Group {
   group.traverse((child) => {
     if (child instanceof THREE.Mesh) child.castShadow = true;
   });
+  group.userData.paint = paint;
+  updateCarAppearance(group, color, kind);
   return group;
 }
 
@@ -1939,7 +1952,75 @@ function createPerson(color: string, variant: number): THREE.Group {
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), skin);
   head.position.y = 2.1;
   group.add(body, head);
+  group.userData.clothing = clothing;
+  group.userData.skin = skin;
   return group;
+}
+
+function updateCarAppearance(
+  object: THREE.Group,
+  color: string,
+  kind: VehicleKind,
+): void {
+  const paint = object.userData.paint as THREE.MeshStandardMaterial | undefined;
+  paint?.color.set(color);
+  const scale =
+    kind === "compact"
+      ? [0.92, 0.9, 0.86]
+      : kind === "suv"
+        ? [1.06, 1.2, 1.12]
+        : kind === "van"
+          ? [1.08, 1.28, 1.28]
+          : kind === "bus"
+            ? [1.15, 1.35, 2.2]
+            : [1, 1, 1];
+  object.scale.set(scale[0], scale[1], scale[2]);
+}
+
+function updatePersonAppearance(
+  object: THREE.Group,
+  color: string,
+  variant: number,
+): void {
+  const clothing = object.userData.clothing as
+    | THREE.MeshStandardMaterial
+    | undefined;
+  const skin = object.userData.skin as THREE.MeshStandardMaterial | undefined;
+  clothing?.color.set(color);
+  skin?.color.set(["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant % 4]);
+}
+
+function createSignalLensMaterial(color: string): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color).multiplyScalar(0.18),
+    emissive: color,
+    emissiveIntensity: 0.04,
+    roughness: 0.36,
+  });
+}
+
+function setSignalLens(
+  material: THREE.MeshStandardMaterial,
+  active: boolean,
+): void {
+  material.color.copy(material.emissive).multiplyScalar(active ? 0.8 : 0.14);
+  material.emissiveIntensity = active ? 3.4 : 0.035;
+}
+
+function signalCorner(
+  axis: DistrictFeature["axis"],
+  sign: 1 | -1,
+): { x: number; z: number } {
+  if (axis === "x") return { x: sign, z: sign };
+  return { x: -sign, z: sign };
+}
+
+function signalFacingRotation(
+  axis: DistrictFeature["axis"],
+  sign: 1 | -1,
+): number {
+  if (axis === "x") return sign > 0 ? -Math.PI / 2 : Math.PI / 2;
+  return sign > 0 ? Math.PI : 0;
 }
 
 function box(
@@ -1964,10 +2045,6 @@ function seededRandom(seed: number): () => number {
     value = (value * 1_664_525 + 1_013_904_223) >>> 0;
     return value / 4_294_967_296;
   };
-}
-
-function wrapProgress(value: number): number {
-  return ((value % 1) + 1) % 1;
 }
 
 class SpatialHash<T extends SpatialBounds> {

@@ -10,7 +10,10 @@ import type {
   EnvironmentMode,
   FeatureDesign,
   LaneDirection,
+  ManualSignalTarget,
   MapOverlayMode,
+  SignalControlMode,
+  SignalTiming,
 } from "./models/types";
 import { ThreeRenderer } from "./rendering/threeRenderer";
 
@@ -35,9 +38,21 @@ const pedestrianVolumeControl = requireElement<HTMLInputElement>("pedestrian-vol
 const pedestrianVolumeOutput = requireElement<HTMLOutputElement>("pedestrian-volume-output");
 const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
 const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
-const buildSignalCycle = requireElement<HTMLInputElement>("build-signal-cycle");
-const buildSignalOutput = requireElement<HTMLOutputElement>("build-signal-output");
+const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-control");
 const signalEditor = requireElement<HTMLElement>("signal-editor");
+const signalModeControl = requireElement<HTMLSelectElement>("signal-mode-control");
+const signalNorthSouthGreen = requireElement<HTMLInputElement>("signal-ns-green");
+const signalEastWestGreen = requireElement<HTMLInputElement>("signal-ew-green");
+const signalYellow = requireElement<HTMLInputElement>("signal-yellow");
+const signalAllRed = requireElement<HTMLInputElement>("signal-all-red");
+const signalPedestrian = requireElement<HTMLInputElement>("signal-pedestrian");
+const signalCurrentPhase = requireElement<HTMLElement>("signal-current-phase");
+const signalNextPhase = requireElement<HTMLElement>("signal-next-phase");
+const signalTimeRemaining = requireElement<HTMLElement>("signal-time-remaining");
+const manualSignalControls = requireElement<HTMLElement>("manual-signal-controls");
+const manualNorthSouthButton = requireElement<HTMLButtonElement>("manual-ns-button");
+const manualEastWestButton = requireElement<HTMLButtonElement>("manual-ew-button");
+const manualAllRedButton = requireElement<HTMLButtonElement>("manual-all-red-button");
 const statusPill = requireElement<HTMLElement>("status-pill");
 const signalPhase = requireElement<HTMLElement>("signal-phase");
 const selectionTitle = requireElement<HTMLElement>("selection-title");
@@ -50,6 +65,9 @@ const congestion = requireElement<HTMLElement>("congestion");
 const pedestrianWait = requireElement<HTMLElement>("pedestrian-wait");
 const conflicts = requireElement<HTMLElement>("conflicts");
 const throughput = requireElement<HTMLElement>("throughput");
+const activeVehicles = requireElement<HTMLElement>("active-vehicles");
+const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
+const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
 const averageSpeed = requireElement<HTMLElement>("average-speed");
 const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
 const rushHourButton = requireElement<HTMLButtonElement>("rush-hour-button");
@@ -66,6 +84,8 @@ const buildToolButtons = Array.from(
 );
 
 const simulation = new Simulation();
+simulation.setSimulationSeed(createSessionSeed());
+simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
 const renderer = new ThreeRenderer(canvas);
 const designs = new Map<string, FeatureDesign>();
 const features = renderer.getFeatures();
@@ -128,18 +148,43 @@ speedLimitControl.addEventListener("change", () => {
 signalCycleControl.addEventListener("change", () => {
   simulation.setSignalCycle(Number(signalCycleControl.value));
   signalCycleControl.value = String(simulation.getSettings().signalCycleSeconds);
+  updateSelectionPanel();
 });
 
-buildSignalCycle.addEventListener("input", () => {
+simulationSeedControl.addEventListener("change", () => {
+  simulation.setSimulationSeed(Number(simulationSeedControl.value));
+  simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
+  updateInterface();
+});
+
+signalModeControl.addEventListener("change", () => {
   if (!selectedFeature || selectedFeature.kind !== "intersection") return;
-  const design = getDesign(selectedFeature.id);
-  design.signalCycleSeconds = Number(buildSignalCycle.value);
-  designs.set(selectedFeature.id, design);
-  simulation.setSignalCycle(design.signalCycleSeconds);
-  signalCycleControl.value = String(design.signalCycleSeconds);
-  buildSignalOutput.value = `${design.signalCycleSeconds} sec`;
-  syncDesign();
-  selectionStatus.textContent = `Signal timing updated at ${selectedFeature.name}.`;
+  simulation.setSignalMode(
+    selectedFeature.id,
+    signalModeControl.value as SignalControlMode,
+  );
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `${formatSignalMode(signalModeControl.value as SignalControlMode)} control enabled at ${selectedFeature.name}.`;
+});
+
+for (const input of [
+  signalNorthSouthGreen,
+  signalEastWestGreen,
+  signalYellow,
+  signalAllRed,
+  signalPedestrian,
+]) {
+  input.addEventListener("change", updateSelectedSignalTiming);
+}
+
+manualNorthSouthButton.addEventListener("click", () => {
+  requestManualSignal("ns-green");
+});
+manualEastWestButton.addEventListener("click", () => {
+  requestManualSignal("ew-green");
+});
+manualAllRedButton.addEventListener("click", () => {
+  requestManualSignal("all-red");
 });
 
 for (const button of buildToolButtons) {
@@ -182,14 +227,14 @@ renderer.setEnvironmentStatusHandler((mode, detail) => {
 
 window.addEventListener("resize", () => {
   renderer.resize();
-  renderer.render(simulation.getState(), simulation.getSettings());
+  renderer.render(simulation.getState());
 });
 
 function animationFrame(timestamp: number): void {
   const deltaSeconds = (timestamp - previousTimestamp) / 1000;
   previousTimestamp = timestamp;
   simulation.update(deltaSeconds);
-  renderer.render(simulation.getState(), simulation.getSettings());
+  renderer.render(simulation.getState());
   updateMetrics();
   window.requestAnimationFrame(animationFrame);
 }
@@ -238,7 +283,7 @@ function updateInterface(): void {
       : "Ready";
   runButton.disabled = state.running;
   pauseButton.disabled = !state.running;
-  renderer.render(state, simulation.getSettings());
+  renderer.render(state);
   updateMetrics();
 }
 
@@ -253,7 +298,11 @@ function updateMetrics(): void {
   pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
   conflicts.textContent = String(metrics.potentialConflicts);
   throughput.textContent = metrics.throughputPerHour.toLocaleString();
+  activeVehicles.textContent = metrics.activeVehicles.toLocaleString();
+  activePedestrians.textContent = metrics.activePedestrians.toLocaleString();
+  crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
+  updateSelectedSignalStatus();
 }
 
 function setMetricView(view: "baseline" | "modified"): void {
@@ -275,8 +324,20 @@ function updateSelectionPanel(): void {
   simulationTitle.textContent = selectedFeature.name;
   sceneSubtitle.textContent = selectedFeature.description;
   signalEditor.hidden = selectedFeature.kind !== "intersection";
-  buildSignalCycle.value = String(design.signalCycleSeconds);
-  buildSignalOutput.value = `${design.signalCycleSeconds} sec`;
+  if (selectedFeature.kind === "intersection") {
+    const signal = simulation.getSignal(selectedFeature.id);
+    if (signal) {
+      signalModeControl.value = signal.mode;
+      signalNorthSouthGreen.value = String(
+        signal.timing.northSouthGreenSeconds,
+      );
+      signalEastWestGreen.value = String(signal.timing.eastWestGreenSeconds);
+      signalYellow.value = String(signal.timing.yellowSeconds);
+      signalAllRed.value = String(signal.timing.allRedSeconds);
+      signalPedestrian.value = String(signal.timing.pedestrianSeconds);
+    }
+    updateSelectedSignalStatus();
+  }
 
   for (const button of buildToolButtons) {
     button.disabled = button.dataset.target !== selectedFeature.kind;
@@ -293,7 +354,7 @@ function updateSelectionPanel(): void {
       : [
           design.crosswalk ? "High-vis crosswalk" : "Standard crosswalk",
           design.pedestrianIsland ? "Pedestrian island" : "No refuge island",
-          `${design.signalCycleSeconds} sec signal`,
+          `${signalCycleSeconds(selectedFeature.id).toFixed(0)} sec signal`,
         ];
 
   designSummary.replaceChildren(
@@ -305,6 +366,74 @@ function updateSelectionPanel(): void {
     }),
   );
   selectionStatus.textContent = "Changes appear directly in the 3D street and update simulation results.";
+}
+
+function updateSelectedSignalTiming(): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  const timing: SignalTiming = {
+    northSouthGreenSeconds: Number(signalNorthSouthGreen.value),
+    eastWestGreenSeconds: Number(signalEastWestGreen.value),
+    yellowSeconds: Number(signalYellow.value),
+    allRedSeconds: Number(signalAllRed.value),
+    pedestrianSeconds: Number(signalPedestrian.value),
+  };
+  simulation.setSignalTiming(selectedFeature.id, timing);
+  const signal = simulation.getSignal(selectedFeature.id);
+  if (signal) {
+    signalNorthSouthGreen.value = String(signal.timing.northSouthGreenSeconds);
+    signalEastWestGreen.value = String(signal.timing.eastWestGreenSeconds);
+    signalYellow.value = String(signal.timing.yellowSeconds);
+    signalAllRed.value = String(signal.timing.allRedSeconds);
+    signalPedestrian.value = String(signal.timing.pedestrianSeconds);
+  }
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `Live signal timing updated at ${selectedFeature.name}.`;
+}
+
+function requestManualSignal(target: ManualSignalTarget): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  simulation.requestManualSignal(selectedFeature.id, target);
+  signalModeControl.value = "manual";
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `${formatSignalPhase(target)} requested with a safe yellow and all-red transition.`;
+}
+
+function updateSelectedSignalStatus(): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  const signal = simulation.getSignal(selectedFeature.id);
+  if (!signal) return;
+  signalModeControl.value = signal.mode;
+  manualSignalControls.hidden = signal.mode !== "manual";
+  signalCurrentPhase.textContent = formatSignalPhase(signal.phase);
+  signalNextPhase.textContent = formatSignalPhase(signal.nextPhase);
+  signalTimeRemaining.textContent =
+    signal.timeRemainingSeconds === null
+      ? "Held"
+      : `${signal.timeRemainingSeconds.toFixed(1)} sec`;
+  manualNorthSouthButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "ns-green"),
+  );
+  manualEastWestButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "ew-green"),
+  );
+  manualAllRedButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "all-red"),
+  );
+}
+
+function signalCycleSeconds(intersectionId: string): number {
+  const timing = simulation.getSignal(intersectionId)?.timing;
+  if (!timing) return simulation.getSettings().signalCycleSeconds;
+  return (
+    timing.northSouthGreenSeconds +
+    timing.eastWestGreenSeconds +
+    timing.yellowSeconds * 2 +
+    timing.allRedSeconds * 3 +
+    timing.pedestrianSeconds
+  );
 }
 
 function applyBuildTool(tool: BuildTool): void {
@@ -394,6 +523,12 @@ function requireElement<T extends Element>(id: string): T {
   return element as unknown as T;
 }
 
+function createSessionSeed(): number {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return (values[0] & 0x7fffffff) || 1;
+}
+
 function isBuildTool(value: string | undefined): value is BuildTool {
   return (
     value === "add-lane" ||
@@ -442,9 +577,16 @@ function formatTool(tool: BuildTool): string {
 }
 
 function formatSignalPhase(phase: ReturnType<Simulation["getState"]>["signalPhase"]): string {
-  if (phase === "east-west") return "East–west traffic";
-  if (phase === "north-south") return "North–south traffic";
-  return "Pedestrian crossing";
+  if (phase === "ns-green") return "N/S green";
+  if (phase === "ns-yellow") return "N/S yellow";
+  if (phase === "ew-green") return "E/W green";
+  if (phase === "ew-yellow") return "E/W yellow";
+  if (phase === "pedestrian-walk") return "Pedestrian walk";
+  return "All red";
+}
+
+function formatSignalMode(mode: SignalControlMode): string {
+  return mode === "automatic" ? "Automatic" : "Manual";
 }
 
 function initializeSearch(): void {

@@ -1,16 +1,22 @@
 import type {
   DesignImpact,
+  ManualSignalTarget,
   ScenarioSettings,
+  SignalControlMode,
+  SignalSnapshot,
+  SignalTiming,
   SimulationMetrics,
   SimulationState,
 } from "../models/types";
+import { LiveTrafficSystem } from "./liveTraffic";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSpeed: 1,
   speedLimitMph: 25,
-  signalCycleSeconds: 70,
+  signalCycleSeconds: 83,
   vehicleVolume: 2,
   pedestrianVolume: 2,
+  simulationSeed: 20260728,
 };
 
 const EMPTY_DESIGN_IMPACT: DesignImpact = {
@@ -21,18 +27,34 @@ const EMPTY_DESIGN_IMPACT: DesignImpact = {
   pedestrianIslands: 0,
 };
 
-export function createInitialState(): SimulationState {
+type TrafficSnapshotSource = Readonly<
+  Pick<
+    LiveTrafficSystem,
+    "getSignals" | "getVehicles" | "getPedestrians" | "getMetrics"
+  >
+>;
+
+export function createInitialState(
+  traffic: TrafficSnapshotSource = new LiveTrafficSystem(
+    DEFAULT_SETTINGS.simulationSeed,
+  ),
+): SimulationState {
+  const signals = traffic.getSignals();
   return {
     running: false,
     elapsedSeconds: 0,
-    signalPhase: "east-west",
-    metrics: calculateMetrics(DEFAULT_SETTINGS, EMPTY_DESIGN_IMPACT),
+    signalPhase: signals[0]?.phase ?? "ns-green",
+    signals,
+    vehicles: traffic.getVehicles(),
+    pedestrians: traffic.getPedestrians(),
+    metrics: traffic.getMetrics(),
   };
 }
 
 export class Simulation {
-  private state: SimulationState = createInitialState();
   private settings: ScenarioSettings = { ...DEFAULT_SETTINGS };
+  private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
+  private state: SimulationState = createInitialState(this.traffic);
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
 
   getState(): Readonly<SimulationState> {
@@ -47,6 +69,10 @@ export class Simulation {
     return calculateMetrics(this.settings, EMPTY_DESIGN_IMPACT);
   }
 
+  getSignal(intersectionId: string): SignalSnapshot | undefined {
+    return this.traffic.getSignal(intersectionId);
+  }
+
   start(): void {
     this.state.running = true;
   }
@@ -56,8 +82,12 @@ export class Simulation {
   }
 
   reset(): void {
-    this.state = createInitialState();
-    this.updateMetrics();
+    this.traffic.reset(
+      this.settings.simulationSeed,
+      this.settings.vehicleVolume,
+      this.settings.pedestrianVolume,
+    );
+    this.state = createInitialState(this.traffic);
   }
 
   setSimulationSpeed(speed: number): void {
@@ -92,11 +122,43 @@ export class Simulation {
   }
 
   setSignalCycle(signalCycleSeconds: number): void {
+    const sanitized = Math.min(180, Math.max(30, signalCycleSeconds));
     this.settings = {
       ...this.settings,
-      signalCycleSeconds: Math.min(180, Math.max(10, signalCycleSeconds)),
+      signalCycleSeconds: sanitized,
     };
-    this.updateMetrics();
+    this.traffic.setAllSignalCycles(sanitized);
+    this.syncTrafficState();
+  }
+
+  setSimulationSeed(seed: number): void {
+    const simulationSeed = Math.max(
+      1,
+      Math.min(2_147_483_647, Math.trunc(seed)),
+    );
+    this.settings = { ...this.settings, simulationSeed };
+    this.reset();
+  }
+
+  setSignalTiming(
+    intersectionId: string,
+    timing: Partial<SignalTiming>,
+  ): void {
+    this.traffic.setSignalTiming(intersectionId, timing);
+    this.syncTrafficState();
+  }
+
+  setSignalMode(intersectionId: string, mode: SignalControlMode): void {
+    this.traffic.setSignalMode(intersectionId, mode);
+    this.syncTrafficState();
+  }
+
+  requestManualSignal(
+    intersectionId: string,
+    target: ManualSignalTarget,
+  ): void {
+    this.traffic.requestManualPhase(intersectionId, target);
+    this.syncTrafficState();
   }
 
   setDesignImpact(impact: DesignImpact): void {
@@ -106,23 +168,39 @@ export class Simulation {
 
   update(deltaSeconds: number): void {
     if (!this.state.running || deltaSeconds <= 0) return;
+    const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
+    this.state.elapsedSeconds += simulationDelta;
+    this.traffic.update(simulationDelta, this.settings);
+    this.syncTrafficState();
+  }
 
-    this.state.elapsedSeconds += deltaSeconds * this.settings.simulationSpeed;
-    this.state.signalPhase = this.getSignalPhase();
+  private syncTrafficState(): void {
+    this.state.signals = this.traffic.getSignals();
+    this.state.signalPhase = this.state.signals[0]?.phase ?? "all-red";
+    this.state.vehicles = this.traffic.getVehicles();
+    this.state.pedestrians = this.traffic.getPedestrians();
     this.updateMetrics();
   }
 
-  private getSignalPhase(): SimulationState["signalPhase"] {
-    const cycleProgress =
-      (this.state.elapsedSeconds % this.settings.signalCycleSeconds) /
-      this.settings.signalCycleSeconds;
-    if (cycleProgress < 0.42) return "east-west";
-    if (cycleProgress < 0.84) return "north-south";
-    return "pedestrians";
-  }
-
   private updateMetrics(): void {
-    this.state.metrics = calculateMetrics(this.settings, this.designImpact);
+    const metrics = this.traffic.getMetrics();
+    this.state.metrics = {
+      ...metrics,
+      congestion: Math.max(
+        0,
+        metrics.congestion - this.designImpact.laneCapacityDelta * 2,
+      ),
+      averageSpeedMph: Math.max(
+        0,
+        metrics.averageSpeedMph + this.designImpact.laneCapacityDelta * 0.7,
+      ),
+      pedestrianWaitSeconds: Math.max(
+        0,
+        metrics.pedestrianWaitSeconds -
+          this.designImpact.crosswalks * 0.15 -
+          this.designImpact.pedestrianIslands * 0.2,
+      ),
+    };
   }
 }
 
@@ -186,7 +264,6 @@ export function calculateMetrics(
         congestion * 5,
     ),
   );
-
   return {
     vehicleTravelSeconds: roundOneDecimal(vehicleTravelSeconds),
     averageSpeedMph: roundOneDecimal(averageSpeedMph),
@@ -195,6 +272,9 @@ export function calculateMetrics(
     pedestrianWaitSeconds: roundOneDecimal(pedestrianWaitSeconds),
     potentialConflicts,
     throughputPerHour,
+    activeVehicles: 0,
+    activePedestrians: 0,
+    crossingsCompleted: 0,
   };
 }
 
