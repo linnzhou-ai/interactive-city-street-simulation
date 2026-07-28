@@ -50,6 +50,7 @@ const RENDER_HEIGHTS = {
   selectionSurface: 0.22,
 } as const;
 const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
+const ROAD_MARKING_END_INSET = 15;
 const FLY_COLLIDER_RADIUS = 0.45;
 const WALK_COLLIDER_RADIUS = 0.38;
 const WALK_PLAYER_HEIGHT = 1.78;
@@ -602,23 +603,27 @@ export class ThreeRenderer {
         this.scene.add(sidewalk);
       }
 
-      const centerLine = box(
-        length * 0.96,
-        0.025,
+      const centerLine = createTrimmedSegmentMesh(
+        feature,
         feature.name === "Market Street" ? 0.3 : 0.2,
+        0.025,
         this.materials.yellowLine,
+        ROAD_MARKING_END_INSET,
       );
-      centerLine.position.copy(center);
       centerLine.position.y = RENDER_HEIGHTS.roadMarking;
-      centerLine.rotation.y = angle;
       this.scene.add(centerLine);
 
       if (width >= MAJOR_ROAD_WIDTH) {
         for (const laneOffset of [-width * 0.25, width * 0.25]) {
-          const laneLine = box(length * 0.94, 0.02, 0.14, this.materials.whiteLine);
-          laneLine.position.copy(center).addScaledVector(normal, laneOffset);
+          const laneLine = createTrimmedSegmentMesh(
+            feature,
+            0.14,
+            0.02,
+            this.materials.whiteLine,
+            ROAD_MARKING_END_INSET,
+          );
+          laneLine.position.addScaledVector(normal, laneOffset);
           laneLine.position.y = RENDER_HEIGHTS.roadMarking + 0.01;
-          laneLine.rotation.y = angle;
           this.scene.add(laneLine);
         }
       }
@@ -1883,7 +1888,13 @@ export class ThreeRenderer {
       );
       overlay.position.y = RENDER_HEIGHTS.roadSurface + 0.025;
       this.designGroup.add(overlay);
-      const line = createSegmentMesh(feature, 0.22, 0.03, this.materials.yellowLine);
+      const line = createTrimmedSegmentMesh(
+        feature,
+        0.22,
+        0.03,
+        this.materials.yellowLine,
+        ROAD_MARKING_END_INSET,
+      );
       line.position.y = RENDER_HEIGHTS.selectionSurface + 0.01;
       this.designGroup.add(line);
     }
@@ -2315,6 +2326,27 @@ function createSegmentMesh(
   const direction = end.clone().sub(start);
   const object = box(direction.length(), height, width, material);
   object.position.copy(start).add(end).multiplyScalar(0.5);
+  object.position.y = height / 2;
+  object.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI / 2;
+  return object;
+}
+
+function createTrimmedSegmentMesh(
+  feature: DistrictFeature,
+  width: number,
+  height: number,
+  material: THREE.Material,
+  endInset: number,
+): THREE.Mesh {
+  const [start, end] = feature.path.map(geoToWorld);
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  const inset = Math.min(endInset, Math.max(0, length / 2 - 0.5));
+  const unit = direction.clone().normalize();
+  const trimmedStart = start.clone().addScaledVector(unit, inset);
+  const trimmedEnd = end.clone().addScaledVector(unit, -inset);
+  const object = box(trimmedStart.distanceTo(trimmedEnd), height, width, material);
+  object.position.copy(trimmedStart).add(trimmedEnd).multiplyScalar(0.5);
   object.position.y = height / 2;
   object.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI / 2;
   return object;
