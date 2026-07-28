@@ -831,6 +831,89 @@ input[type="range"] {
   margin: 0.55rem 0 0;
 }
 
+.marker-controls {
+  display: grid;
+  gap: 0.48rem;
+  margin: 0;
+  border: 0;
+}
+
+.marker-controls legend {
+  margin-bottom: 0.05rem;
+  padding: 0;
+  color: #dbe6e0;
+  font-size: 0.63rem;
+  font-weight: 800;
+}
+
+.marker-controls .marker-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+
+.marker-controls .marker-toggle > span {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+  color: #aebfb7;
+}
+
+.marker-dot {
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgb(15 35 31 / 75%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 80%);
+}
+
+.pedestrian-marker-dot {
+  background: #6ff3ce;
+}
+
+.vehicle-marker-dot {
+  background: #72c8ff;
+}
+
+.marker-toggle input {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  margin: 0;
+  border-radius: 999px;
+  appearance: none;
+  cursor: pointer;
+  background: #3e4d49;
+  transition: background 140ms ease;
+}
+
+.marker-toggle input::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  content: "";
+  background: #d7e2dd;
+  transition: transform 140ms ease;
+}
+
+.marker-toggle input:checked {
+  background: #4ac5a3;
+}
+
+.marker-toggle input:checked::after {
+  transform: translateX(13px);
+}
+
+.marker-toggle input:focus-visible {
+  outline: 2px solid #8fe7c9;
+  outline-offset: 2px;
+}
+
 .number-input-wrap {
   display: flex;
   align-items: center;

@@ -121,6 +121,8 @@ export class ThreeRenderer {
   private selectedFeatureId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
   private buildingPlacementEnabled = false;
+  private pedestrianMarkersVisible = true;
+  private vehicleMarkersVisible = true;
   private draggingBuildingId: string | null = null;
   private buildMode = true;
   private cameraMode: CameraMode = "orbit";
@@ -219,6 +221,16 @@ export class ThreeRenderer {
     if (this.cameraMode === "orbit") {
       this.canvas.style.cursor = enabled ? "crosshair" : "grab";
     }
+  }
+
+  setPedestrianMarkersVisible(visible: boolean): void {
+    this.pedestrianMarkersVisible = visible;
+    setPoolMarkerVisibility(this.pedestrianPool, visible);
+  }
+
+  setVehicleMarkersVisible(visible: boolean): void {
+    this.vehicleMarkersVisible = visible;
+    setPoolMarkerVisibility(this.vehiclePool, visible);
   }
 
   setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
@@ -1741,6 +1753,7 @@ export class ThreeRenderer {
       object.position.set(vehicle.x, 0.25, vehicle.z);
       object.rotation.y = vehicle.heading;
       updateCarAppearance(object, vehicle.color, vehicle.kind);
+      setObjectMarkerVisibility(object, this.vehicleMarkersVisible);
     }
   }
 
@@ -1765,6 +1778,7 @@ export class ThreeRenderer {
         pedestrian.variant,
         pedestrian.waiting,
       );
+      setObjectMarkerVisibility(object, this.pedestrianMarkersVisible);
     }
   }
 
@@ -2144,10 +2158,14 @@ function createCar(color: string, kind: VehicleKind): THREE.Group {
       group.add(wheel);
     }
   }
+  const marker = createEntityMarker("#72c8ff");
+  marker.position.y = 3.35;
+  group.add(marker);
   group.traverse((child) => {
     if (child instanceof THREE.Mesh) child.castShadow = true;
   });
   group.userData.paint = paint;
+  group.userData.marker = marker;
   updateCarAppearance(group, color, kind);
   return group;
 }
@@ -2163,25 +2181,40 @@ function createPerson(color: string, variant: number): THREE.Group {
   body.position.y = 1.25;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), skin);
   head.position.y = 2.1;
-  const markerMaterial = new THREE.SpriteMaterial({
-    map: getPedestrianMarkerTexture(),
-    color: "#6ff3ce",
+  const marker = createEntityMarker("#6ff3ce");
+  marker.position.y = 3.15;
+  group.add(body, head, marker);
+  group.scale.setScalar(1.35);
+  group.userData.clothing = clothing;
+  group.userData.skin = skin;
+  group.userData.marker = marker;
+  group.userData.markerMaterial = marker.material;
+  return group;
+}
+
+function createEntityMarker(color: string): THREE.Sprite {
+  const material = new THREE.SpriteMaterial({
+    map: getEntityMarkerTexture(),
+    color,
     transparent: true,
     opacity: 0.92,
     depthTest: false,
     depthWrite: false,
     sizeAttenuation: false,
   });
-  const marker = new THREE.Sprite(markerMaterial);
-  marker.position.y = 3.15;
+  const marker = new THREE.Sprite(material);
   marker.scale.set(0.018, 0.018, 1);
   marker.renderOrder = 8;
-  group.add(body, head, marker);
-  group.scale.setScalar(1.35);
-  group.userData.clothing = clothing;
-  group.userData.skin = skin;
-  group.userData.markerMaterial = markerMaterial;
-  return group;
+  return marker;
+}
+
+function setPoolMarkerVisibility(pool: readonly THREE.Group[], visible: boolean): void {
+  for (const object of pool) setObjectMarkerVisibility(object, visible);
+}
+
+function setObjectMarkerVisibility(object: THREE.Group, visible: boolean): void {
+  const marker = object.userData.marker as THREE.Sprite | undefined;
+  if (marker) marker.visible = visible;
 }
 
 function updateCarAppearance(
@@ -2224,10 +2257,10 @@ function updatePersonAppearance(
   markerMaterial?.color.set(waiting ? "#ffd166" : "#6ff3ce");
 }
 
-let pedestrianMarkerTexture: THREE.CanvasTexture | null = null;
+let entityMarkerTexture: THREE.CanvasTexture | null = null;
 
-function getPedestrianMarkerTexture(): THREE.CanvasTexture {
-  if (pedestrianMarkerTexture) return pedestrianMarkerTexture;
+function getEntityMarkerTexture(): THREE.CanvasTexture {
+  if (entityMarkerTexture) return entityMarkerTexture;
   const canvas = document.createElement("canvas");
   canvas.width = 64;
   canvas.height = 64;
@@ -2240,9 +2273,9 @@ function getPedestrianMarkerTexture(): THREE.CanvasTexture {
   context.lineWidth = 8;
   context.strokeStyle = "rgba(15,35,31,0.75)";
   context.stroke();
-  pedestrianMarkerTexture = new THREE.CanvasTexture(canvas);
-  pedestrianMarkerTexture.colorSpace = THREE.SRGBColorSpace;
-  return pedestrianMarkerTexture;
+  entityMarkerTexture = new THREE.CanvasTexture(canvas);
+  entityMarkerTexture.colorSpace = THREE.SRGBColorSpace;
+  return entityMarkerTexture;
 }
 
 function createSignalLensMaterial(color: string): THREE.MeshStandardMaterial {

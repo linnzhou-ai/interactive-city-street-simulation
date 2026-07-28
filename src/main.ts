@@ -51,6 +51,10 @@ const vehicleVolumeControl = requireElement<HTMLInputElement>("vehicle-volume-co
 const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
 const pedestrianVolumeControl = requireElement<HTMLInputElement>("pedestrian-volume-control");
 const pedestrianVolumeOutput = requireElement<HTMLOutputElement>("pedestrian-volume-output");
+const pedestrianMarkersControl = requireElement<HTMLInputElement>(
+  "pedestrian-markers-control",
+);
+const vehicleMarkersControl = requireElement<HTMLInputElement>("vehicle-markers-control");
 const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
 const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
 const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-control");
@@ -184,6 +188,14 @@ pedestrianVolumeControl.addEventListener("input", () => {
   const volume = Number(pedestrianVolumeControl.value);
   simulation.setPedestrianVolume(volume);
   pedestrianVolumeOutput.value = formatVolume(volume);
+});
+
+pedestrianMarkersControl.addEventListener("change", () => {
+  renderer.setPedestrianMarkersVisible(pedestrianMarkersControl.checked);
+});
+
+vehicleMarkersControl.addEventListener("change", () => {
+  renderer.setVehicleMarkersVisible(vehicleMarkersControl.checked);
 });
 
 speedLimitControl.addEventListener("change", () => {
