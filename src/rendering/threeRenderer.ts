@@ -1759,7 +1759,12 @@ export class ThreeRenderer {
       if (!pedestrian) continue;
       object.position.set(pedestrian.x, 0.28, pedestrian.z);
       object.rotation.y = pedestrian.heading;
-      updatePersonAppearance(object, pedestrian.color, pedestrian.variant);
+      updatePersonAppearance(
+        object,
+        pedestrian.color,
+        pedestrian.variant,
+        pedestrian.waiting,
+      );
     }
   }
 
@@ -2158,9 +2163,24 @@ function createPerson(color: string, variant: number): THREE.Group {
   body.position.y = 1.25;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), skin);
   head.position.y = 2.1;
-  group.add(body, head);
+  const markerMaterial = new THREE.SpriteMaterial({
+    map: getPedestrianMarkerTexture(),
+    color: "#6ff3ce",
+    transparent: true,
+    opacity: 0.92,
+    depthTest: false,
+    depthWrite: false,
+    sizeAttenuation: false,
+  });
+  const marker = new THREE.Sprite(markerMaterial);
+  marker.position.y = 3.15;
+  marker.scale.set(0.018, 0.018, 1);
+  marker.renderOrder = 8;
+  group.add(body, head, marker);
+  group.scale.setScalar(1.35);
   group.userData.clothing = clothing;
   group.userData.skin = skin;
+  group.userData.markerMaterial = markerMaterial;
   return group;
 }
 
@@ -2190,13 +2210,39 @@ function updatePersonAppearance(
   object: THREE.Group,
   color: string,
   variant: number,
+  waiting: boolean,
 ): void {
   const clothing = object.userData.clothing as
     | THREE.MeshStandardMaterial
     | undefined;
   const skin = object.userData.skin as THREE.MeshStandardMaterial | undefined;
+  const markerMaterial = object.userData.markerMaterial as
+    | THREE.SpriteMaterial
+    | undefined;
   clothing?.color.set(color);
   skin?.color.set(["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant % 4]);
+  markerMaterial?.color.set(waiting ? "#ffd166" : "#6ff3ce");
+}
+
+let pedestrianMarkerTexture: THREE.CanvasTexture | null = null;
+
+function getPedestrianMarkerTexture(): THREE.CanvasTexture {
+  if (pedestrianMarkerTexture) return pedestrianMarkerTexture;
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas textures are unavailable.");
+  context.beginPath();
+  context.arc(32, 32, 21, 0, Math.PI * 2);
+  context.fillStyle = "rgba(255,255,255,0.95)";
+  context.fill();
+  context.lineWidth = 8;
+  context.strokeStyle = "rgba(15,35,31,0.75)";
+  context.stroke();
+  pedestrianMarkerTexture = new THREE.CanvasTexture(canvas);
+  pedestrianMarkerTexture.colorSpace = THREE.SRGBColorSpace;
+  return pedestrianMarkerTexture;
 }
 
 function createSignalLensMaterial(color: string): THREE.MeshStandardMaterial {
