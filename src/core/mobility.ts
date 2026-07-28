@@ -1,4 +1,5 @@
 import type {
+  AgentPosition,
   AgeGroup,
   Building,
   Pedestrian,
@@ -26,6 +27,7 @@ const MAX_STEP_SECONDS = 0.1;
 const MPH_TO_METERS_PER_SECOND = 0.44704;
 const METERS_PER_SECOND_TO_MPH = 1 / MPH_TO_METERS_PER_SECOND;
 const STOP_LINE_BUFFER_METERS = 0.5;
+const PEDESTRIAN_SPACING_METERS = 1.8;
 const EPSILON = 1e-9;
 
 export interface MobilityConfig {
@@ -276,9 +278,13 @@ export class MobilitySystem {
           0,
         ) / roadEdges.length
       : 0;
-    const vehicles = [...this.roadAgents.values()].map((agent) => ({ ...agent.vehicle }));
+    const vehicles = [...this.roadAgents.values()].map((agent) => ({
+      ...agent.vehicle,
+      position: { ...agent.vehicle.position },
+    }));
     const pedestrians = [...this.pedestrianAgents.values()].map((agent) => ({
       ...agent.pedestrian,
+      position: { ...agent.pedestrian.position },
     }));
 
     return {
@@ -354,6 +360,7 @@ export class MobilitySystem {
       completed: false,
       elapsedSeconds: 0,
       route: plan.points,
+      position: routePosition(plan, 0, 0),
       waitingSeconds: 0,
       currentSpeedMph: 0,
       occupancy: 1,
@@ -390,6 +397,7 @@ export class MobilitySystem {
       completed: false,
       elapsedSeconds: 0,
       route: plan.points,
+      position: routePosition(plan, 0, 0),
       waitSeconds: 0,
       ageGroup: request.travelerAgeGroup ?? "adult",
       activity: request.purpose === "delivery" || request.purpose === "service"
@@ -453,6 +461,7 @@ export class MobilitySystem {
         agent.vehicle.waitingSeconds += step;
       }
       agent.vehicle.progress = routeProgress(agent.plan, agent.edgeIndex, agent.edgeProgressMeters);
+      agent.vehicle.position = routePosition(agent.plan, agent.edgeIndex, agent.edgeProgressMeters);
 
       if (agent.edgeIndex >= agent.plan.edges.length) {
         if (bus) {
@@ -484,6 +493,7 @@ export class MobilitySystem {
           0,
           leader.edgeProgressMeters
             - this.config.safeFollowingGapMeters
+            - (vehicleLengthMeters(agent.vehicle) + vehicleLengthMeters(leader.vehicle)) / 2
             - agent.edgeProgressMeters,
         ),
       );
@@ -493,7 +503,7 @@ export class MobilitySystem {
     while (remainingTravel > EPSILON && agent.edgeIndex < agent.plan.edges.length) {
       const activeEdge = currentEdge(agent);
       const nextEdge = agent.plan.edges[agent.edgeIndex + 1];
-      const canExit = !nextEdge || this.canEnterRoadEdge(nextEdge);
+      const canExit = !nextEdge || this.canEnterRoadEdge(agent, nextEdge);
       const stopPosition = nextEdge && !canExit
         ? Math.max(0, activeEdge.length - STOP_LINE_BUFFER_METERS)
         : activeEdge.length;
@@ -515,11 +525,29 @@ export class MobilitySystem {
     return Math.min(traveled, initialTravel);
   }
 
-  private canEnterRoadEdge(edge: MobilityNetworkEdge): boolean {
-    if (edge.id.startsWith("movement-") && this.signalPhase !== "vehicles") {
-      return false;
+  private canEnterRoadEdge(agent: RoadAgent, edge: MobilityNetworkEdge): boolean {
+    if (edge.id.startsWith("movement-")) {
+      if (
+        this.signalPhase !== "vehicles"
+        || this.hasPedestrianInCrosswalk()
+        || this.hasVehicleInIntersection()
+      ) {
+        return false;
+      }
     }
-    return edge.occupancy < edge.capacity;
+    return edge.occupancy < edge.capacity && this.hasRoadEntryClearance(agent, edge);
+  }
+
+  private hasRoadEntryClearance(agent: RoadAgent, edge: MobilityNetworkEdge): boolean {
+    return ![...this.roadAgents.values()].some((candidate) =>
+      candidate !== agent
+      && candidate.edgeIndex < candidate.plan.edges.length
+      && currentEdge(candidate).id === edge.id
+      && candidate.edgeProgressMeters < (
+        this.config.safeFollowingGapMeters
+        + (vehicleLengthMeters(agent.vehicle) + vehicleLengthMeters(candidate.vehicle)) / 2
+      ),
+    );
   }
 
   private findLeader(agent: RoadAgent, edgeId: string): RoadAgent | undefined {
@@ -555,7 +583,15 @@ export class MobilitySystem {
   }
 
   private advancePedestrians(step: number): void {
-    for (const agent of [...this.pedestrianAgents.values()]) {
+    const orderedAgents = [...this.pedestrianAgents.values()].sort((first, second) => {
+      const firstEdge = first.plan.edges[first.edgeIndex]?.id ?? "";
+      const secondEdge = second.plan.edges[second.edgeIndex]?.id ?? "";
+      const edgeDifference = firstEdge.localeCompare(secondEdge);
+      return edgeDifference !== 0
+        ? edgeDifference
+        : second.edgeProgressMeters - first.edgeProgressMeters;
+    });
+    for (const agent of orderedAgents) {
       const pedestrian = agent.pedestrian;
       pedestrian.elapsedSeconds += step;
       const edge = agent.plan.edges[agent.edgeIndex];
@@ -566,7 +602,7 @@ export class MobilitySystem {
       if (
         isCrosswalkEdge(edge)
         && !agent.crossingCommitted
-        && this.signalPhase !== "pedestrians"
+        && (this.signalPhase !== "pedestrians" || this.hasVehicleInIntersection())
       ) {
         pedestrian.waitSeconds += step;
         continue;
@@ -574,12 +610,22 @@ export class MobilitySystem {
 
       const speed = pedestrianSpeed(pedestrian.ageGroup);
       let remainingTravel = speed * step;
+      const leader = this.findPedestrianLeader(agent, edge.id);
+      if (leader) {
+        remainingTravel = Math.min(
+          remainingTravel,
+          Math.max(
+            0,
+            leader.edgeProgressMeters - PEDESTRIAN_SPACING_METERS - agent.edgeProgressMeters,
+          ),
+        );
+      }
       while (remainingTravel > EPSILON && agent.edgeIndex < agent.plan.edges.length) {
         const activeEdge = agent.plan.edges[agent.edgeIndex]!;
         if (
           isCrosswalkEdge(activeEdge)
           && !agent.crossingCommitted
-          && this.signalPhase !== "pedestrians"
+          && (this.signalPhase !== "pedestrians" || this.hasVehicleInIntersection())
           && agent.edgeProgressMeters <= EPSILON
         ) {
           pedestrian.waitSeconds += step;
@@ -599,9 +645,12 @@ export class MobilitySystem {
           nextEdge
           && isCrosswalkEdge(nextEdge)
           && !agent.crossingCommitted
-          && this.signalPhase !== "pedestrians"
+          && (this.signalPhase !== "pedestrians" || this.hasVehicleInIntersection())
         ) {
           pedestrian.waitSeconds += step;
+          break;
+        }
+        if (nextEdge && !this.canEnterPedestrianEdge(agent, nextEdge)) {
           break;
         }
         agent.edgeIndex += 1;
@@ -611,10 +660,56 @@ export class MobilitySystem {
         }
       }
       pedestrian.progress = routeProgress(agent.plan, agent.edgeIndex, agent.edgeProgressMeters);
+      pedestrian.position = routePosition(agent.plan, agent.edgeIndex, agent.edgeProgressMeters);
       if (agent.edgeIndex >= agent.plan.edges.length) {
         this.completePedestrian(agent);
       }
     }
+  }
+
+  private findPedestrianLeader(
+    agent: PedestrianAgent,
+    edgeId: string,
+  ): PedestrianAgent | undefined {
+    let leader: PedestrianAgent | undefined;
+    for (const candidate of this.pedestrianAgents.values()) {
+      const candidateEdge = candidate.plan.edges[candidate.edgeIndex];
+      if (
+        candidate === agent
+        || candidateEdge?.id !== edgeId
+        || candidate.edgeProgressMeters <= agent.edgeProgressMeters
+      ) {
+        continue;
+      }
+      if (!leader || candidate.edgeProgressMeters < leader.edgeProgressMeters) {
+        leader = candidate;
+      }
+    }
+    return leader;
+  }
+
+  private canEnterPedestrianEdge(
+    agent: PedestrianAgent,
+    edge: MobilityNetworkEdge,
+  ): boolean {
+    return ![...this.pedestrianAgents.values()].some((candidate) =>
+      candidate !== agent
+      && candidate.plan.edges[candidate.edgeIndex]?.id === edge.id
+      && candidate.edgeProgressMeters < PEDESTRIAN_SPACING_METERS,
+    );
+  }
+
+  private hasVehicleInIntersection(): boolean {
+    return [...this.roadAgents.values()].some((agent) =>
+      agent.edgeIndex < agent.plan.edges.length && currentEdge(agent).id.startsWith("movement-"),
+    );
+  }
+
+  private hasPedestrianInCrosswalk(): boolean {
+    return [...this.pedestrianAgents.values()].some((agent) => {
+      const edge = agent.plan.edges[agent.edgeIndex];
+      return edge !== undefined && isCrosswalkEdge(edge) && agent.edgeProgressMeters > EPSILON;
+    });
   }
 
   private completePedestrian(agent: PedestrianAgent): void {
@@ -653,6 +748,7 @@ export class MobilitySystem {
       completed: false,
       elapsedSeconds: 0,
       route: plan.points,
+      position: routePosition(plan, 0, 0),
       waitingSeconds: 0,
       currentSpeedMph: 0,
       occupancy: 1,
@@ -707,6 +803,7 @@ export class MobilitySystem {
     bus.roadAgent.edgeProgressMeters = 0;
     bus.roadAgent.vehicle.route = plan.points;
     bus.roadAgent.vehicle.progress = 0;
+    bus.roadAgent.vehicle.position = routePosition(plan, 0, 0);
     bus.roadAgent.vehicle.direction = inferDirection(plan.points);
     bus.roadAgent.vehicle.occupancy = 1 + bus.passengers.length;
     bus.dwellRemainingSeconds = this.config.busDwellSeconds;
@@ -809,7 +906,7 @@ export class MobilitySystem {
   }
 
   private isWaitingForPedestrianSignal(agent: PedestrianAgent): boolean {
-    if (this.signalPhase === "pedestrians") {
+    if (this.signalPhase === "pedestrians" && !this.hasVehicleInIntersection()) {
       return false;
     }
     const edge = agent.plan.edges[agent.edgeIndex];
@@ -858,6 +955,43 @@ function routeProgress(plan: RoutePlan, edgeIndex: number, edgeProgressMeters: n
     .slice(0, edgeIndex)
     .reduce((total, edge) => total + edge.length, 0);
   return Math.min(1, (completedLength + edgeProgressMeters) / totalLength);
+}
+
+function routePosition(
+  plan: RoutePlan,
+  edgeIndex: number,
+  edgeProgressMeters: number,
+): AgentPosition {
+  const lastPoint = plan.points.at(-1) ?? { nodeId: "unknown", x: 0, z: 0 };
+  const edge = plan.edges[edgeIndex];
+  if (!edge) {
+    const previous = plan.points.at(-2) ?? lastPoint;
+    return {
+      x: lastPoint.x,
+      z: lastPoint.z,
+      headingRadians: Math.atan2(-(lastPoint.z - previous.z), lastPoint.x - previous.x),
+      segmentId: plan.edges.at(-1)?.id ?? lastPoint.nodeId,
+    };
+  }
+  const start = plan.points[edgeIndex] ?? lastPoint;
+  const end = plan.points[edgeIndex + 1] ?? lastPoint;
+  const progress = Math.min(1, Math.max(0, edgeProgressMeters / Math.max(edge.length, EPSILON)));
+  return {
+    x: start.x + (end.x - start.x) * progress,
+    z: start.z + (end.z - start.z) * progress,
+    headingRadians: Math.atan2(-(end.z - start.z), end.x - start.x),
+    segmentId: edge.id,
+  };
+}
+
+function vehicleLengthMeters(vehicle: Vehicle): number {
+  if (vehicle.vehicleType === "bus") {
+    return 8;
+  }
+  if (vehicle.vehicleType === "truck") {
+    return 5.5;
+  }
+  return vehicle.vehicleType === "service" ? 4.8 : 4;
 }
 
 function vehicleTypeFor(request: TripRequest): VehicleType {

@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { CityDistrictState, CityLinkDefinition } from "../models/cityTypes";
 import type {
+  AgentPosition,
   Building,
   Pedestrian,
-  RoutePoint,
   SimulationState,
   TransitStop,
   Vehicle,
@@ -27,36 +27,17 @@ export type SceneSelection =
   | { kind: "person"; id: string }
   | null;
 
-export interface VehicleRoadPlacement {
-  route: readonly RoutePoint[];
-  progress: number;
+export function isVisibleVehicleSegment(segmentId: string): boolean {
+  return segmentId.startsWith("road-") || segmentId.startsWith("movement-");
 }
 
-export function vehicleRoadPlacement(
-  route: readonly RoutePoint[],
-  progress: number,
-): VehicleRoadPlacement {
-  const roadIndexes = route
-    .map((point, index) => point.nodeId.startsWith("road-") ? index : -1)
-    .filter((index) => index >= 0);
-  if (roadIndexes.length < 2) return { route, progress };
-
-  const distances = cumulativeDistances(route);
-  const firstIndex = roadIndexes[0]!;
-  const lastIndex = roadIndexes.at(-1)!;
-  const totalDistance = distances.at(-1) ?? 0;
-  const roadStart = distances[firstIndex] ?? 0;
-  const roadEnd = distances[lastIndex] ?? totalDistance;
-  const traveled = THREE.MathUtils.clamp(progress, 0, 1) * totalDistance;
-  return {
-    route: roadIndexes.map((index) => route[index]!),
-    progress: THREE.MathUtils.clamp((traveled - roadStart) / Math.max(1, roadEnd - roadStart), 0, 1),
-  };
+export function isVisiblePedestrianSegment(segmentId: string): boolean {
+  return segmentId.startsWith("sidewalk-") || segmentId.startsWith("crosswalk-");
 }
 
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 260);
+  private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 340);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
   private readonly sun = new THREE.DirectionalLight("#fff3d7", 4.2);
@@ -86,15 +67,15 @@ export class ThreeRenderer {
     this.renderer.toneMappingExposure = 1.05;
 
     this.scene.background = new THREE.Color("#b9d4df");
-    this.scene.fog = new THREE.Fog("#b9d4df", 95, 210);
-    this.camera.position.set(66, 72, 78);
+    this.scene.fog = new THREE.Fog("#b9d4df", 135, 300);
+    this.camera.position.set(98, 106, 116);
 
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.target.set(0, 0, 0);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
     this.controls.minDistance = 18;
-    this.controls.maxDistance = 150;
+    this.controls.maxDistance = 230;
     this.controls.maxPolarAngle = Math.PI / 2.08;
 
     this.buildLighting();
@@ -160,37 +141,40 @@ export class ThreeRenderer {
     this.sun.position.set(32, 55, 26);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.camera.left = -75;
-    this.sun.shadow.camera.right = 75;
-    this.sun.shadow.camera.top = 75;
-    this.sun.shadow.camera.bottom = -75;
+    this.sun.shadow.camera.left = -105;
+    this.sun.shadow.camera.right = 105;
+    this.sun.shadow.camera.top = 105;
+    this.sun.shadow.camera.bottom = -105;
     this.scene.add(this.sun);
   }
 
   private buildStreet(): void {
     const ground = mesh(
-      new THREE.PlaneGeometry(142, 108),
+      new THREE.PlaneGeometry(190, 165),
       new THREE.MeshStandardMaterial({ color: "#789872", roughness: 1 }),
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    const roadLength = 126;
+    const roadLength = 178;
     const roadWidth = 8.7;
     this.addBox(0, 0.13, 0, roadLength, 0.16, roadWidth, "#30383a");
-    this.addBox(0, 0.14, 0, roadWidth, 0.18, 94, "#30383a");
+    this.addBox(0, 0.14, 0, roadWidth, 0.18, 154, "#30383a");
 
     const sidewalkOffset = 5.9;
     for (const offset of [-sidewalkOffset, sidewalkOffset]) {
       this.addBox(0, 0.2, offset, roadLength, 0.2, 1.15, "#b6bab5");
-      this.addBox(offset, 0.21, 0, 1.15, 0.22, 94, "#b6bab5");
+      this.addBox(offset, 0.21, 0, 1.15, 0.22, 154, "#b6bab5");
     }
 
-    for (let position = -58; position <= 58; position += 6) {
+    for (let position = -82; position <= 82; position += 6) {
       if (Math.abs(position) < 7) continue;
       this.addBox(position, 0.24, 0, 2.7, 0.03, 0.12, "#e7d86b", false);
-      this.addBox(0, 0.25, position * 0.74, 0.12, 0.03, 2.7, "#e7d86b", false);
+    }
+    for (let position = -70; position <= 70; position += 6) {
+      if (Math.abs(position) < 7) continue;
+      this.addBox(0, 0.25, position, 0.12, 0.03, 2.7, "#e7d86b", false);
     }
     this.addCrosswalk(0, -6.2, true);
     this.addCrosswalk(0, 6.2, true);
@@ -339,8 +323,10 @@ export class ThreeRenderer {
       if (state.completed) continue;
       activeIds.add(state.id);
       const group = this.vehicles.get(state.id) ?? this.addVehicle(state);
-      const placement = vehicleRoadPlacement(state.route, state.progress);
-      this.placeOnRoute(group, placement.route, placement.progress, 0.2);
+      group.visible = isVisibleVehicleSegment(state.position.segmentId);
+      if (group.visible) {
+        this.placeAgent(group, state.position, 0.2);
+      }
     }
     this.removeMissing(this.vehicles, activeIds);
   }
@@ -385,10 +371,13 @@ export class ThreeRenderer {
       if (state.completed) continue;
       activeIds.add(state.id);
       const group = this.pedestrians.get(state.id) ?? this.addPedestrian(state);
+      group.visible = isVisiblePedestrianSegment(state.position.segmentId);
       group.userData.selection = state.personId === undefined
         ? undefined
         : { kind: "person", id: state.personId } satisfies Exclude<SceneSelection, null>;
-      this.placeOnRoute(group, state.route, state.progress, 0.22);
+      if (group.visible) {
+        this.placeAgent(group, state.position, 0.22, pedestrianLaneOffset(state.position.segmentId));
+      }
     }
     this.removeMissing(this.pedestrians, activeIds);
   }
@@ -492,26 +481,20 @@ export class ThreeRenderer {
     }
   }
 
-  private placeOnRoute(group: THREE.Group, route: readonly RoutePoint[], progress: number, y: number): void {
-    if (route.length === 0) return;
-    if (route.length === 1) {
-      group.position.set(route[0]!.x * WORLD_SCALE, y, route[0]!.z * WORLD_SCALE);
-      return;
-    }
-    const distances = cumulativeDistances(route);
-    const targetDistance = THREE.MathUtils.clamp(progress, 0, 1) * (distances.at(-1) ?? 0);
-    let index = 0;
-    while (index < distances.length - 2 && distances[index + 1]! < targetDistance) index += 1;
-    const start = route[index]!;
-    const end = route[index + 1]!;
-    const segmentLength = Math.max(0.0001, distances[index + 1]! - distances[index]!);
-    const localProgress = (targetDistance - distances[index]!) / segmentLength;
+  private placeAgent(
+    group: THREE.Group,
+    position: AgentPosition,
+    y: number,
+    lateralOffset = 0,
+  ): void {
+    const perpendicularX = Math.sin(position.headingRadians);
+    const perpendicularZ = Math.cos(position.headingRadians);
     group.position.set(
-      THREE.MathUtils.lerp(start.x, end.x, localProgress) * WORLD_SCALE,
+      position.x * WORLD_SCALE + perpendicularX * lateralOffset,
       y,
-      THREE.MathUtils.lerp(start.z, end.z, localProgress) * WORLD_SCALE,
+      position.z * WORLD_SCALE + perpendicularZ * lateralOffset,
     );
-    group.rotation.y = Math.atan2(-(end.z - start.z), end.x - start.x);
+    group.rotation.y = position.headingRadians;
   }
 
   private removeMissing(objects: Map<string, THREE.Group>, activeIds: Set<string>): void {
@@ -579,14 +562,8 @@ function selectionFromObject(object: THREE.Object3D | undefined): SceneSelection
   return null;
 }
 
-function cumulativeDistances(route: readonly RoutePoint[]): number[] {
-  const distances = [0];
-  for (let index = 1; index < route.length; index += 1) {
-    const previous = route[index - 1]!;
-    const point = route[index]!;
-    distances.push(distances[index - 1]! + Math.hypot(point.x - previous.x, point.z - previous.z));
-  }
-  return distances;
+function pedestrianLaneOffset(segmentId: string): number {
+  return segmentId.endsWith("-back") ? -0.46 : 0.46;
 }
 
 function mesh<TGeometry extends THREE.BufferGeometry, TMaterial extends THREE.Material>(

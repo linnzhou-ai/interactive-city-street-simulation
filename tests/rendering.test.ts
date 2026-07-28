@@ -1,21 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { vehicleRoadPlacement } from "../src/rendering/threeRenderer";
-import type { RoutePoint } from "../src/models/types";
+import {
+  isVisiblePedestrianSegment,
+  isVisibleVehicleSegment,
+} from "../src/rendering/threeRenderer";
 
 describe("vehicle rendering", () => {
-  it("keeps access travel in timing while displaying vehicles only on road lanes", () => {
-    const route: RoutePoint[] = [
-      { nodeId: "access-home", x: 0, z: 20 },
-      { nodeId: "road-west-in", x: 0, z: 10 },
-      { nodeId: "road-east-out", x: 0, z: -50 },
-      { nodeId: "access-shop", x: 0, z: -60 },
-    ];
+  it("displays vehicles only while their exact position is on a public road", () => {
+    expect(isVisibleVehicleSegment("access-building-home-road-out")).toBe(false);
+    expect(isVisibleVehicleSegment("bus-west-eastbound-out")).toBe(false);
+    expect(isVisibleVehicleSegment("road-west-approach")).toBe(true);
+    expect(isVisibleVehicleSegment("movement-west-straight")).toBe(true);
+  });
 
-    const beforeRoad = vehicleRoadPlacement(route, 0.05);
-    const middle = vehicleRoadPlacement(route, 0.5);
-
-    expect(beforeRoad.progress).toBe(0);
-    expect(middle.route.map((point) => point.nodeId)).toEqual(["road-west-in", "road-east-out"]);
-    expect(middle.progress).toBeCloseTo(0.5, 8);
+  it("displays pedestrians after they leave private building access links", () => {
+    expect(isVisiblePedestrianSegment("access-building-home-walk-out")).toBe(false);
+    expect(isVisiblePedestrianSegment("sidewalk-west-n-out")).toBe(true);
+    expect(isVisiblePedestrianSegment("crosswalk-north-center-out")).toBe(true);
   });
 });

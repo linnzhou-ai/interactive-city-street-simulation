@@ -8,6 +8,7 @@ import {
   createInitialInfrastructure,
   updateInfrastructure,
 } from "../src/core/infrastructure";
+import { createPopulation } from "../src/core/population";
 import type { Building } from "../src/models/types";
 
 describe("land use", () => {
@@ -26,6 +27,14 @@ describe("land use", () => {
     expect(first.landUse.parcels.some((parcel) => parcel.x > 0)).toBe(true);
     expect(first.landUse.parcels.some((parcel) => parcel.z < 0)).toBe(true);
     expect(first.landUse.parcels.some((parcel) => parcel.z > 0)).toBe(true);
+    expect(first.buildings).toHaveLength(24);
+    expect(first.buildings.filter((building) => building.zone === "residential")).toHaveLength(10);
+    expect(new Set(first.landUse.parcels.map((parcel) => parcel.id)).size).toBe(24);
+    expect(new Set(first.buildings.map((building) => `${building.x}:${building.z}`)).size).toBe(24);
+
+    const population = createPopulation(first.buildings);
+    expect(population.people).toHaveLength(270);
+    expect(new Set(population.people.map((person) => person.name)).size).toBe(270);
   });
 
   it("grows suitable buildings but respects steep terrain and height limits", () => {

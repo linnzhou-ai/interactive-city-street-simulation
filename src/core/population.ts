@@ -45,8 +45,14 @@ const STARTING_MONEY: Record<IncomeBand, number> = {
   high: 900,
 };
 
-const FIRST_NAMES = ["Avery", "Jordan", "Maya", "Theo", "Sofia", "Miles", "Nora", "Eli", "Zoe"];
-const LAST_NAMES = ["Chen", "Patel", "Rivera", "Kim", "Johnson", "Nguyen"];
+const FIRST_NAMES = [
+  "Avery", "Jordan", "Maya", "Theo", "Sofia", "Miles", "Nora", "Eli", "Zoe",
+  "Amara", "Caleb", "Leah", "Noah", "Priya", "Mateo", "Iris", "Owen", "Layla",
+];
+const LAST_NAMES = [
+  "Chen", "Patel", "Rivera", "Kim", "Johnson", "Nguyen", "Martinez", "Singh",
+  "Brown", "Garcia", "Wilson", "Davis", "Clark", "Lopez", "Hall", "Young",
+];
 
 export function createPopulation(inputBuildings: readonly Building[]): PopulationState {
   const buildings = inputBuildings.map(cloneBuilding);

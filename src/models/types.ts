@@ -18,12 +18,20 @@ export interface RoutePoint {
   z: number;
 }
 
+export interface AgentPosition {
+  x: number;
+  z: number;
+  headingRadians: number;
+  segmentId: string;
+}
+
 export interface MovingAgent {
   id: string;
   progress: number;
   completed: boolean;
   elapsedSeconds: number;
   route: RoutePoint[];
+  position: AgentPosition;
 }
 
 export interface Vehicle extends MovingAgent {

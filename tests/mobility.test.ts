@@ -11,6 +11,7 @@ import {
 const buildings: Pick<Building, "id" | "x" | "z">[] = [
   { id: "west-home", x: -20, z: -20 },
   { id: "east-shop", x: 20, z: -20 },
+  { id: "north-office", x: -20, z: -35 },
   { id: "south-office", x: 20, z: 35 },
 ];
 
@@ -98,6 +99,91 @@ describe("MobilitySystem", () => {
     expect(mobility.submitTrip(trip("senior-walker", "walk"))).toBe(true);
 
     expect(mobility.getSnapshot().pedestrians[0]?.ageGroup).toBe("senior");
+  });
+
+  it("publishes exact edge positions for rendering", () => {
+    const mobility = new MobilitySystem(buildings, { busHeadwayMinutes: 20 });
+    expect(mobility.submitTrip(trip("positioned-car", "car"))).toBe(true);
+
+    const initial = mobility.getSnapshot().vehicles.find((vehicle) =>
+      vehicle.id === "positioned-car"
+    )!;
+    expect(initial.position.segmentId).toContain("access-");
+
+    mobility.update(10, "vehicles");
+    const moved = mobility.getSnapshot().vehicles.find((vehicle) =>
+      vehicle.id === "positioned-car"
+    )!;
+    expect(moved.position.segmentId).toMatch(/^road-/);
+    expect(Math.hypot(moved.position.x - initial.position.x, moved.position.z - initial.position.z))
+      .toBeGreaterThan(10);
+  });
+
+  it("keeps vehicles separated and reserves the intersection to one movement", () => {
+    const mobility = new MobilitySystem(buildings, {
+      busHeadwayMinutes: 20,
+      safeFollowingGapMeters: 5,
+    });
+    expect(mobility.submitTrip(trip("west-car-1", "car"))).toBe(true);
+    expect(mobility.submitTrip(trip("west-car-2", "car"))).toBe(true);
+    expect(mobility.submitTrip(trip("north-car", "car", "north-office", "south-office")))
+      .toBe(true);
+
+    let sawSharedRoadEdge = false;
+    let sawIntersectionMovement = false;
+    for (let frame = 0; frame < 500; frame += 1) {
+      mobility.update(0.1, "vehicles");
+      const vehicles = mobility.getSnapshot().vehicles;
+      const intersectionVehicles = vehicles.filter((vehicle) =>
+        vehicle.position.segmentId.startsWith("movement-")
+      );
+      expect(intersectionVehicles.length).toBeLessThanOrEqual(1);
+      sawIntersectionMovement ||= intersectionVehicles.length === 1;
+
+      const first = vehicles.find((vehicle) => vehicle.id === "west-car-1");
+      const second = vehicles.find((vehicle) => vehicle.id === "west-car-2");
+      if (first && second && first.position.segmentId === second.position.segmentId) {
+        if (first.position.segmentId.startsWith("road-")) {
+          sawSharedRoadEdge = true;
+          expect(Math.hypot(
+            first.position.x - second.position.x,
+            first.position.z - second.position.z,
+          )).toBeGreaterThanOrEqual(8.9);
+        }
+      }
+    }
+    expect(sawSharedRoadEdge).toBe(true);
+    expect(sawIntersectionMovement).toBe(true);
+  });
+
+  it("queues same-direction pedestrians with visible walking space", () => {
+    const mobility = new MobilitySystem(buildings, { busHeadwayMinutes: 20 });
+    expect(mobility.submitTrip(trip("walker-a", "walk"))).toBe(true);
+    expect(mobility.submitTrip(trip("walker-b", "walk"))).toBe(true);
+
+    let sawSharedWalkingEdge = false;
+    for (let frame = 0; frame < 500; frame += 1) {
+      mobility.update(0.1, "pedestrians");
+      const pedestrians = mobility.getSnapshot().pedestrians;
+      const first = pedestrians.find((pedestrian) => pedestrian.id === "walker-a");
+      const second = pedestrians.find((pedestrian) => pedestrian.id === "walker-b");
+      if (
+        first
+        && second
+        && first.position.segmentId === second.position.segmentId
+        && (
+          first.position.segmentId.startsWith("sidewalk-")
+          || first.position.segmentId.startsWith("crosswalk-")
+        )
+      ) {
+        sawSharedWalkingEdge = true;
+        expect(Math.hypot(
+          first.position.x - second.position.x,
+          first.position.z - second.position.z,
+        )).toBeGreaterThanOrEqual(1.7);
+      }
+    }
+    expect(sawSharedWalkingEdge).toBe(true);
   });
 
   it("applies live speed, bus-headway, and road-capacity controls without reset", () => {
