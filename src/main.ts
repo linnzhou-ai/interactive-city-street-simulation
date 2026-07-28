@@ -7,7 +7,10 @@ import {
   type EditorSnapshot,
   type ProjectSnapshot,
 } from "./core/projectState";
-import { Simulation } from "./core/simulation";
+import {
+  getTimeViolationRiskMultiplier,
+  Simulation,
+} from "./core/simulation";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
   AppMode,
@@ -74,6 +77,7 @@ const timeOfDayControl = requireElement<HTMLInputElement>("time-of-day-control")
 const timeOfDayOutput = requireElement<HTMLOutputElement>("time-of-day-output");
 const weatherControl = requireElement<HTMLSelectElement>("weather-control");
 const demandPeriodOutput = requireElement<HTMLElement>("demand-period-output");
+const violationRiskOutput = requireElement<HTMLElement>("violation-risk-output");
 const pedestrianMarkersControl = requireElement<HTMLInputElement>(
   "pedestrian-markers-control",
 );
@@ -112,6 +116,9 @@ const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
 const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
 const buildingArrivals = requireElement<HTMLElement>("building-arrivals");
 const trafficViolations = requireElement<HTMLElement>("traffic-violations");
+const jaywalkingViolations = requireElement<HTMLElement>(
+  "jaywalking-violations",
+);
 const averageSpeed = requireElement<HTMLElement>("average-speed");
 const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
 const rushHourButton = requireElement<HTMLButtonElement>("rush-hour-button");
@@ -489,6 +496,8 @@ function updateMetrics(): void {
   crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
   buildingArrivals.textContent = metrics.buildingArrivals.toLocaleString();
   trafficViolations.textContent = metrics.trafficViolations.toLocaleString();
+  jaywalkingViolations.textContent =
+    metrics.jaywalkingViolations.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
   updateSelectedSignalStatus();
 }
@@ -1091,6 +1100,7 @@ function syncEnvironmentControls(): void {
   timeOfDayOutput.value = formatTimeOfDay(state.timeOfDayHours);
   weatherControl.value = state.weather;
   demandPeriodOutput.textContent = formatDemandPeriod(state.timeOfDayHours);
+  violationRiskOutput.textContent = formatViolationRisk(state.timeOfDayHours);
   renderer.setEnvironment(state.timeOfDayHours, state.weather);
 }
 
@@ -1111,6 +1121,19 @@ function formatDemandPeriod(hourValue: number): string {
   if (hour >= 11 && hour < 14) return "Lunch period · pedestrian demand increased";
   if (hour >= 22 || hour < 6) return "Night · district demand reduced";
   return hour < 12 ? "Morning activity" : "Regular daytime activity";
+}
+
+function formatViolationRisk(hourValue: number): string {
+  const multiplier = getTimeViolationRiskMultiplier(hourValue);
+  const label =
+    multiplier >= 1.8
+      ? "Elevated"
+      : multiplier > 1.15
+        ? "Moderate"
+        : multiplier > 1
+          ? "Slightly elevated"
+          : "Normal";
+  return `Traffic violation risk: ${label} · ${multiplier.toFixed(2)}×`;
 }
 
 function formatClockTime(date: Date): string {

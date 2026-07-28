@@ -211,6 +211,9 @@ export class Simulation {
       this.state.timeOfDayHours + simulationDelta / 60,
     );
     const timeDemand = getTimeDemandAdjustment(this.state.timeOfDayHours);
+    const violationRiskMultiplier = getTimeViolationRiskMultiplier(
+      this.state.timeOfDayHours,
+    );
     const weatherDemand =
       this.state.weather === "rain"
         ? { vehicle: 0.15, pedestrian: -0.65, speed: 0.78 }
@@ -236,6 +239,7 @@ export class Simulation {
         0,
         3,
       ),
+      violationRiskMultiplier,
     });
     this.syncTrafficState();
   }
@@ -276,6 +280,19 @@ export function getTimeDemandAdjustment(
     return { vehicle: -0.85, pedestrian: -1.1 };
   }
   return { vehicle: 0, pedestrian: 0 };
+}
+
+export function getTimeViolationRiskMultiplier(hour: number): number {
+  const normalized = normalizeHour(hour);
+  if (normalized >= 23 || normalized < 5) return 1.8;
+  if (normalized >= 20 || normalized < 7) return 1.4;
+  if (
+    (normalized >= 7 && normalized < 9.5) ||
+    (normalized >= 16 && normalized < 19)
+  ) {
+    return 1.15;
+  }
+  return 1;
 }
 
 export function calculateMetrics(
@@ -351,6 +368,7 @@ export function calculateMetrics(
     crossingsCompleted: 0,
     buildingArrivals: 0,
     trafficViolations: 0,
+    jaywalkingViolations: 0,
   };
 }
 

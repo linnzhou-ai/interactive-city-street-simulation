@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   driverSpeedFactor,
   laneDirectionAllowsMovement,
+  pedestrianSignalViolationProbability,
   physicalLaneCount,
   safeIntersectionApproachSpeed,
   sampleComplianceProbability,
@@ -74,5 +75,12 @@ describe("Pennsylvania traffic-law behavior", () => {
         true,
       ),
     ).toBe(false);
+  });
+
+  it("makes jaywalking noticeable and more likely late at night", () => {
+    const daytime = pedestrianSignalViolationProbability(0.95, 1);
+    const nighttime = pedestrianSignalViolationProbability(0.95, 1.8);
+    expect(daytime).toBeGreaterThanOrEqual(0.03);
+    expect(nighttime).toBeGreaterThan(daytime);
   });
 });

@@ -273,6 +273,7 @@ export class LiveTrafficSystem {
   private crossingsCompleted = 0;
   private buildingArrivals = 0;
   private trafficViolations = 0;
+  private jaywalkingViolations = 0;
   private buildingNodes: BuildingNode[] = [];
   private roadDesigns = new Map<string, FeatureDesign>();
 
@@ -300,6 +301,7 @@ export class LiveTrafficSystem {
     this.crossingsCompleted = 0;
     this.buildingArrivals = 0;
     this.trafficViolations = 0;
+    this.jaywalkingViolations = 0;
     for (const controller of this.controllers.values()) {
       controller.reset();
     }
@@ -311,7 +313,7 @@ export class LiveTrafficSystem {
     settings: Pick<
       ScenarioSettings,
       "vehicleVolume" | "pedestrianVolume" | "speedLimitMph"
-    >,
+    > & { violationRiskMultiplier?: number },
   ): void {
     if (deltaSeconds <= 0) return;
     let remaining = deltaSeconds;
@@ -319,8 +321,17 @@ export class LiveTrafficSystem {
       const step = Math.min(0.1, remaining);
       this.elapsedSeconds += step;
       for (const controller of this.controllers.values()) controller.update(step);
-      this.updateVehicleSpawner(step, settings.vehicleVolume, settings.speedLimitMph);
-      this.updatePedestrianSpawner(step, settings.pedestrianVolume);
+      this.updateVehicleSpawner(
+        step,
+        settings.vehicleVolume,
+        settings.speedLimitMph,
+        settings.violationRiskMultiplier ?? 1,
+      );
+      this.updatePedestrianSpawner(
+        step,
+        settings.pedestrianVolume,
+        settings.violationRiskMultiplier ?? 1,
+      );
       this.updateVehicles(step);
       this.updatePedestrians(step);
       remaining -= step;
@@ -477,6 +488,7 @@ export class LiveTrafficSystem {
       crossingsCompleted: this.crossingsCompleted,
       buildingArrivals: this.buildingArrivals,
       trafficViolations: this.trafficViolations,
+      jaywalkingViolations: this.jaywalkingViolations,
     };
   }
 
@@ -484,6 +496,7 @@ export class LiveTrafficSystem {
     deltaSeconds: number,
     demand: number,
     speedLimitMph: number,
+    violationRiskMultiplier: number,
   ): void {
     this.nextVehicleSpawnSeconds -= deltaSeconds;
     const target = Math.round(interpolateDemand(VEHICLE_TARGETS, demand));
@@ -495,8 +508,12 @@ export class LiveTrafficSystem {
         const complianceProbability = sampleComplianceProbability(
           this.random.next(),
         );
-        const speedFactor = driverSpeedFactor(
+        const effectiveCompliance = complianceAdjustedForTime(
           complianceProbability,
+          violationRiskMultiplier,
+        );
+        const speedFactor = driverSpeedFactor(
+          effectiveCompliance,
           this.random.next(),
           this.random.next(),
         );
@@ -518,9 +535,13 @@ export class LiveTrafficSystem {
           delaySeconds: 0,
           lanePreference,
           complianceProbability,
-          aggressiveYellow: this.random.next() > complianceProbability,
+          aggressiveYellow: this.random.next() > effectiveCompliance,
           mayRunRed:
-            this.random.next() > 0.985 + complianceProbability * 0.014,
+            this.random.next() <
+            redSignalViolationProbability(
+              complianceProbability,
+              violationRiskMultiplier,
+            ),
           violationIntersectionId: null,
           violatingUntilSeconds: speeding ? this.elapsedSeconds + 3 : 0,
         });
@@ -539,7 +560,11 @@ export class LiveTrafficSystem {
     }
   }
 
-  private updatePedestrianSpawner(deltaSeconds: number, demand: number): void {
+  private updatePedestrianSpawner(
+    deltaSeconds: number,
+    demand: number,
+    violationRiskMultiplier: number,
+  ): void {
     this.nextPedestrianSpawnSeconds -= deltaSeconds;
     const target = Math.round(interpolateDemand(PEDESTRIAN_TARGETS, demand));
     while (
@@ -567,7 +592,11 @@ export class LiveTrafficSystem {
           committedIntersectionId: null,
           complianceProbability,
           mayCrossAgainstSignal:
-            this.random.next() > 0.985 + complianceProbability * 0.014,
+            this.random.next() <
+            pedestrianSignalViolationProbability(
+              complianceProbability,
+              violationRiskMultiplier,
+            ),
           signalViolationUsed: false,
           violatingUntilSeconds: 0,
         });
@@ -768,6 +797,7 @@ export class LiveTrafficSystem {
         pedestrian.committedIntersectionId = end.id;
         pedestrian.signalViolationUsed = true;
         this.trafficViolations += 1;
+        this.jaywalkingViolations += 1;
         pedestrian.violatingUntilSeconds = this.elapsedSeconds + 3;
       }
       if (
@@ -1170,6 +1200,34 @@ export function vehicleMayProceedWithBehavior(
 export function sampleComplianceProbability(sample: number): number {
   const normalized = clamp(sample, 0, 1);
   return 0.7 + 0.3 * (1 - Math.pow(1 - normalized, 3));
+}
+
+export function complianceAdjustedForTime(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const nonCompliance =
+    (1 - clamp(complianceProbability, 0, 1)) *
+    clamp(violationRiskMultiplier, 0.5, 2.5);
+  return clamp(1 - nonCompliance, 0.45, 1);
+}
+
+export function pedestrianSignalViolationProbability(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const baseProbability =
+    0.03 + (1 - clamp(complianceProbability, 0, 1)) * 0.18;
+  return clamp(baseProbability * violationRiskMultiplier, 0.03, 0.22);
+}
+
+export function redSignalViolationProbability(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const baseProbability =
+    0.001 + (1 - clamp(complianceProbability, 0, 1)) * 0.018;
+  return clamp(baseProbability * violationRiskMultiplier, 0.001, 0.03);
 }
 
 export function driverSpeedFactor(

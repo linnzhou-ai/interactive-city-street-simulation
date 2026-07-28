@@ -134,6 +134,7 @@ export interface SimulationMetrics {
   crossingsCompleted: number;
   buildingArrivals: number;
   trafficViolations: number;
+  jaywalkingViolations: number;
 }
 
 export interface SimulationState {
