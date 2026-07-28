@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  driverSpeedFactor,
   laneDirectionAllowsMovement,
   physicalLaneCount,
   safeIntersectionApproachSpeed,
+  sampleComplianceProbability,
   vehicleMayProceed,
+  vehicleMayProceedWithBehavior,
 } from "../src/core/liveTraffic";
 
 describe("Pennsylvania traffic-law behavior", () => {
@@ -38,5 +41,38 @@ describe("Pennsylvania traffic-law behavior", () => {
     expect(physicalLaneCount(0)).toBe(1);
     expect(physicalLaneCount(1)).toBe(2);
     expect(physicalLaneCount(-1)).toBe(1);
+  });
+
+  it("samples a high-skew individual compliance distribution", () => {
+    expect(sampleComplianceProbability(0)).toBeCloseTo(0.7);
+    expect(sampleComplianceProbability(0.5)).toBeCloseTo(0.9625);
+    expect(sampleComplianceProbability(1)).toBe(1);
+  });
+
+  it("makes speeding an individual probabilistic decision", () => {
+    expect(driverSpeedFactor(0.95, 0.5, 0.5)).toBeLessThan(1);
+    expect(driverSpeedFactor(0.75, 0.9, 0.5)).toBeGreaterThan(1);
+  });
+
+  it("allows rare risky signal behavior without bypassing all-red", () => {
+    expect(
+      vehicleMayProceedWithBehavior("ew-yellow", "x", 14, 4, true, false),
+    ).toBe(true);
+    expect(
+      vehicleMayProceedWithBehavior("ns-green", "x", 8, 4, false, true),
+    ).toBe(true);
+    expect(
+      vehicleMayProceedWithBehavior("all-red", "x", 3, 4, true, true),
+    ).toBe(false);
+    expect(
+      vehicleMayProceedWithBehavior(
+        "pedestrian-walk",
+        "x",
+        3,
+        4,
+        true,
+        true,
+      ),
+    ).toBe(false);
   });
 });

@@ -105,6 +105,7 @@ export interface VehicleSnapshot {
   queued: boolean;
   kind: VehicleKind;
   color: string;
+  complianceProbability: number;
 }
 
 export interface PedestrianSnapshot {
@@ -115,6 +116,7 @@ export interface PedestrianSnapshot {
   waiting: boolean;
   color: string;
   variant: number;
+  complianceProbability: number;
 }
 
 export interface SimulationMetrics {
@@ -129,6 +131,7 @@ export interface SimulationMetrics {
   activePedestrians: number;
   crossingsCompleted: number;
   buildingArrivals: number;
+  trafficViolations: number;
 }
 
 export interface SimulationState {

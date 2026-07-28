@@ -111,6 +111,7 @@ const activeVehicles = requireElement<HTMLElement>("active-vehicles");
 const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
 const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
 const buildingArrivals = requireElement<HTMLElement>("building-arrivals");
+const trafficViolations = requireElement<HTMLElement>("traffic-violations");
 const averageSpeed = requireElement<HTMLElement>("average-speed");
 const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
 const rushHourButton = requireElement<HTMLButtonElement>("rush-hour-button");
@@ -487,6 +488,7 @@ function updateMetrics(): void {
   activePedestrians.textContent = metrics.activePedestrians.toLocaleString();
   crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
   buildingArrivals.textContent = metrics.buildingArrivals.toLocaleString();
+  trafficViolations.textContent = metrics.trafficViolations.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
   updateSelectedSignalStatus();
 }

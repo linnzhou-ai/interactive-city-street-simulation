@@ -350,6 +350,7 @@ export function calculateMetrics(
     activePedestrians: 0,
     crossingsCompleted: 0,
     buildingArrivals: 0,
+    trafficViolations: 0,
   };
 }
 

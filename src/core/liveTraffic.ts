@@ -95,6 +95,10 @@ interface VehicleAgent {
   spawnedAt: number;
   delaySeconds: number;
   lanePreference: 0 | 1;
+  complianceProbability: number;
+  aggressiveYellow: boolean;
+  mayRunRed: boolean;
+  violationIntersectionId: string | null;
 }
 
 interface PedestrianAgent {
@@ -111,6 +115,9 @@ interface PedestrianAgent {
   spawnedAt: number;
   waitSeconds: number;
   committedIntersectionId: string | null;
+  complianceProbability: number;
+  mayCrossAgainstSignal: boolean;
+  signalViolationUsed: boolean;
 }
 
 interface PositionedAgent {
@@ -263,6 +270,7 @@ export class LiveTrafficSystem {
   private completedPedestrianWaitSeconds = 0;
   private crossingsCompleted = 0;
   private buildingArrivals = 0;
+  private trafficViolations = 0;
   private buildingNodes: BuildingNode[] = [];
   private roadDesigns = new Map<string, FeatureDesign>();
 
@@ -289,6 +297,7 @@ export class LiveTrafficSystem {
     this.completedPedestrianWaitSeconds = 0;
     this.crossingsCompleted = 0;
     this.buildingArrivals = 0;
+    this.trafficViolations = 0;
     for (const controller of this.controllers.values()) {
       controller.reset();
     }
@@ -387,6 +396,7 @@ export class LiveTrafficSystem {
         queued: vehicle.queued,
         kind: vehicle.kind,
         color: vehicle.color,
+        complianceProbability: vehicle.complianceProbability,
       };
     });
   }
@@ -400,6 +410,7 @@ export class LiveTrafficSystem {
         waiting: pedestrian.waiting,
         color: pedestrian.color,
         variant: pedestrian.variant,
+        complianceProbability: pedestrian.complianceProbability,
       };
     });
   }
@@ -461,6 +472,7 @@ export class LiveTrafficSystem {
       activePedestrians: this.pedestrians.length,
       crossingsCompleted: this.crossingsCompleted,
       buildingArrivals: this.buildingArrivals,
+      trafficViolations: this.trafficViolations,
     };
   }
 
@@ -476,8 +488,16 @@ export class LiveTrafficSystem {
       const lanePreference = this.random.next() < 0.5 ? 0 : 1;
       if (this.canSpawnVehicle(route.path, lanePreference)) {
         const kind = route.freight ? "truck" : this.random.pick(VEHICLE_KINDS);
-        const desiredSpeed =
-          speedLimitMph * 0.44704 * (0.82 + this.random.next() * 0.16);
+        const complianceProbability = sampleComplianceProbability(
+          this.random.next(),
+        );
+        const speedFactor = driverSpeedFactor(
+          complianceProbability,
+          this.random.next(),
+          this.random.next(),
+        );
+        const desiredSpeed = speedLimitMph * 0.44704 * speedFactor;
+        if (speedFactor > 1) this.trafficViolations += 1;
         this.vehicles.push({
           id: this.nextVehicleId,
           path: route.path,
@@ -492,6 +512,11 @@ export class LiveTrafficSystem {
           spawnedAt: this.elapsedSeconds,
           delaySeconds: 0,
           lanePreference,
+          complianceProbability,
+          aggressiveYellow: this.random.next() > complianceProbability,
+          mayRunRed:
+            this.random.next() > 0.985 + complianceProbability * 0.014,
+          violationIntersectionId: null,
         });
         this.nextVehicleId += 1;
       }
@@ -517,6 +542,9 @@ export class LiveTrafficSystem {
     ) {
       const route = this.createPedestrianRoute();
       if (this.canSpawnPedestrian(route)) {
+        const complianceProbability = sampleComplianceProbability(
+          this.random.next(),
+        );
         this.pedestrians.push({
           id: this.nextPedestrianId,
           path: route,
@@ -531,6 +559,10 @@ export class LiveTrafficSystem {
           spawnedAt: this.elapsedSeconds,
           waitSeconds: 0,
           committedIntersectionId: null,
+          complianceProbability,
+          mayCrossAgainstSignal:
+            this.random.next() > 0.985 + complianceProbability * 0.014,
+          signalViolationUsed: false,
         });
         this.nextPedestrianId += 1;
       }
@@ -598,10 +630,29 @@ export class LiveTrafficSystem {
       const controller = this.controllers.get(end.id);
       const signal = controller?.getSnapshot();
       const axis = Math.abs(end.x - start.x) > Math.abs(end.z - start.z) ? "x" : "z";
-      const canProceed =
+      const legalCanProceed =
         signal !== undefined &&
-        vehicleMayProceed(signal.phase, axis, remaining, vehicle.speed) &&
-        !this.intersectionHasCrossingPedestrian(end.id);
+        vehicleMayProceed(signal.phase, axis, remaining, vehicle.speed);
+      const behaviorCanProceed =
+        signal !== undefined &&
+        vehicleMayProceedWithBehavior(
+          signal.phase,
+          axis,
+          remaining,
+          vehicle.speed,
+          vehicle.aggressiveYellow,
+          vehicle.mayRunRed,
+        );
+      const pedestrianInCrossing = this.intersectionHasCrossingPedestrian(end.id);
+      const canProceed = behaviorCanProceed && !pedestrianInCrossing;
+      if (
+        canProceed &&
+        !legalCanProceed &&
+        vehicle.violationIntersectionId !== end.id
+      ) {
+        vehicle.violationIntersectionId = end.id;
+        this.trafficViolations += 1;
+      }
       const nextKey = nextVehicleSegmentKey(vehicle, this.roadDesigns);
       const downstreamBlocked =
         nextKey !== null &&
@@ -698,6 +749,17 @@ export class LiveTrafficSystem {
         signal?.phase === "pedestrian-walk"
       ) {
         pedestrian.committedIntersectionId = end.id;
+      }
+      if (
+        controller &&
+        pedestrian.committedIntersectionId === null &&
+        !pedestrian.signalViolationUsed &&
+        pedestrian.mayCrossAgainstSignal &&
+        signal?.phase !== "pedestrian-walk"
+      ) {
+        pedestrian.committedIntersectionId = end.id;
+        pedestrian.signalViolationUsed = true;
+        this.trafficViolations += 1;
       }
       if (
         controller &&
@@ -1072,6 +1134,45 @@ export function vehicleMayProceed(
   if (!matchingYellow) return false;
   const comfortableStopDistance = speed * speed / (2 * 3.8) + 2;
   return distanceToStopLine <= comfortableStopDistance;
+}
+
+export function vehicleMayProceedWithBehavior(
+  phase: SignalPhase,
+  axis: "x" | "z",
+  distanceToStopLine: number,
+  speed: number,
+  aggressiveYellow: boolean,
+  mayRunRed: boolean,
+): boolean {
+  if (vehicleMayProceed(phase, axis, distanceToStopLine, speed)) return true;
+  const matchingYellow =
+    (axis === "z" && phase === "ns-yellow") ||
+    (axis === "x" && phase === "ew-yellow");
+  if (matchingYellow && aggressiveYellow) {
+    const comfortableStopDistance = speed * speed / (2 * 3.8) + 2;
+    return distanceToStopLine <= comfortableStopDistance + 12;
+  }
+  const facingRedOnOpposingGreen =
+    (axis === "z" && phase === "ew-green") ||
+    (axis === "x" && phase === "ns-green");
+  return facingRedOnOpposingGreen && mayRunRed;
+}
+
+export function sampleComplianceProbability(sample: number): number {
+  const normalized = clamp(sample, 0, 1);
+  return 0.7 + 0.3 * (1 - Math.pow(1 - normalized, 3));
+}
+
+export function driverSpeedFactor(
+  complianceProbability: number,
+  complianceDecision: number,
+  magnitudeSample: number,
+): number {
+  const magnitude = clamp(magnitudeSample, 0, 1);
+  if (complianceDecision > complianceProbability) {
+    return 1.02 + magnitude * 0.16;
+  }
+  return 0.82 + magnitude * 0.16;
 }
 
 export function safeIntersectionApproachSpeed(
