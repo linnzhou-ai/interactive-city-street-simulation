@@ -17,6 +17,7 @@
           <span id="active-layer-label">City systems overview</span>
           <strong id="city-name-output">Market-River City Section</strong>
           <small id="detail-mode-output">Street detail</small>
+          <small id="representation-badge" class="representation-badge">1 visible person represents city residents</small>
         </div>
       </main>
 
@@ -27,14 +28,13 @@
         </div>
         <div class="clock-block" aria-label="Simulation time">
           <div>
-            <span id="day-output">Day 1 · Day horizon</span>
+            <span id="day-output">Day 1 · 1 city hour/sec</span>
             <strong id="time-output">Jan 1, 2026</strong>
           </div>
           <time id="hour-output" datetime="07:00">07:00</time>
         </div>
         <div class="simulation-actions" aria-label="Simulation controls">
           <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
-          <button id="mobile-panel-button" class="mobile-panel-button" type="button" aria-label="Show inspector" aria-pressed="false" title="Show inspector">i</button>
           <button id="run-button" class="primary-button" type="button">Run</button>
           <button id="pause-button" type="button">Pause</button>
           <button id="reset-button" type="button">Reset</button>
@@ -42,31 +42,40 @@
         </div>
       </header>
 
-      <nav class="map-mode-bar hud-panel" aria-label="Map modes">
-        <span class="map-mode-label">Map mode</span>
-        <div class="map-mode-buttons">
-          <button type="button" data-visual-layer="none" data-layer="overview" aria-pressed="true">Standard</button>
-          <button type="button" data-visual-layer="congestion" data-layer="infrastructure" aria-pressed="false">Traffic</button>
-          <button type="button" data-visual-layer="pedestrian-wait" data-layer="infrastructure" aria-pressed="false">Walking</button>
-          <button type="button" data-visual-layer="land-value" data-layer="land-use" aria-pressed="false">Land value</button>
-          <button type="button" data-visual-layer="utilities" data-layer="infrastructure" aria-pressed="false">Utilities</button>
-          <button type="button" data-visual-layer="jobs" data-layer="people" aria-pressed="false">Jobs</button>
-          <button type="button" data-visual-layer="shortages" data-layer="economy" aria-pressed="false">Shortages</button>
-          <button type="button" data-visual-layer="migration" data-layer="people" aria-pressed="false">Migration</button>
-          <button type="button" data-visual-layer="freight" data-layer="economy" aria-pressed="false">Freight</button>
-          <button type="button" data-visual-layer="profit" data-layer="economy" aria-pressed="false">Profit</button>
-        </div>
-        <div class="heat-legend map-mode-legend" aria-label="Current map scale">
-          <span id="heat-low-label">Base</span><i></i><span id="heat-high-label">Color</span>
-        </div>
+      <nav class="mode-rail hud-panel" aria-label="Map modes">
+        <button type="button" data-mode="overview" data-layer="overview" data-visual-layer="none" aria-pressed="true" title="Overview">
+          <i data-mode-icon="overview" aria-hidden="true"></i><span>Overview</span>
+        </button>
+        <button type="button" data-mode="traffic" data-layer="infrastructure" data-visual-layer="congestion" aria-pressed="false" title="Traffic layers">
+          <i data-mode-icon="traffic" aria-hidden="true"></i><span>Traffic</span>
+        </button>
+        <button type="button" data-mode="economy" data-layer="economy" data-visual-layer="profit" aria-pressed="false" title="Economy layers">
+          <i data-mode-icon="economy" aria-hidden="true"></i><span>Economy</span>
+        </button>
+        <button type="button" data-mode="people" data-layer="people" data-visual-layer="jobs" aria-pressed="false" title="People layers">
+          <i data-mode-icon="people" aria-hidden="true"></i><span>People</span>
+        </button>
+        <button type="button" data-mode="services" data-layer="infrastructure" data-visual-layer="utilities" aria-pressed="false" title="Services layers">
+          <i data-mode-icon="services" aria-hidden="true"></i><span>Services</span>
+        </button>
+        <button type="button" data-mode="land" data-layer="land-use" data-visual-layer="land-value" aria-pressed="false" title="Land layers">
+          <i data-mode-icon="land" aria-hidden="true"></i><span>Land</span>
+        </button>
       </nav>
 
-      <aside id="inspector-panel" class="inspector-panel hud-panel" aria-labelledby="inspector-title">
-        <div id="dashboard-panel" class="dashboard-panel">
+      <div id="mode-layer-menu" class="mode-layer-menu hud-panel" aria-label="Available map layers" hidden></div>
+      <div id="map-legend" class="map-legend hud-panel" aria-label="Current map scale" hidden>
+        <strong id="map-legend-title">Standard</strong>
+        <div class="heat-legend"><span id="heat-low-label">Base</span><i></i><span id="heat-high-label">Color</span></div>
+      </div>
+
+      <aside id="inspector-panel" class="inspector-panel hud-panel" aria-labelledby="selection-title" hidden>
+        <div id="dashboard-panel" class="dashboard-panel" hidden>
           <section class="inspector-content">
             <p class="panel-kicker">Selected map mode</p>
             <h2 id="inspector-title">Street health</h2>
             <p id="inspector-summary" class="inspector-summary">All systems are initializing.</p>
+            <section id="mode-system-flow" class="mode-system-flow" aria-label="Current system flow"></section>
             <dl class="snapshot-list">
               <div><dt id="inspector-label-1">Population</dt><dd id="inspector-value-1">0</dd></div>
               <div><dt id="inspector-label-2">Active trips</dt><dd id="inspector-value-2">0</dd></div>
@@ -75,7 +84,7 @@
             </dl>
           </section>
 
-          <section class="representation-section" aria-labelledby="representation-title">
+          <section class="representation-section" aria-labelledby="representation-title" hidden>
             <div class="section-heading compact-heading">
               <p class="panel-kicker">Model scale</p>
               <h2 id="representation-title">Representation</h2>
@@ -87,7 +96,7 @@
             <p id="representation-activity" class="representation-note">Waiting for sampled activity.</p>
           </section>
 
-          <section class="cause-section" aria-labelledby="cause-title">
+          <section id="cause-section" class="cause-section" aria-labelledby="cause-title">
             <div class="section-heading compact-heading">
               <p class="panel-kicker">Why?</p>
               <h2 id="cause-title">Current causes</h2>
@@ -95,13 +104,13 @@
             <dl id="cause-list" class="cause-list"></dl>
           </section>
 
-          <details class="baseline-section disclosure-section">
+          <details class="baseline-section disclosure-section" hidden>
             <summary>Baseline comparison</summary>
             <div id="baseline-list" class="baseline-list"></div>
             <ol id="timeline-markers" class="timeline-markers"></ol>
           </details>
 
-          <section class="event-section" aria-labelledby="event-title">
+          <section class="event-section" aria-labelledby="event-title" hidden>
             <div class="section-heading">
               <p class="panel-kicker">Grouped by system</p>
               <h2 id="event-title">Alerts and updates</h2>
@@ -112,7 +121,7 @@
           </section>
         </div>
 
-        <section id="selection-panel" class="selection-panel" aria-labelledby="selection-title" hidden>
+        <section id="selection-panel" class="selection-panel" aria-labelledby="selection-title">
           <header class="selection-heading">
             <div>
               <p id="selection-kicker" class="panel-kicker">Selected entity</p>
@@ -121,20 +130,22 @@
             <button id="selection-close" class="icon-button" type="button" aria-label="Close details" title="Close details">&times;</button>
           </header>
           <p id="selection-summary" class="selection-summary"></p>
-          <div class="inspection-motion-row">
-            <span id="inspection-motion-status">Paused for inspection</span>
-            <label><input id="inspection-run-toggle" type="checkbox" /> Run while open</label>
-          </div>
-          <dl id="selection-stats" class="selection-stats"></dl>
+          <div id="selection-visuals" class="visual-summary-grid" aria-label="Entity overview"></div>
+          <section id="selection-financial-flow" class="financial-flow" aria-label="Daily financial flow" hidden></section>
+          <section id="selection-system-visual" class="system-visual" aria-label="Entity drivers"></section>
           <p id="selection-diagnosis" class="selection-diagnosis"></p>
-          <section id="selection-timeline-section" class="selection-timeline-section" aria-labelledby="selection-timeline-title" hidden>
-            <p id="selection-timeline-title" class="panel-kicker">Daily timeline</p>
+          <details class="inspector-disclosure">
+            <summary>Detailed accounting</summary>
+            <dl id="selection-stats" class="selection-stats"></dl>
+          </details>
+          <details id="selection-timeline-section" class="selection-timeline-section inspector-disclosure" hidden>
+            <summary id="selection-timeline-title">Daily timeline</summary>
             <ol id="selection-timeline" class="entity-timeline"></ol>
-          </section>
-          <section class="selection-connections" aria-labelledby="selection-connections-title">
-            <p id="selection-connections-title" class="panel-kicker">Connection totals</p>
+          </details>
+          <details class="selection-connections inspector-disclosure">
+            <summary id="selection-connections-title">Connection totals</summary>
             <div id="selection-connections" class="connection-groups"></div>
-          </section>
+          </details>
         </section>
       </aside>
 
@@ -173,20 +184,22 @@
 
         <div class="control-group">
           <p>Simulation time</p>
-          <div class="horizon-control" role="group" aria-label="Simulation time horizon">
-            <button type="button" data-horizon="day" aria-pressed="true">Day</button>
-            <button type="button" data-horizon="week" aria-pressed="false">Week</button>
-            <button type="button" data-horizon="month" aria-pressed="false">Month</button>
-            <button type="button" data-horizon="year" aria-pressed="false">Year</button>
+          <div class="control-row select-row">
+            <label for="simulation-rate-control">Simulation rate</label>
+            <select id="simulation-rate-control">
+              <option value="slow">30 city min/sec</option>
+              <option value="standard" selected>1 city hour/sec</option>
+              <option value="fast">6 city hours/sec</option>
+              <option value="day">1 city day/sec</option>
+              <option value="week">1 city week/sec</option>
+            </select>
           </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="simulation-speed-control">Playback multiplier</label>
-              <output id="simulation-speed-output" for="simulation-speed-control">1.0x</output>
-            </div>
-            <input id="simulation-speed-control" type="range" min="0.5" max="4" step="0.5" value="1" />
-            <small id="simulation-speed-effect" class="control-effect"></small>
-          </div>
+          <small id="simulation-speed-effect" class="control-effect"></small>
+          <label class="setting-toggle" for="day-night-control">
+            <span><strong>Day/night lighting</strong><small>Follow the simulated local hour</small></span>
+            <input id="day-night-control" type="checkbox" checked />
+          </label>
+          <small id="day-night-effect" class="control-effect">Lighting follows sunrise, sunset, and the displayed clock.</small>
         </div>
 
         <div class="control-group">
@@ -271,7 +284,7 @@
         </div>
       </aside>
 
-      <section class="metrics hud-panel" aria-labelledby="metrics-title">
+      <section class="metrics hud-panel" aria-labelledby="metrics-title" hidden>
         <div class="metrics-heading">
           <p class="panel-kicker">Live results</p>
           <h2 id="metrics-title">Systems overview</h2>

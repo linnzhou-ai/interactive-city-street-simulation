@@ -186,10 +186,13 @@ describe("infrastructure", () => {
       totalWaste(loadedBuildings),
     );
     expect(missedCollection.infrastructure.state.wasteCollected).toBe(0);
+    expect(missedCollection.infrastructure.state.wasteGenerated).toBeGreaterThan(0);
+    expect(missedCollection.infrastructure.state.wasteCollectionPercent).toBe(0);
     expect(totalWaste(recovered.buildings)).toBeLessThan(
       totalWaste(missedCollection.buildings),
     );
     expect(recovered.infrastructure.state.wasteCollected).toBeGreaterThan(0);
+    expect(recovered.infrastructure.state.wasteCollectionPercent).toBe(100);
     expect(recovered.infrastructure.state.utilities.waste.coveragePercent).toBe(100);
   });
 
@@ -242,6 +245,7 @@ describe("infrastructure", () => {
     const result = updateInfrastructure(loaded, infrastructure, { elapsedDays: 0 });
 
     expect(totalWaste(result.buildings)).toBe(totalWaste(loaded));
+    expect(result.infrastructure.state.wasteGenerated).toBe(infrastructure.state.wasteGenerated);
     expect(result.infrastructure.state.wasteCollected).toBe(infrastructure.state.wasteCollected);
   });
 

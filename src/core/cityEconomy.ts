@@ -7,6 +7,7 @@ import type {
   GoodsBasket,
   GoodType,
 } from "../models/cityTypes";
+import type { HouseholdExpenseLedger } from "../models/types";
 import { UTILITY_CUSTOMER_RATES } from "./infrastructure";
 
 export const GOODS: GoodType[] = ["food", "consumerGoods", "industrialMaterials"];
@@ -22,6 +23,7 @@ const GOODS_WEIGHT: GoodsBasket = {
   industrialMaterials: 1.6,
 };
 const TRUCK_CAPACITY = 28;
+const CROSS_BORDER_WORK_SHARE = 0.12;
 
 export interface DistrictTransportCapacity {
   road: number;
@@ -35,6 +37,7 @@ interface CityEconomyInput {
   previousMarket: Readonly<CityGoodsMarketState>;
   transportCapacity: ReadonlyMap<string, DistrictTransportCapacity>;
   elapsedDays: number;
+  taxRate: number;
 }
 
 interface CityEconomyResult {
@@ -121,7 +124,8 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const totalJobs = sum(input.districts.map((district) =>
     effectiveJobSlots(district, civicLaborScale)
   ));
-  const localWorkers = Math.min(totalLabor, totalJobs);
+  const crossBorderExchange = Math.min(totalLabor, totalJobs) * CROSS_BORDER_WORK_SHARE;
+  const localWorkers = Math.max(0, Math.min(totalLabor, totalJobs) - crossBorderExchange);
   const outboundCommuters = allocateCommuters(
     externalMarkets,
     Math.max(0, totalLabor - localWorkers),
@@ -157,17 +161,18 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const availableCash = district.householdWealth + householdIncomeDaily * elapsedDays;
     const rentDue = district.households * district.rentIndex * 52 * elapsedDays;
     const rentPaidDaily = Math.min(availableCash, rentDue) / Math.max(elapsedDays, 1e-9);
-    const disposableIncomeDaily = Math.max(0, householdIncomeDaily - rentPaidDaily);
+    const taxPaidDaily = householdIncomeDaily * input.taxRate * 0.16;
+    const disposableIncomeDaily = Math.max(0, householdIncomeDaily - rentPaidDaily - taxPaidDaily);
     const previousPrices = input.previousMarket.prices;
     const demand: GoodsBasket = {
       food: Math.min(
-        district.population * 0.3,
-        (availableCash * 0.15) / Math.max(1, previousPrices.food),
+        district.population * 0.9,
+        (availableCash * 0.32) / Math.max(1, previousPrices.food),
       ) * priceResponse(BASE_GOODS_PRICES.food, previousPrices.food)
         * workplaceFillRatio * utilityReliability,
       consumerGoods: Math.min(
-        district.population * 0.085 * clamp(district.averageIncome / 55_000, 0.65, 1.5),
-        (availableCash * 0.11) / Math.max(1, previousPrices.consumerGoods),
+        district.population * 0.22 * clamp(district.averageIncome / 55_000, 0.65, 1.5),
+        (availableCash * 0.18) / Math.max(1, previousPrices.consumerGoods),
       ) * priceResponse(BASE_GOODS_PRICES.consumerGoods, previousPrices.consumerGoods)
         * workplaceFillRatio * utilityReliability,
       industrialMaterials: (
@@ -323,15 +328,10 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       const localDraw = localUsed[good] * entry.marketSupply[good] / Math.max(1, localSupplyDaily[good]);
       return Math.max(0, entry.availableGoods[good] - localDraw - goodsExportedByType[good]);
     });
-    const householdSpendingDaily = (
+    const goodsSpendingDaily = (
       goodsConsumedByType.food * prices.food +
       goodsConsumedByType.consumerGoods * prices.consumerGoods
     ) / Math.max(elapsedDays, 1e-9);
-    const householdCash = entry.district.householdWealth + entry.householdIncomeDaily * elapsedDays;
-    const householdWealth = Math.max(
-      0,
-      householdCash - entry.rentPaidDaily * elapsedDays - householdSpendingDaily * elapsedDays,
-    );
     const privateWorkers = privateJobSlots(entry.district) * workplaceFillRatio;
     const civicWorkers = civicJobSlots(entry.district) * civicLaborScale * workplaceFillRatio;
     const privateWageBill = privateWorkers * entry.averageWageDaily;
@@ -365,6 +365,41 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       inboundCommuters * effectiveJobSlots(entry.district, civicLaborScale) / Math.max(1, totalJobs)
     );
     const commuteTripsDaily = (entry.employedResidents + districtExternalCommuters) * 1.82;
+    const transportSpendingDaily = commuteTripsDaily
+      * (1.2 + entry.district.congestionPercent * 0.018)
+      + districtExternalCommuters * 2.8;
+    const taxPaidDaily = entry.householdIncomeDaily * input.taxRate * 0.16;
+    const desiredServices = {
+      healthcare: entry.district.adults * 1.15 + entry.district.seniors * 3.1 + entry.district.children * 0.85,
+      education: entry.district.children * 2.4 + entry.district.adults * 0.18,
+      recreation: entry.district.households * 3.2,
+    };
+    const desiredServiceTotal = sum(Object.values(desiredServices));
+    const serviceBudget = Math.max(
+      0,
+      entry.disposableIncomeDaily - goodsSpendingDaily - transportSpendingDaily,
+    );
+    const serviceScale = desiredServiceTotal > 0
+      ? clamp01(serviceBudget / desiredServiceTotal)
+      : 0;
+    const housingUtilityCost = utilityCostDaily * useWeights.housing;
+    const householdExpensesDaily: HouseholdExpenseLedger = finalizeExpenseLedger({
+      housing: Math.max(0, entry.rentPaidDaily - housingUtilityCost),
+      goods: goodsSpendingDaily,
+      utilities: Math.min(entry.rentPaidDaily, housingUtilityCost),
+      transport: transportSpendingDaily,
+      healthcare: desiredServices.healthcare * serviceScale,
+      education: desiredServices.education * serviceScale,
+      recreation: desiredServices.recreation * serviceScale,
+      taxes: taxPaidDaily,
+      total: 0,
+    });
+    const householdSpendingDaily = householdExpensesDaily.total;
+    const householdCash = entry.district.householdWealth + entry.householdIncomeDaily * elapsedDays;
+    const householdWealth = Math.max(
+      0,
+      householdCash - householdSpendingDaily * elapsedDays,
+    );
     const goodsCoverage = districtDemandTotal > 0 ? sumBasket(goodsConsumedByType) / districtDemandTotal : 1;
     const shoppingTripsDaily = entry.district.households * (0.22 + goodsCoverage * 0.18);
     const density = entry.district.population / Math.max(1, entry.district.width * entry.district.depth);
@@ -378,7 +413,8 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       householdWealth: round(householdWealth),
       householdIncomeDaily: round(entry.householdIncomeDaily),
       householdSpendingDaily: round(householdSpendingDaily),
-      disposableIncomeDaily: round(entry.disposableIncomeDaily),
+      householdExpensesDaily: roundExpenseLedger(householdExpensesDaily),
+      disposableIncomeDaily: round(Math.max(0, entry.householdIncomeDaily - entry.rentPaidDaily - taxPaidDaily)),
       businessRevenueDaily: round(businessRevenueDaily),
       businessCostsDaily: round(businessCostsDaily),
       businessProfitDaily: round(businessProfitDaily),
@@ -428,6 +464,29 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   };
   if (demandTotal <= 0) market.localSupplyPercent = 100;
   return { districts, externalMarkets, market };
+}
+
+function finalizeExpenseLedger(expenses: HouseholdExpenseLedger): HouseholdExpenseLedger {
+  return {
+    ...expenses,
+    total: expenses.housing + expenses.goods + expenses.utilities + expenses.transport
+      + expenses.healthcare + expenses.education + expenses.recreation + expenses.taxes,
+  };
+}
+
+function roundExpenseLedger(expenses: HouseholdExpenseLedger): HouseholdExpenseLedger {
+  const rounded = {
+    housing: round(expenses.housing),
+    goods: round(expenses.goods),
+    utilities: round(expenses.utilities),
+    transport: round(expenses.transport),
+    healthcare: round(expenses.healthcare),
+    education: round(expenses.education),
+    recreation: round(expenses.recreation),
+    taxes: round(expenses.taxes),
+    total: 0,
+  };
+  return finalizeExpenseLedger(rounded);
 }
 
 function privateJobShare(district: CityDistrictState): number {

@@ -7,7 +7,7 @@ import type {
   CitySystemEvent,
   CityTimelinePoint,
 } from "../models/cityTypes";
-import type { UtilityKind } from "../models/types";
+import type { HouseholdExpenseLedger, UtilityKind } from "../models/types";
 import { advanceCityEconomy } from "./cityEconomy";
 import { calendarFromElapsedDays } from "./timeScale";
 
@@ -57,7 +57,8 @@ export function summarizeCitySection(
   const housingCapacity = sum(districts.map((district) => district.housingUnits * 2.45));
   const householdIncomeDaily = sum(districts.map((district) => district.householdIncomeDaily));
   const disposableIncomeDaily = sum(districts.map((district) => district.disposableIncomeDaily));
-  const householdSpendingDaily = sum(districts.map((district) => district.householdSpendingDaily));
+  const householdExpensesDaily = sumExpenseLedgers(districts.map((district) => district.householdExpensesDaily));
+  const householdSpendingDaily = householdExpensesDaily.total;
   const businessRevenueDaily = sum(districts.map((district) => district.businessRevenueDaily));
   const businessCostsDaily = sum(districts.map((district) => district.businessCostsDaily));
   const businessProfitDaily = sum(districts.map((district) => district.businessProfitDaily));
@@ -89,6 +90,7 @@ export function summarizeCitySection(
     householdIncomeDaily: round(householdIncomeDaily),
     disposableIncomeDaily: round(disposableIncomeDaily),
     householdSpendingDaily: round(householdSpendingDaily),
+    householdExpensesDaily,
     businessRevenueDaily: round(businessRevenueDaily),
     businessCostsDaily: round(businessCostsDaily),
     businessProfitDaily: round(businessProfitDaily),
@@ -164,6 +166,7 @@ function advanceCityDay(
     previousMarket: state.market,
     transportCapacity: connectedCapacity,
     elapsedDays,
+    taxRate: state.taxRate,
   });
   state.externalMarkets = economy.externalMarkets;
   state.market = economy.market;
@@ -306,6 +309,25 @@ function advanceCityDay(
   state.metrics = summarizeCitySection(state.districts, state.municipalBudget, state.taxRate, state.links, effectiveUtilityCapacity);
   maybeRecordTimeline(state, previousCalendar.month !== calendar.month || previousCalendar.year !== calendar.year);
   addEvents(state, previousCalendar, calendar, events);
+}
+
+function sumExpenseLedgers(expenses: readonly HouseholdExpenseLedger[]): HouseholdExpenseLedger {
+  const sumField = (field: keyof Omit<HouseholdExpenseLedger, "total">): number =>
+    round(sum(expenses.map((entry) => entry[field])));
+  const result = {
+    housing: sumField("housing"),
+    goods: sumField("goods"),
+    utilities: sumField("utilities"),
+    transport: sumField("transport"),
+    healthcare: sumField("healthcare"),
+    education: sumField("education"),
+    recreation: sumField("recreation"),
+    taxes: sumField("taxes"),
+    total: 0,
+  };
+  result.total = round(result.housing + result.goods + result.utilities + result.transport
+    + result.healthcare + result.education + result.recreation + result.taxes);
+  return result;
 }
 
 function calculateUtilityDemand(district: CityDistrictState): Record<UtilityKind, number> {
@@ -463,6 +485,7 @@ function cloneCityState(state: Readonly<CitySectionState>): CitySectionState {
       goodsConsumedByType: { ...district.goodsConsumedByType },
       goodsImportedByType: { ...district.goodsImportedByType },
       goodsExportedByType: { ...district.goodsExportedByType },
+      householdExpensesDaily: { ...district.householdExpensesDaily },
       utilityDemand: { ...district.utilityDemand },
       utilityCoverage: { ...district.utilityCoverage },
     })),
@@ -485,7 +508,10 @@ function cloneCityState(state: Readonly<CitySectionState>): CitySectionState {
       exportsDaily: { ...state.market.exportsDaily },
       unmetDemandDaily: { ...state.market.unmetDemandDaily },
     },
-    metrics: { ...state.metrics },
+    metrics: {
+      ...state.metrics,
+      householdExpensesDaily: { ...state.metrics.householdExpensesDaily },
+    },
     timeline: state.timeline.map((point) => ({ ...point })),
   };
 }

@@ -434,6 +434,8 @@ describe("economy", () => {
         jobCapacity: 2,
         dailyWage: 200,
         commuteCostDaily: 8,
+        distanceKm: 18,
+        commuteMinutesOneWay: 39,
       },
     });
     const externalWorkers = result.people.filter((person) => person.employmentStatus === "external");
@@ -442,6 +444,8 @@ describe("economy", () => {
     expect(result.economy.externalWorkers).toBe(2);
     expect(externalWorkers.every((person) => person.workBuildingId === OUTSIDE_COMMUTER_BUILDING_ID)).toBe(true);
     expect(externalWorkers.every((person) => person.commuteCostDaily === 8)).toBe(true);
+    expect(externalWorkers.every((person) => person.commuteDistanceKm === 18)).toBe(true);
+    expect(externalWorkers.every((person) => person.commuteMinutesOneWay === 39)).toBe(true);
     expect(result.economy.unemploymentPercent).toBeGreaterThan(0);
 
     const commute = advancePopulation([externalWorkers[0]!], 1440 + 480, result.buildings, {
@@ -458,6 +462,49 @@ describe("economy", () => {
       mode: "car",
       purpose: "work",
     });
+  });
+
+  it("calibrates detailed staffing to city labor targets", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const adults = population.people.filter((person) => person.ageGroup === "adult").length;
+    const result = advanceEconomy({
+      ...population,
+      cityMinute: 1440,
+      laborTargets: { unemploymentPercent: 6, externalWorkerSharePercent: 20 },
+      externalLaborMarket: {
+        name: "Regional Employment Center",
+        jobCapacity: adults,
+        dailyWage: 150,
+        commuteCostDaily: 8,
+        distanceKm: 18,
+        commuteMinutesOneWay: 39,
+      },
+    });
+    const expectedEmployed = Math.round(adults * 0.94);
+    const employed = result.people.filter((person) =>
+      person.employmentStatus === "local" || person.employmentStatus === "external"
+    ).length;
+
+    expect(employed).toBe(expectedEmployed);
+    expect(result.economy.externalWorkers).toBe(Math.round(expectedEmployed * 0.2));
+    expect(result.buildings.reduce((total, building) => total + building.jobCapacity, 0))
+      .toBe(expectedEmployed - result.economy.externalWorkers);
+  });
+
+  it("records a complete budget-limited household expense ledger", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const result = advanceEconomy({ ...population, cityMinute: 1440, taxRate: 0.082 });
+
+    for (const household of result.households) {
+      const expenses = household.dailyExpenses;
+      expect(expenses.total).toBeCloseTo(
+        expenses.housing + expenses.goods + expenses.utilities + expenses.transport
+          + expenses.healthcare + expenses.education + expenses.recreation + expenses.taxes,
+        2,
+      );
+      expect(expenses.total).toBeGreaterThan(0);
+      expect(household.money).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("lays off workers when a business closes or cuts its open positions", () => {

@@ -14,6 +14,9 @@ importers:
       graphology-shortest-path:
         specifier: ^2.1.0
         version: 2.1.0(graphology-types@0.24.8)
+      lucide:
+        specifier: ^1.27.0
+        version: 1.27.0
       three:
         specifier: ^0.185.1
         version: 0.185.1
@@ -650,6 +653,9 @@ packages:
   locate-path@6.0.0:
     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
     engines: {node: '>=10'}
+
+  lucide@1.27.0:
+    resolution: {integrity: sha512-m78hY+pL+dLrVvDEl68oYTdvjXW5Nz0ULDsUfbWfl7lzNDv1kFZGG+bAEm2eGEmUyvpZgAcyRwNhFljIErss3w==}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -1462,6 +1468,8 @@ snapshots:
   locate-path@6.0.0:
     dependencies:
       p-locate: 5.0.0
+
+  lucide@1.27.0: {}
 
   magic-string@0.30.21:
     dependencies:

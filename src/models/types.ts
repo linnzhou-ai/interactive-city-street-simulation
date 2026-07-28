@@ -88,11 +88,25 @@ export interface Person {
   employmentStatus: EmploymentStatus;
   dailyWage: number;
   commuteCostDaily: number;
+  commuteDistanceKm: number;
+  commuteMinutesOneWay: number;
   unemployedDays: number;
   externalWorkplaceName?: string;
   happiness: number;
   money: number;
   tripsCompleted: number;
+}
+
+export interface HouseholdExpenseLedger {
+  housing: number;
+  goods: number;
+  utilities: number;
+  transport: number;
+  healthcare: number;
+  education: number;
+  recreation: number;
+  taxes: number;
+  total: number;
 }
 
 export interface Household {
@@ -108,6 +122,7 @@ export interface Household {
   rentArrears: number;
   unaffordableDays: number;
   happiness: number;
+  dailyExpenses: HouseholdExpenseLedger;
 }
 
 export interface UtilityDemand {
@@ -318,7 +333,9 @@ export interface InfrastructureState {
   roadCondition: number;
   parkingCapacity: number;
   parkingUsed: number;
+  wasteGenerated: number;
   wasteCollected: number;
+  wasteCollectionPercent: number;
 }
 
 export interface SimulationEvent {

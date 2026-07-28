@@ -5,6 +5,8 @@ import type {
   AgentPosition,
   Building,
   BuildingConnectionKind,
+  NetworkEdge,
+  NetworkNode,
   Pedestrian,
   SimulationState,
   TransitStop,
@@ -94,6 +96,10 @@ export function calculateDaylight(timeOfDayMinutes: number, calendarMonth: numbe
   return { daylight, sunriseMinutes, sunsetMinutes, sunProgress };
 }
 
+export function resolveLightingTime(timeOfDayMinutes: number, dayNightCycleEnabled: boolean): number {
+  return dayNightCycleEnabled ? timeOfDayMinutes : 12 * 60;
+}
+
 export function flowForConnection(kind: BuildingConnectionKind): VisibleFlow {
   return kind;
 }
@@ -160,8 +166,10 @@ export class ThreeRenderer {
   private readonly buildings = new Map<string, THREE.Group>();
   private readonly districtMeshes = new Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>>();
   private readonly cityLinkMeshes = new Map<string, THREE.Mesh>();
+  private readonly roadHeatMeshes = new Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>>();
   private readonly transitStopGroups = new Map<string, THREE.Group>();
   private readonly connectionLines = new THREE.Group();
+  private readonly roadHeatGroup = new THREE.Group();
   private selection: SceneSelection = null;
   private visualLayer: VisualLayer = "none";
   private visibleFlows = new Set<VisibleFlow>(["commute", "customer", "supply", "daily-route"]);
@@ -169,6 +177,7 @@ export class ThreeRenderer {
   private visualMetricsCache: VisualMetricsCache | null = null;
   private connectionRenderSignature = "";
   private lastShadowUpdateMs = Number.NEGATIVE_INFINITY;
+  private dayNightCycleEnabled = true;
   private pointerStart: { x: number; y: number } | null = null;
 
   constructor(
@@ -198,7 +207,7 @@ export class ThreeRenderer {
 
     this.buildLighting();
     this.buildStreet();
-    this.scene.add(this.connectionLines);
+    this.scene.add(this.roadHeatGroup, this.connectionLines);
     this.canvas.addEventListener("pointerdown", this.handlePointerDown);
     this.canvas.addEventListener("pointerup", this.handlePointerUp);
   }
@@ -226,6 +235,10 @@ export class ThreeRenderer {
     this.clearConnectionLines();
   }
 
+  setDayNightCycleEnabled(enabled: boolean): void {
+    this.dayNightCycleEnabled = enabled;
+  }
+
   getDetailMode(): SceneDetailMode {
     return this.detailMode;
   }
@@ -247,12 +260,16 @@ export class ThreeRenderer {
     this.syncCityLinks(state.city.links, state.city.districts);
     this.syncCityDistricts(state.city.districts, visualMetrics.districts);
     this.syncBuildings(state.buildings, visualMetrics.buildings);
+    this.syncRoadHeat(state.network.nodes, state.network.edges);
     this.syncTransitStops(state.infrastructure.transitStops, state.network.nodes);
     this.syncVehicles(state.vehicles);
     this.syncPedestrians(state.pedestrians);
     this.syncSelection(state);
     this.syncSelectionDimming(state);
-    this.updateDaylight(state.timeOfDayMinutes, state.calendarMonth);
+    this.updateDaylight(
+      resolveLightingTime(state.timeOfDayMinutes, this.dayNightCycleEnabled),
+      state.calendarMonth,
+    );
 
     this.renderer.render(this.scene, this.camera);
   }
@@ -425,7 +442,7 @@ export class ThreeRenderer {
       roof.position.y = height + 0.13;
       const metrics = visualMetrics.get(state.id);
       body.material.color.set(
-        this.visualLayer === "none" || metrics === undefined
+        this.visualLayer === "none" || this.visualLayer === "congestion" || metrics === undefined
           ? ZONE_COLORS[state.zone]
           : colorForVisualLayer(this.visualLayer, valueForVisualLayer(this.visualLayer, metrics)),
       );
@@ -456,6 +473,55 @@ export class ThreeRenderer {
     this.scene.add(group);
     this.buildings.set(state.id, group);
     return group;
+  }
+
+  private syncRoadHeat(nodes: readonly NetworkNode[], edges: readonly NetworkEdge[]): void {
+    const visible = this.visualLayer === "congestion" && this.detailMode !== "city";
+    this.roadHeatGroup.visible = visible;
+    if (!visible) return;
+
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const roadEdges = edges.filter((edge) => edge.id.startsWith("road-") || edge.id.startsWith("movement-"));
+    const activeIds = new Set<string>();
+    for (const edge of roadEdges) {
+      const start = nodeById.get(edge.from);
+      const end = nodeById.get(edge.to);
+      if (start === undefined || end === undefined) continue;
+      activeIds.add(edge.id);
+      let overlay = this.roadHeatMeshes.get(edge.id);
+      if (overlay === undefined) {
+        const deltaX = (end.x - start.x) * WORLD_SCALE;
+        const deltaZ = (end.z - start.z) * WORLD_SCALE;
+        const length = Math.max(0.2, Math.hypot(deltaX, deltaZ));
+        overlay = mesh(
+          new THREE.BoxGeometry(length, 0.045, edge.id.startsWith("movement-") ? 2.8 : 3.45),
+          new THREE.MeshBasicMaterial({
+            color: colorForVisualLayer("congestion", edge.congestion),
+            transparent: true,
+            opacity: 0.66,
+            depthWrite: false,
+          }),
+        );
+        overlay.position.set(
+          (start.x + end.x) / 2 * WORLD_SCALE,
+          0.29,
+          (start.z + end.z) / 2 * WORLD_SCALE,
+        );
+        overlay.rotation.y = -Math.atan2(deltaZ, deltaX);
+        overlay.renderOrder = 3;
+        this.roadHeatGroup.add(overlay);
+        this.roadHeatMeshes.set(edge.id, overlay);
+      }
+      overlay.material.color.set(colorForVisualLayer("congestion", edge.congestion));
+    }
+
+    for (const [id, overlay] of this.roadHeatMeshes) {
+      if (activeIds.has(id)) continue;
+      this.roadHeatGroup.remove(overlay);
+      overlay.geometry.dispose();
+      overlay.material.dispose();
+      this.roadHeatMeshes.delete(id);
+    }
   }
 
   private syncTransitStops(

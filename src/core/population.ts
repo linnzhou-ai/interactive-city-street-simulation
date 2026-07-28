@@ -118,6 +118,7 @@ export function createPopulation(inputBuildings: readonly Building[], startYear 
         rentArrears: 0,
         unaffordableDays: 0,
         happiness: 72,
+        dailyExpenses: emptyExpenseLedger(),
       });
       archetypeIndex += 1;
     }
@@ -193,6 +194,7 @@ function createPerson(
   incomeBand: IncomeBand,
 ): Person {
   const ageGroup = getAgeGroup(age);
+  const needs = initialNeeds(id, ageGroup);
   return {
     id,
     name: personName(id),
@@ -206,14 +208,30 @@ function createPerson(
     preferredMode: preferredMode(ageGroup, incomeBand),
     schedule: [],
     scheduleDay: 0,
-    needs: initialNeeds(id, ageGroup),
+    needs,
     employmentStatus: ageGroup === "adult" ? "unemployed" : "not-in-labor-force",
     dailyWage: 0,
     commuteCostDaily: 0,
+    commuteDistanceKm: 0,
+    commuteMinutesOneWay: 0,
     unemployedDays: 0,
-    happiness: 72,
+    happiness: needHappinessScore(needs),
     money: STARTING_MONEY[incomeBand],
     tripsCompleted: 0,
+  };
+}
+
+function emptyExpenseLedger(): Household["dailyExpenses"] {
+  return {
+    housing: 0,
+    goods: 0,
+    utilities: 0,
+    transport: 0,
+    healthcare: 0,
+    education: 0,
+    recreation: 0,
+    taxes: 0,
+    total: 0,
   };
 }
 
@@ -404,8 +422,12 @@ function satisfyNeed(person: Person, need: ResidentNeed): void {
 }
 
 function updateNeedHappiness(person: Person): void {
-  const unmet = Object.values(person.needs).reduce((total, value) => total + value, 0) / 5;
-  person.happiness = Math.round(clamp(100 - unmet * 50, 0, 100) * 10) / 10;
+  person.happiness = needHappinessScore(person.needs);
+}
+
+export function needHappinessScore(needs: Readonly<ResidentNeeds>): number {
+  const unmet = Object.values(needs).reduce((total, value) => total + value, 0) / 5;
+  return Math.round(clamp(100 - unmet * 50, 0, 100) * 10) / 10;
 }
 
 function isDue(personIndex: number, day: number, cadence: number): boolean {

@@ -5,18 +5,24 @@ import {
   captureBaseline,
   compareWithBaseline,
   deriveCongestionTripBreakdown,
+  deriveBuildingFinancialFlow,
+  deriveBuildingTrafficInsight,
+  deriveBuildingUtilityInsight,
   deriveHappinessBreakdown,
   deriveMigrationBreakdown,
   derivePersonDailyInsight,
+  derivePersonHappinessInsight,
   derivePriceBreakdowns,
   deriveRepresentationSummary,
 } from "../src/core/insights";
+import { advanceEconomy } from "../src/core/economy";
 import { createInitialLandUse } from "../src/core/landUse";
 import {
   createCitySectionState,
   createDemoCitySectionDefinition,
 } from "../src/core/cityModel";
 import { createPopulation } from "../src/core/population";
+import type { BuildingConnection, NetworkEdge, Vehicle } from "../src/models/types";
 
 function createFixture() {
   const city = advanceCitySection(
@@ -123,12 +129,125 @@ describe("city insight projections", () => {
     expect(first.timeline.every((entry) => entry.buildingName.length > 0)).toBe(true);
     expect(first.accounting.dailyIncome).toBeGreaterThan(0);
     expect(first.accounting.netDailyCash).toBeCloseTo(
-      first.accounting.dailyIncome - first.accounting.commuteCost
-        - first.accounting.personalRentShare - first.accounting.personalGoodsSpending,
+      first.accounting.dailyIncome - first.accounting.personalSpending,
+      8,
+    );
+    expect(first.accounting.personalSpending).toBeCloseTo(
+      Object.entries(first.accounting.expenses)
+        .filter(([key]) => key !== "total")
+        .reduce((total, [, value]) => total + value, 0),
       8,
     );
     expect(first.householdMemberIds).toEqual(household.memberIds);
     expect(first.diagnosis).toContain(person.name);
     expect(["staying", "leaving"]).toContain(first.migrationStatus);
   });
+
+  it("projects business ledgers into a reconciled revenue, cost, and profit flow", () => {
+    const { people, households, buildings } = createFixture();
+    const economy = advanceEconomy({ people, households, buildings, cityMinute: 1_440 });
+    const business = economy.buildings.find((building) => building.buildingUse === "retail")!;
+    const flow = deriveBuildingFinancialFlow(business)!;
+
+    expect(flow.revenue - flow.costs).toBeCloseTo(flow.profit, 8);
+    expect(flow.costSegments.reduce((total, segment) => total + segment.sharePercent, 0)).toBeCloseTo(100, 8);
+    expect(flow.costSegments.reduce((total, segment) => total + segment.value, 0)).toBeCloseTo(flow.costs, 8);
+    expect(flow.resultLabel).toBe("Profit");
+
+    const civicBuilding = economy.buildings.find((building) => building.buildingUse === "school")!;
+    expect(deriveBuildingFinancialFlow(civicBuilding)).toBeNull();
+  });
+
+  it("exposes utility bottlenecks and need-based happiness as visual drivers", () => {
+    const { people, buildings } = createFixture();
+    const utility = deriveBuildingUtilityInsight(buildings[0]!);
+    const personHappiness = derivePersonHappinessInsight(people[0]!);
+
+    expect(utility.coverage.map((row) => row.key)).toEqual(["power", "water", "waste"]);
+    expect(utility.bottleneck.coveragePercent).toBe(Math.min(...utility.coverage.map((row) => row.coveragePercent)));
+    expect(personHappiness.drivers).toHaveLength(5);
+    expect(personHappiness.startingScore - personHappiness.drivers.reduce(
+      (total, driver) => total + driver.penaltyPoints,
+      0,
+    )).toBeCloseTo(personHappiness.score, 8);
+    expect(personHappiness.score).toBe(people[0]!.happiness);
+  });
+
+  it("separates destination activity from actual access-road load", () => {
+    const { buildings } = createFixture();
+    const target = buildings[0]!;
+    const vehicles = [
+      vehicle("commute", target.id, "car", "work", 20),
+      vehicle("freight", target.id, "truck", "delivery", 0),
+    ];
+    const connections = [
+      connection("commute", target.id, 3),
+      connection("customer", target.id, 4),
+      connection("supply", target.id, 5),
+    ];
+    const edges: NetworkEdge[] = [{
+      id: `access-${target.id}-road-in`,
+      from: "road",
+      to: "building",
+      modes: ["car"],
+      length: 1,
+      capacity: 10,
+      freeFlowSpeed: 25,
+      occupancy: 5,
+      congestion: 0.5,
+    }];
+    const insight = deriveBuildingTrafficInsight(target, vehicles, connections, edges);
+
+    expect(insight.activeArrivals).toBe(2);
+    expect(insight.queuedArrivals).toBe(1);
+    expect(insight.averageWaitSeconds).toBe(10);
+    expect(insight.accessLoadPercent).toBe(50);
+    expect(insight.connectedCommutes).toBe(3);
+    expect(insight.connectedVisitors).toBe(4);
+    expect(insight.connectedSupplyUnits).toBe(5);
+    expect(insight.rows.find((row) => row.category === "commute")?.activeArrivals).toBe(1);
+    expect(insight.rows.find((row) => row.category === "freight")?.activeArrivals).toBe(1);
+  });
 });
+
+function vehicle(
+  id: string,
+  destinationBuildingId: string,
+  vehicleType: Vehicle["vehicleType"],
+  tripPurpose: Vehicle["tripPurpose"],
+  waitingSeconds: number,
+): Vehicle {
+  return {
+    id,
+    kind: "vehicle",
+    progress: 0,
+    completed: false,
+    elapsedSeconds: 0,
+    route: [],
+    position: { x: 0, z: 0, headingRadians: 0, segmentId: "road-west-approach" },
+    vehicleType,
+    direction: "eastbound",
+    waitingSeconds,
+    currentSpeedMph: waitingSeconds > 0 ? 0 : 20,
+    occupancy: 1,
+    capacity: 4,
+    tripPurpose,
+    destinationBuildingId,
+    cargoUnits: vehicleType === "truck" ? 10 : 0,
+  };
+}
+
+function connection(
+  kind: BuildingConnection["kind"],
+  destinationBuildingId: string,
+  volume: number,
+): BuildingConnection {
+  return {
+    id: `${kind}-${destinationBuildingId}`,
+    kind,
+    fromBuildingId: `origin-${kind}`,
+    toBuildingId: destinationBuildingId,
+    volume,
+    personIds: [],
+  };
+}

@@ -1,6 +1,6 @@
 import { advanceCitySection } from "./cityEngine";
 import { createCitySectionState, createDemoCitySectionDefinition } from "./cityModel";
-import { advanceEconomy, type ExternalLaborMarket } from "./economy";
+import { advanceEconomy, type DetailedLaborTargets, type ExternalLaborMarket } from "./economy";
 import {
   createInitialInfrastructure,
   updateInfrastructure,
@@ -191,6 +191,8 @@ export class Simulation {
       freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
       consumerPriceIndex: city.market.consumerPriceIndex,
       externalLaborMarket: detailedExternalLaborMarket(city, population.people.length),
+      laborTargets: detailedLaborTargets(city),
+      taxRate: city.taxRate,
     });
 
     this.infrastructure = createInitialInfrastructure(economy.buildings, {
@@ -299,6 +301,8 @@ export class Simulation {
       freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
       consumerPriceIndex: this.state.city.market.consumerPriceIndex,
       externalLaborMarket: detailedExternalLaborMarket(this.state.city, this.state.people.length),
+      laborTargets: detailedLaborTargets(this.state.city),
+      taxRate: this.state.city.taxRate,
     });
     this.state.households = economy.households;
     this.state.people = economy.people;
@@ -512,7 +516,7 @@ export class Simulation {
       jobFillPercent: jobs > 0 ? (this.state.economy.employedWorkers / jobs) * 100 : 100,
       averageLandValue: this.state.landUse.averageLandValue,
       utilityCoveragePercent: utilityCoverage,
-      wasteCollectionPercent: this.state.infrastructure.utilities.waste.coveragePercent,
+      wasteCollectionPercent: this.state.infrastructure.wasteCollectionPercent,
       householdHappiness: happiness,
       cityPopulation: this.state.city.metrics.population,
       districtCount: this.state.city.districts.length,
@@ -606,6 +610,18 @@ function detailedExternalLaborMarket(
     jobCapacity: Math.max(1, Math.round(externalCapacity / Math.max(1, residentsPerRepresentative))),
     dailyWage: Math.max(70, cityWage * 1.04),
     commuteCostDaily: nearest.distanceKm * 0.32,
+    distanceKm: nearest.distanceKm,
+    commuteMinutesOneWay: 8 + nearest.distanceKm / 35 * 60,
+  };
+}
+
+function detailedLaborTargets(city: Readonly<CitySectionState>): DetailedLaborTargets {
+  const outboundCommuters = sum(city.externalMarkets.map((market) => market.outboundCommutersDaily));
+  return {
+    unemploymentPercent: city.metrics.unemploymentPercent,
+    externalWorkerSharePercent: city.metrics.employedResidents > 0
+      ? outboundCommuters / city.metrics.employedResidents * 100
+      : 0,
   };
 }
 

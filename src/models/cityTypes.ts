@@ -1,4 +1,4 @@
-import type { UtilityKind, ZoneType } from "./types";
+import type { HouseholdExpenseLedger, UtilityKind, ZoneType } from "./types";
 
 export type TimeHorizon = "day" | "week" | "month" | "year";
 export type GoodType = "food" | "consumerGoods" | "industrialMaterials";
@@ -108,6 +108,7 @@ export interface CityDistrictState extends CityDistrictDefinition {
   householdWealth: number;
   householdIncomeDaily: number;
   householdSpendingDaily: number;
+  householdExpensesDaily: HouseholdExpenseLedger;
   disposableIncomeDaily: number;
   businessRevenueDaily: number;
   businessCostsDaily: number;
@@ -146,6 +147,7 @@ export interface CityAggregateMetrics {
   householdIncomeDaily: number;
   disposableIncomeDaily: number;
   householdSpendingDaily: number;
+  householdExpensesDaily: HouseholdExpenseLedger;
   businessRevenueDaily: number;
   businessCostsDaily: number;
   businessProfitDaily: number;

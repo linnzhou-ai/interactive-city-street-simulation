@@ -5,8 +5,10 @@ import type {
   CivicServiceKind,
   EconomyState,
   Household,
+  HouseholdExpenseLedger,
   IncomeBand,
   Person,
+  TravelMode,
   TripRequest,
 } from "../models/types";
 import { buildingUtilityDemand, UTILITY_CUSTOMER_RATES } from "./infrastructure";
@@ -17,6 +19,13 @@ export interface ExternalLaborMarket {
   jobCapacity: number;
   dailyWage: number;
   commuteCostDaily: number;
+  distanceKm?: number;
+  commuteMinutesOneWay?: number;
+}
+
+export interface DetailedLaborTargets {
+  unemploymentPercent: number;
+  externalWorkerSharePercent: number;
 }
 
 export interface EconomyStepInput {
@@ -27,6 +36,8 @@ export interface EconomyStepInput {
   freightEntryBuildingId?: string;
   consumerPriceIndex?: number;
   externalLaborMarket?: ExternalLaborMarket;
+  laborTargets?: DetailedLaborTargets;
+  taxRate?: number;
 }
 
 export interface EconomyStepResult {
@@ -68,7 +79,11 @@ export function dailyWageForIncome(incomeBand: IncomeBand): number {
 
 export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
   const people = input.people.map(clonePerson).sort(compareIds);
-  const households = input.households.map((household) => ({ ...household, memberIds: [...household.memberIds] }));
+  const households = input.households.map((household) => ({
+    ...household,
+    memberIds: [...household.memberIds],
+    dailyExpenses: { ...(household.dailyExpenses ?? emptyExpenseLedger()) },
+  }));
   const buildings = input.buildings.map(cloneBuilding);
   const buildingsById = new Map(buildings.map((building) => [building.id, building]));
   const householdsById = new Map(households.map((household) => [household.id, household]));
@@ -77,6 +92,7 @@ export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
   const tripRequests: TripRequest[] = [];
   const events: string[] = [];
   const consumerPriceScale = clamp((input.consumerPriceIndex ?? 100) / 100, 0.65, 1.8);
+  for (const household of households) household.dailyExpenses = emptyExpenseLedger();
 
   initializeMarketState(buildings, consumerPriceScale);
   const closedToday = advanceBusinessClosures(buildings, events);
@@ -91,19 +107,31 @@ export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
     if (shop !== undefined) shop.customerDemand = round(shop.customerDemand + household.consumptionNeed);
   }
 
-  updateLaborDemand(people, buildings, closedToday, consumerPriceScale);
+  const externalLaborMarket = calibratedExternalLaborMarket(
+    input.externalLaborMarket,
+    input.laborTargets,
+    people.filter((person) => person.ageGroup === "adult").length,
+  );
+  updateLaborDemand(
+    people,
+    buildings,
+    closedToday,
+    consumerPriceScale,
+    externalLaborMarket,
+    input.laborTargets,
+  );
   const labor = assignEmployment(
     people,
     buildings,
     buildingsById,
-    input.externalLaborMarket,
+    externalLaborMarket,
   );
 
   buildings.forEach((building) => {
     building.accounting = emptyBuildingAccounting(building);
     building.accounting.workforceChange = labor.workforceChange.get(building.id) ?? 0;
   });
-  const dailyHouseholdIncome = payHouseholds(people, householdsById);
+  const dailyHouseholdIncome = payHouseholds(people, householdsById, input.taxRate ?? 0.082);
   recordBuildingWages(people, buildings);
   recordBuildingFixedCosts(buildings);
   const civicServices = operateCivicServices(people, buildings);
@@ -134,6 +162,7 @@ export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
     buildingsById,
     dailyHouseholdIncome,
     civicServices.coverage,
+    people,
   );
   synchronizePersonalCash(people, householdsById);
   finalizeBuildingAccounting(buildings);
@@ -165,7 +194,7 @@ export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
     goodsExported: supply.exported,
     deliveriesCompleted: supply.deliveries,
     retailSales: retail.unitsSold,
-    householdSpending: retail.spending,
+    householdSpending: round(sum(households.map((household) => household.dailyExpenses.total))),
     businessRevenue: round(businessRevenue),
     propertyRentIncome: round(propertyRentIncome),
     utilityPayments: round(utilityPayments),
@@ -197,6 +226,22 @@ export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
   if (labor.hires > 0) events.push(`${labor.hires} detailed workers found new jobs.`);
 
   return { households, people, buildings, tripRequests, economy, events };
+}
+
+function calibratedExternalLaborMarket(
+  market: ExternalLaborMarket | undefined,
+  targets: DetailedLaborTargets | undefined,
+  adults: number,
+): ExternalLaborMarket | undefined {
+  if (market === undefined || targets === undefined) return market;
+  const targetEmployed = Math.round(adults * (1 - clamp(targets.unemploymentPercent, 0, 100) / 100));
+  return {
+    ...market,
+    jobCapacity: Math.min(
+      market.jobCapacity,
+      Math.round(targetEmployed * clamp(targets.externalWorkerSharePercent, 0, 100) / 100),
+    ),
+  };
 }
 
 function initializeMarketState(buildings: Building[], priceScale: number): void {
@@ -253,6 +298,8 @@ function updateLaborDemand(
   buildings: readonly Building[],
   closedToday: ReadonlySet<string>,
   priceScale: number,
+  externalMarket: ExternalLaborMarket | undefined,
+  laborTargets: DetailedLaborTargets | undefined,
 ): void {
   const adults = people.filter((person) => person.ageGroup === "adult").length;
   const serviceDemand: Record<Exclude<CivicServiceKind, "none">, number> = {
@@ -299,6 +346,15 @@ function updateLaborDemand(
       ) desired = Math.ceil(desired * 1.08);
     }
     desiredByBuilding.set(building.id, clamp(Math.max(operatingModelFor(building) === "business" ? 1 : 0, desired), 0, maximum));
+  }
+
+  if (laborTargets !== undefined) {
+    const targetEmployed = Math.round(adults * (1 - clamp(laborTargets.unemploymentPercent, 0, 100) / 100));
+    const targetExternal = Math.min(
+      externalMarket?.jobCapacity ?? 0,
+      Math.round(targetEmployed * clamp(laborTargets.externalWorkerSharePercent, 0, 100) / 100),
+    );
+    scaleLaborDemand(desiredByBuilding, buildings, Math.max(0, targetEmployed - targetExternal), closedToday);
   }
 
   const laborTightness = sum([...desiredByBuilding.values()]) / Math.max(1, adults);
@@ -352,6 +408,51 @@ function updateLaborDemand(
   }
 }
 
+function scaleLaborDemand(
+  desiredByBuilding: Map<string, number>,
+  buildings: readonly Building[],
+  targetPositions: number,
+  closedToday: ReadonlySet<string>,
+): void {
+  const candidates = buildings
+    .filter((building) =>
+      !closedToday.has(building.id)
+      && (building.maximumJobCapacity ?? building.jobCapacity) > 0
+      && (desiredByBuilding.get(building.id) ?? 0) > 0
+    )
+    .map((building) => ({
+      building,
+      weight: desiredByBuilding.get(building.id) ?? 0,
+      maximum: Math.max(0, building.maximumJobCapacity ?? building.jobCapacity),
+      assigned: 0,
+      remainder: 0,
+    }));
+  const totalWeight = sum(candidates.map((candidate) => candidate.weight));
+  if (totalWeight <= 0) return;
+
+  for (const candidate of candidates) {
+    const exact = targetPositions * candidate.weight / totalWeight;
+    candidate.assigned = Math.min(candidate.maximum, Math.floor(exact));
+    candidate.remainder = exact - Math.floor(exact);
+  }
+  let remaining = Math.max(0, targetPositions - sum(candidates.map((candidate) => candidate.assigned)));
+  const allocationOrder = [...candidates].sort(
+    (left, right) => right.remainder - left.remainder || left.building.id.localeCompare(right.building.id),
+  );
+  while (remaining > 0) {
+    const available = allocationOrder.find((candidate) => candidate.assigned < candidate.maximum);
+    if (available === undefined) break;
+    available.assigned += 1;
+    remaining -= 1;
+    allocationOrder.sort(
+      (left, right) => (left.assigned / Math.max(1, left.maximum)) - (right.assigned / Math.max(1, right.maximum))
+        || right.remainder - left.remainder
+        || left.building.id.localeCompare(right.building.id),
+    );
+  }
+  for (const candidate of candidates) desiredByBuilding.set(candidate.building.id, candidate.assigned);
+}
+
 interface LaborMarketResult {
   hires: number;
   layoffs: number;
@@ -388,18 +489,21 @@ function assignEmployment(
       person.employmentStatus = "not-in-labor-force";
       person.dailyWage = 0;
       person.commuteCostDaily = 0;
+      person.commuteDistanceKm = 0;
+      person.commuteMinutesOneWay = 0;
       person.unemployedDays = 0;
       continue;
     }
 
     const previousId = person.workBuildingId;
+    const home = buildingsById.get(person.homeBuildingId);
     const previousLocal = previousId === undefined ? undefined : buildingsById.get(previousId);
     if (
       previousLocal !== undefined
       && workplaces.includes(previousLocal)
       && previousLocal.employeeIds.length < previousLocal.jobCapacity
     ) {
-      assignLocalJob(person, previousLocal);
+      assignLocalJob(person, previousLocal, home);
       continue;
     }
     if (
@@ -434,7 +538,7 @@ function assignEmployment(
       externalWorkers += 1;
       hires += 1;
     } else if (local !== undefined) {
-      assignLocalJob(person, local.workplace);
+      assignLocalJob(person, local.workplace, home);
       hires += 1;
     } else {
       person.unemployedDays += 1;
@@ -455,11 +559,16 @@ function assignEmployment(
   };
 }
 
-function assignLocalJob(person: Person, workplace: Building): void {
+function assignLocalJob(person: Person, workplace: Building, home: Building | undefined): void {
   person.workBuildingId = workplace.id;
   person.employmentStatus = "local";
   person.dailyWage = round((workplace.wageOffer ?? baseWageFor(workplace)) * skillWageMultiplier(person.incomeBand));
-  person.commuteCostDaily = 0;
+  const distanceKm = home === undefined
+    ? 0
+    : Math.hypot(workplace.x - home.x, workplace.z - home.z) * 0.012;
+  person.commuteDistanceKm = round(distanceKm);
+  person.commuteMinutesOneWay = round(localCommuteMinutes(distanceKm, person.preferredMode));
+  person.commuteCostDaily = round(localCommuteCost(distanceKm, person.preferredMode));
   person.unemployedDays = 0;
   person.externalWorkplaceName = undefined;
   workplace.employeeIds.push(person.id);
@@ -470,6 +579,10 @@ function assignExternalJob(person: Person, market: ExternalLaborMarket): void {
   person.employmentStatus = "external";
   person.dailyWage = round(market.dailyWage * skillWageMultiplier(person.incomeBand));
   person.commuteCostDaily = round(market.commuteCostDaily);
+  person.commuteDistanceKm = round(market.distanceKm ?? 0);
+  person.commuteMinutesOneWay = round(
+    market.commuteMinutesOneWay ?? externalCommuteMinutes(market.distanceKm ?? 0),
+  );
   person.unemployedDays = 0;
   person.externalWorkplaceName = market.name;
 }
@@ -479,6 +592,8 @@ function clearEmployment(person: Person): void {
   person.employmentStatus = "unemployed";
   person.dailyWage = 0;
   person.commuteCostDaily = 0;
+  person.commuteDistanceKm = 0;
+  person.commuteMinutesOneWay = 0;
   person.externalWorkplaceName = undefined;
 }
 
@@ -487,9 +602,27 @@ function localJobScore(person: Person, workplace: Building, home: Building | und
   return (workplace.wageOffer ?? baseWageFor(workplace)) * skillWageMultiplier(person.incomeBand) - distanceCost;
 }
 
+function localCommuteMinutes(distanceKm: number, mode: TravelMode): number {
+  if (distanceKm <= 0) return 0;
+  const speedKph = mode === "walk" ? 4.8 : mode === "bus" ? 19 : 28;
+  const accessMinutes = mode === "walk" ? 1 : mode === "bus" ? 6 : 3;
+  return Math.max(3, distanceKm / speedKph * 60 + accessMinutes);
+}
+
+function localCommuteCost(distanceKm: number, mode: TravelMode): number {
+  if (mode === "walk" || distanceKm <= 0) return 0;
+  if (mode === "bus") return 4.5;
+  return distanceKm * 2 * 0.42;
+}
+
+function externalCommuteMinutes(distanceKm: number): number {
+  return distanceKm <= 0 ? 0 : 8 + distanceKm / 35 * 60;
+}
+
 function payHouseholds(
   people: Person[],
   householdsById: ReadonlyMap<string, Household>,
+  taxRate: number,
 ): Map<string, number> {
   const incomeByHousehold = new Map<string, number>();
   for (const person of people) {
@@ -499,12 +632,19 @@ function payHouseholds(
         : person.ageGroup === "senior"
           ? 45
           : 0;
-    const netIncome = Math.max(0, income - person.commuteCostDaily);
-    incomeByHousehold.set(person.householdId, round((incomeByHousehold.get(person.householdId) ?? 0) + netIncome));
+    incomeByHousehold.set(person.householdId, round((incomeByHousehold.get(person.householdId) ?? 0) + income));
+    const household = householdsById.get(person.householdId);
+    if (household !== undefined) {
+      household.dailyExpenses.transport = round(household.dailyExpenses.transport + person.commuteCostDaily);
+    }
   }
   for (const [householdId, income] of incomeByHousehold) {
     const household = householdsById.get(householdId);
-    if (household !== undefined) household.money = round(household.money + income);
+    if (household !== undefined) {
+      const taxes = round(income * clamp(taxRate, 0, 0.5) * 0.16);
+      household.dailyExpenses.taxes = taxes;
+      household.money = round(household.money + Math.max(0, income - taxes - household.dailyExpenses.transport));
+    }
   }
   return incomeByHousehold;
 }
@@ -599,14 +739,24 @@ function serveHouseholds(
   buildingsById: ReadonlyMap<string, Building>,
   dailyIncome: ReadonlyMap<string, number>,
   civicServiceCoverage: number,
-): { goodsConsumed: number; unitsSold: number; spending: number } {
+  people: readonly Person[],
+): { goodsConsumed: number; unitsSold: number } {
   let goodsConsumed = 0;
   let unitsSold = 0;
-  let spending = 0;
   const remainingSalesCapacity = new Map(shops.map((shop) => [
     shop.id,
     Math.max(0, shop.jobCapacity * 28 * businessOperatingRatio(shop)),
   ]));
+  const householdsPerHome = new Map<string, number>();
+  const membersByHousehold = new Map<string, Person[]>();
+  for (const household of households) {
+    householdsPerHome.set(household.homeBuildingId, (householdsPerHome.get(household.homeBuildingId) ?? 0) + 1);
+  }
+  for (const person of people) {
+    const members = membersByHousehold.get(person.householdId) ?? [];
+    members.push(person);
+    membersByHousehold.set(person.householdId, members);
+  }
 
   for (const household of households.sort(compareIds)) {
     const home = buildingsById.get(household.homeBuildingId);
@@ -625,6 +775,14 @@ function serveHouseholds(
       const accounting = requireAccounting(home);
       accounting.rentIncome = round(accounting.rentIncome + rentPaid);
       accounting.revenue = accounting.rentIncome;
+      const utilityShare = Math.min(
+        rentPaid,
+        accounting.utilityCost / Math.max(1, householdsPerHome.get(home.id) ?? 1),
+      );
+      household.dailyExpenses.utilities = round(utilityShare);
+      household.dailyExpenses.housing = round(rentPaid - utilityShare);
+    } else {
+      household.dailyExpenses.housing = round(rentPaid);
     }
     const consumed = round(Math.min(household.goods, household.consumptionNeed));
     household.goods = round(household.goods - consumed);
@@ -646,6 +804,7 @@ function serveHouseholds(
       household.goods = round(household.goods + purchased);
       const cost = round(purchased * (shop.retailPrice ?? RETAIL_PRICE));
       household.money = round(household.money - cost);
+      household.dailyExpenses.goods = round(household.dailyExpenses.goods + cost);
       if (purchased > 0) {
         const accounting = requireAccounting(shop);
         accounting.goodsSold = round(accounting.goodsSold + purchased);
@@ -653,8 +812,10 @@ function serveHouseholds(
         accounting.customers += 1;
       }
       unitsSold = round(unitsSold + purchased);
-      spending = round(spending + cost);
     }
+
+    chargeHouseholdServices(household, membersByHousehold.get(household.id) ?? [], householdIncome);
+    household.dailyExpenses = finalizeExpenseLedger(household.dailyExpenses);
 
     const consumptionRatio = household.consumptionNeed === 0 ? 1 : consumed / household.consumptionNeed;
     const rentRatio = homeRent / Math.max(1, householdIncome);
@@ -668,7 +829,55 @@ function serveHouseholds(
     ));
   }
 
-  return { goodsConsumed, unitsSold, spending };
+  return { goodsConsumed, unitsSold };
+}
+
+function chargeHouseholdServices(
+  household: Household,
+  members: readonly Person[],
+  dailyIncome: number,
+): void {
+  const desired = {
+    healthcare: sum(members.map((person) => person.ageGroup === "senior" ? 3.1 : person.ageGroup === "child" ? 0.85 : 1.15))
+      + members.filter((person) => hasScheduledActivity(person, "healthcare")).length * 5,
+    education: members.filter((person) => person.ageGroup === "child").length * 2.4
+      + members.filter((person) => hasScheduledActivity(person, "library")).length * 0.75,
+    recreation: household.familySize * 2.2
+      + members.filter((person) => hasScheduledActivity(person, "leisure")).length * 1.2,
+  };
+  const desiredTotal = desired.healthcare + desired.education + desired.recreation;
+  const budget = Math.min(household.money, Math.max(0, dailyIncome * 0.16));
+  const scale = desiredTotal > 0 ? Math.min(1, budget / desiredTotal) : 0;
+  household.dailyExpenses.healthcare = round(desired.healthcare * scale);
+  household.dailyExpenses.education = round(desired.education * scale);
+  household.dailyExpenses.recreation = round(desired.recreation * scale);
+  household.money = round(household.money - (
+    household.dailyExpenses.healthcare
+    + household.dailyExpenses.education
+    + household.dailyExpenses.recreation
+  ));
+}
+
+function emptyExpenseLedger(): HouseholdExpenseLedger {
+  return {
+    housing: 0,
+    goods: 0,
+    utilities: 0,
+    transport: 0,
+    healthcare: 0,
+    education: 0,
+    recreation: 0,
+    taxes: 0,
+    total: 0,
+  };
+}
+
+function finalizeExpenseLedger(expenses: HouseholdExpenseLedger): HouseholdExpenseLedger {
+  return {
+    ...expenses,
+    total: round(expenses.housing + expenses.goods + expenses.utilities + expenses.transport
+      + expenses.healthcare + expenses.education + expenses.recreation + expenses.taxes),
+  };
 }
 
 function calculateEmployment(

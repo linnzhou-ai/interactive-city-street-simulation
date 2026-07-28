@@ -150,7 +150,9 @@ export function createInitialInfrastructure(
       roadCondition: bounded(options.roadCondition, 92, 0, 100),
       parkingCapacity,
       parkingUsed,
+      wasteGenerated: 0,
       wasteCollected: 0,
+      wasteCollectionPercent: 100,
     },
   };
 }
@@ -180,6 +182,9 @@ export function updateInfrastructure(
         buildingUtilityDemand(building, "waste") * elapsedDays,
     ]),
   );
+  const generatedThisUpdate = sum(buildings.map((building) =>
+    buildingUtilityDemand(building, "waste") * elapsedDays
+  ));
   const wasteCollectionAllocation = allocateUtility(
     buildings,
     networks.waste,
@@ -265,7 +270,11 @@ export function updateInfrastructure(
     roadCondition: round(roadCondition),
     parkingCapacity: round(parkingCapacity),
     parkingUsed: round(parkingUsed),
+    wasteGenerated: round(infrastructure.state.wasteGenerated + generatedThisUpdate),
     wasteCollected: round(infrastructure.state.wasteCollected + collectedThisUpdate),
+    wasteCollectionPercent: elapsedDays > 0 && generatedThisUpdate > 0
+      ? round(clamp(collectedThisUpdate / generatedThisUpdate, 0, 1) * 100)
+      : infrastructure.state.wasteCollectionPercent,
   };
 
   return {

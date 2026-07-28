@@ -8,6 +8,7 @@ import type {
   ExternalMarketDefinition,
   GoodsBasket,
 } from "../models/cityTypes";
+import type { HouseholdExpenseLedger } from "../models/types";
 import {
   advanceCityEconomy,
   createExternalMarketState,
@@ -27,6 +28,7 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     previousMarket: market,
     transportCapacity: initialDistrictTransportCapacity(districts, definition.links),
     elapsedDays: 1,
+    taxRate: definition.taxRate,
   });
   const seededDistricts = seededEconomy.districts.map(initializeDistrictIndicators);
   const metrics = summarizeInitialCity(seededDistricts, definition.startingBudget);
@@ -220,6 +222,7 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
     householdWealth: households * 420,
     householdIncomeDaily: 0,
     householdSpendingDaily: 0,
+    householdExpensesDaily: emptyExpenseLedger(),
     disposableIncomeDaily: 0,
     businessRevenueDaily: 0,
     businessCostsDaily: 0,
@@ -261,6 +264,7 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
   const businessRevenueDaily = sum(districts.map((district) => district.businessRevenueDaily));
   const businessCostsDaily = sum(districts.map((district) => district.businessCostsDaily));
   const businessProfitDaily = sum(districts.map((district) => district.businessProfitDaily));
+  const householdExpensesDaily = sumExpenseLedgers(districts.map((district) => district.householdExpensesDaily));
   return {
     population,
     households: sum(districts.map((district) => district.households)),
@@ -271,7 +275,8 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     grossCityProductDaily: businessRevenueDaily,
     householdIncomeDaily: sum(districts.map((district) => district.householdIncomeDaily)),
     disposableIncomeDaily: sum(districts.map((district) => district.disposableIncomeDaily)),
-    householdSpendingDaily: sum(districts.map((district) => district.householdSpendingDaily)),
+    householdSpendingDaily: householdExpensesDaily.total,
+    householdExpensesDaily,
     businessRevenueDaily,
     businessCostsDaily,
     businessProfitDaily,
@@ -305,6 +310,37 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     municipalBalance: budget,
     happiness: weightedAverage(districts, "happiness"),
   };
+}
+
+function emptyExpenseLedger(): HouseholdExpenseLedger {
+  return {
+    housing: 0,
+    goods: 0,
+    utilities: 0,
+    transport: 0,
+    healthcare: 0,
+    education: 0,
+    recreation: 0,
+    taxes: 0,
+    total: 0,
+  };
+}
+
+function sumExpenseLedgers(expenses: readonly HouseholdExpenseLedger[]): HouseholdExpenseLedger {
+  const result = emptyExpenseLedger();
+  for (const entry of expenses) {
+    result.housing += entry.housing;
+    result.goods += entry.goods;
+    result.utilities += entry.utilities;
+    result.transport += entry.transport;
+    result.healthcare += entry.healthcare;
+    result.education += entry.education;
+    result.recreation += entry.recreation;
+    result.taxes += entry.taxes;
+  }
+  result.total = result.housing + result.goods + result.utilities + result.transport
+    + result.healthcare + result.education + result.recreation + result.taxes;
+  return result;
 }
 
 function initializeDistrictIndicators(district: CityDistrictState): CityDistrictState {

@@ -5,6 +5,7 @@ import {
   flowForConnection,
   isVisiblePedestrianSegment,
   isVisibleVehicleSegment,
+  resolveLightingTime,
   resolveSceneDetailMode,
   valueForVisualLayer,
   type VisualLayer,
@@ -49,6 +50,11 @@ describe("simulation daylight", () => {
     expect(winterNoon.sunriseMinutes).toBeGreaterThan(7 * 60);
     expect(summer.sunriseMinutes).toBeLessThan(6 * 60);
     expect(summer.sunsetMinutes).toBeGreaterThan(18 * 60);
+  });
+
+  it("keeps the simulation clock but fixes lighting at midday when the cycle is disabled", () => {
+    expect(resolveLightingTime(23 * 60, true)).toBe(23 * 60);
+    expect(resolveLightingTime(23 * 60, false)).toBe(12 * 60);
   });
 });
 

@@ -5,11 +5,18 @@ import type {
 } from "../models/cityTypes";
 import type {
   Building,
+  BuildingAccounting,
+  BuildingConnection,
   Household,
+  HouseholdExpenseLedger,
+  NetworkEdge,
   Person,
+  ResidentNeed,
   TravelMode,
+  Vehicle,
 } from "../models/types";
 import { BASE_GOODS_PRICES, GOODS } from "./cityEconomy";
+import { needHappinessScore } from "./population";
 
 export interface InsightContribution {
   key: string;
@@ -110,6 +117,8 @@ export interface PersonDailyAccounting {
   commuteCost: number;
   personalRentShare: number;
   personalGoodsSpending: number;
+  personalSpending: number;
+  expenses: HouseholdExpenseLedger;
   netDailyCash: number;
   personalCash: number;
   sharedHouseholdCash: number;
@@ -125,6 +134,206 @@ export interface PersonDailyInsight {
   migrationStatus: "staying" | "leaving";
   migrationRatePercent: number;
   diagnosis: string;
+}
+
+export interface BuildingFinancialCost {
+  key: "wages" | "supplies" | "transport" | "occupancy" | "maintenance" | "utilities" | "other";
+  label: string;
+  value: number;
+  sharePercent: number;
+}
+
+export interface BuildingFinancialFlow {
+  revenueLabel: "Revenue" | "Rent revenue";
+  revenue: number;
+  costs: number;
+  resultLabel: "Profit" | "Net income";
+  profit: number;
+  costSegments: BuildingFinancialCost[];
+}
+
+export interface UtilityCoverageRow {
+  key: "power" | "water" | "waste";
+  label: string;
+  coveragePercent: number;
+}
+
+export interface BuildingUtilityInsight {
+  efficiencyPercent: number;
+  coverage: UtilityCoverageRow[];
+  bottleneck: UtilityCoverageRow;
+  wasteStored: number;
+}
+
+export type BuildingTrafficCategory = "commute" | "visits" | "freight" | "service";
+
+export interface BuildingTrafficRow {
+  category: BuildingTrafficCategory;
+  label: string;
+  activeArrivals: number;
+  sharePercent: number;
+}
+
+export interface BuildingTrafficInsight {
+  activeArrivals: number;
+  queuedArrivals: number;
+  averageWaitSeconds: number;
+  accessLoadPercent: number;
+  connectedCommutes: number;
+  connectedVisitors: number;
+  connectedSupplyUnits: number;
+  rows: BuildingTrafficRow[];
+}
+
+export interface PersonHappinessDriver {
+  need: ResidentNeed;
+  label: string;
+  unmetPercent: number;
+  penaltyPoints: number;
+}
+
+export interface PersonHappinessInsight {
+  startingScore: number;
+  score: number;
+  drivers: PersonHappinessDriver[];
+}
+
+export function deriveBuildingFinancialFlow(
+  building: Readonly<Building>,
+  accounting: Readonly<BuildingAccounting> | undefined = building.accounting,
+): BuildingFinancialFlow | null {
+  if (
+    accounting === undefined
+    || accounting.operatingModel === "civic"
+    || accounting.operatingModel === "amenity"
+  ) {
+    return null;
+  }
+
+  const costs = Math.max(0, accounting.operatingCost);
+  const possibleSegments: Array<Omit<BuildingFinancialCost, "sharePercent">> = [
+    { key: "wages", label: "Wages", value: Math.max(0, accounting.dailyWages) },
+    { key: "supplies", label: "Supplies", value: Math.max(0, accounting.supplyCost) },
+    { key: "transport", label: "Transport", value: Math.max(0, accounting.transportCost) },
+    { key: "occupancy", label: "Property rent", value: Math.max(0, accounting.occupancyCost) },
+    { key: "maintenance", label: "Maintenance", value: Math.max(0, accounting.maintenanceCost) },
+    { key: "utilities", label: "Utilities", value: Math.max(0, accounting.utilityCost) },
+  ];
+  const rawSegments = possibleSegments.filter((segment) => segment.value > 0);
+  const explainedCosts = sum(rawSegments.map((segment) => segment.value));
+  const remainder = costs - explainedCosts;
+  if (remainder > 0.01) {
+    rawSegments.push({ key: "other", label: "Other costs", value: remainder });
+  }
+  if (rawSegments.length === 0 && costs > 0) {
+    rawSegments.push({ key: "other", label: "Other costs", value: costs });
+  }
+  const segmentTotal = sum(rawSegments.map((segment) => segment.value));
+  const costSegments = rawSegments.map((segment): BuildingFinancialCost => ({
+    ...segment,
+    sharePercent: segmentTotal > 0 ? segment.value / segmentTotal * 100 : 0,
+  }));
+
+  const housing = accounting.operatingModel === "housing" || building.buildingUse === "housing";
+  return {
+    revenueLabel: housing ? "Rent revenue" : "Revenue",
+    revenue: Math.max(0, housing ? accounting.rentIncome : accounting.revenue),
+    costs,
+    resultLabel: housing ? "Net income" : "Profit",
+    profit: accounting.profit,
+    costSegments,
+  };
+}
+
+export function deriveBuildingUtilityInsight(building: Readonly<Building>): BuildingUtilityInsight {
+  const labels: Record<UtilityCoverageRow["key"], string> = {
+    power: "Power",
+    water: "Water",
+    waste: "Waste",
+  };
+  const coverage = (Object.keys(labels) as UtilityCoverageRow["key"][]).map((key) => ({
+    key,
+    label: labels[key],
+    coveragePercent: clamp(building.utilityService[key], 0, 1) * 100,
+  }));
+  const bottleneck = [...coverage].sort((left, right) => left.coveragePercent - right.coveragePercent)[0]!;
+  return {
+    efficiencyPercent: clamp(building.efficiency, 0, 1) * 100,
+    coverage,
+    bottleneck,
+    wasteStored: Math.max(0, building.wasteStored),
+  };
+}
+
+export function deriveBuildingTrafficInsight(
+  building: Readonly<Building>,
+  vehicles: readonly Vehicle[],
+  connections: readonly BuildingConnection[],
+  networkEdges: readonly NetworkEdge[],
+): BuildingTrafficInsight {
+  const arrivals = vehicles.filter((vehicle) =>
+    !vehicle.completed && vehicle.destinationBuildingId === building.id
+  );
+  const categoryFor = (vehicle: Readonly<Vehicle>): BuildingTrafficCategory => {
+    if (vehicle.tripPurpose === "work") return "commute";
+    if (vehicle.tripPurpose === "delivery" || vehicle.vehicleType === "truck") return "freight";
+    if (vehicle.tripPurpose === "service" || vehicle.vehicleType === "service") return "service";
+    return "visits";
+  };
+  const counts: Record<BuildingTrafficCategory, number> = {
+    commute: 0,
+    visits: 0,
+    freight: 0,
+    service: 0,
+  };
+  arrivals.forEach((vehicle) => { counts[categoryFor(vehicle)] += 1; });
+  const labels: Record<BuildingTrafficCategory, string> = {
+    commute: "Commute",
+    visits: "Shopping & visits",
+    freight: "Freight",
+    service: "Service",
+  };
+  const inboundConnections = connections.filter((connection) => connection.toBuildingId === building.id);
+  const accessEdges = networkEdges.filter((edge) => edge.id.startsWith(`access-${building.id}-road`));
+  const averageWaitSeconds = arrivals.length > 0
+    ? sum(arrivals.map((vehicle) => vehicle.waitingSeconds)) / arrivals.length
+    : 0;
+  return {
+    activeArrivals: arrivals.length,
+    queuedArrivals: arrivals.filter((vehicle) => vehicle.waitingSeconds > 0.5).length,
+    averageWaitSeconds,
+    accessLoadPercent: average(accessEdges.map((edge) => clamp(edge.congestion, 0, 1))) * 100,
+    connectedCommutes: sum(inboundConnections.filter((connection) => connection.kind === "commute").map((connection) => connection.volume)),
+    connectedVisitors: sum(inboundConnections.filter((connection) => connection.kind === "customer").map((connection) => connection.volume)),
+    connectedSupplyUnits: sum(inboundConnections.filter((connection) => connection.kind === "supply").map((connection) => connection.volume)),
+    rows: (Object.keys(counts) as BuildingTrafficCategory[]).map((category) => ({
+      category,
+      label: labels[category],
+      activeArrivals: counts[category],
+      sharePercent: arrivals.length > 0 ? counts[category] / arrivals.length * 100 : 0,
+    })),
+  };
+}
+
+export function derivePersonHappinessInsight(person: Readonly<Person>): PersonHappinessInsight {
+  const labels: Record<ResidentNeed, string> = {
+    education: "Education",
+    goods: "Goods access",
+    health: "Health care",
+    community: "Community",
+    recreation: "Recreation",
+  };
+  const drivers = (Object.keys(labels) as ResidentNeed[]).map((need): PersonHappinessDriver => ({
+    need,
+    label: labels[need],
+    unmetPercent: clamp(person.needs[need], 0, 1) * 100,
+    penaltyPoints: clamp(person.needs[need], 0, 1) * 10,
+  }));
+  return {
+    startingScore: 100,
+    score: needHappinessScore(person.needs),
+    drivers,
+  };
 }
 
 export function deriveRepresentationSummary(
@@ -339,15 +548,22 @@ export function derivePersonDailyInsight(
       ? person.dailyWage > 0 ? person.dailyWage : workDistrict?.averageWageDaily ?? 0
       : 0;
   const familySize = Math.max(1, household.familySize);
-  const personalRentShare = household.rentPerDay / familySize;
-  const averageHouseholdGoodsSpending = city.metrics.householdSpendingDaily / Math.max(1, city.metrics.households);
-  const personalGoodsSpending = averageHouseholdGoodsSpending / familySize;
+  const householdExpenses = household.dailyExpenses.total > 0
+    ? household.dailyExpenses
+    : divideExpenseLedger(city.metrics.householdExpensesDaily, Math.max(1, city.metrics.households));
+  const expenses = divideExpenseLedger(householdExpenses, familySize);
+  expenses.transport = person.commuteCostDaily;
+  expenses.total = sumExpenseLedger(expenses);
+  const personalRentShare = expenses.housing + expenses.utilities;
+  const personalGoodsSpending = expenses.goods;
   const accounting: PersonDailyAccounting = {
     dailyIncome,
-    commuteCost: person.commuteCostDaily,
+    commuteCost: expenses.transport,
     personalRentShare,
     personalGoodsSpending,
-    netDailyCash: dailyIncome - person.commuteCostDaily - personalRentShare - personalGoodsSpending,
+    personalSpending: expenses.total,
+    expenses,
+    netDailyCash: dailyIncome - expenses.total,
     personalCash: person.money,
     sharedHouseholdCash: household.money,
   };
@@ -380,6 +596,31 @@ export function derivePersonDailyInsight(
     migrationRatePercent: migrationRate * 100,
     diagnosis,
   };
+}
+
+function divideExpenseLedger(
+  expenses: Readonly<HouseholdExpenseLedger>,
+  divisor: number,
+): HouseholdExpenseLedger {
+  const safeDivisor = Math.max(1, divisor);
+  const divided = {
+    housing: expenses.housing / safeDivisor,
+    goods: expenses.goods / safeDivisor,
+    utilities: expenses.utilities / safeDivisor,
+    transport: expenses.transport / safeDivisor,
+    healthcare: expenses.healthcare / safeDivisor,
+    education: expenses.education / safeDivisor,
+    recreation: expenses.recreation / safeDivisor,
+    taxes: expenses.taxes / safeDivisor,
+    total: 0,
+  };
+  divided.total = sumExpenseLedger(divided);
+  return divided;
+}
+
+function sumExpenseLedger(expenses: Readonly<HouseholdExpenseLedger>): number {
+  return expenses.housing + expenses.goods + expenses.utilities + expenses.transport
+    + expenses.healthcare + expenses.education + expenses.recreation + expenses.taxes;
 }
 
 function derivePriceBreakdown(city: Readonly<CitySectionState>, good: GoodType): PriceBreakdown {

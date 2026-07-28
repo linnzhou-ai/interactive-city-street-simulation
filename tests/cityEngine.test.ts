@@ -85,6 +85,10 @@ describe("city section model", () => {
     expect(state.market.localSupplyDaily.consumerGoods).toBeGreaterThan(0);
     expect(state.metrics.householdIncomeDaily).toBeGreaterThan(0);
     expect(state.metrics.householdSpendingDaily).toBeGreaterThan(0);
+    expect(state.metrics.householdSpendingDaily / state.metrics.households).toBeGreaterThan(50);
+    expect(state.metrics.householdExpensesDaily.total).toBeCloseTo(state.metrics.householdSpendingDaily, 2);
+    expect(state.metrics.householdExpensesDaily.goods).toBeGreaterThan(0);
+    expect(state.metrics.householdExpensesDaily.transport).toBeGreaterThan(0);
     expect(state.metrics.businessRevenueDaily).toBeGreaterThan(0);
     expect(state.metrics.commuteTripsDaily).toBeGreaterThan(0);
     expect(state.metrics.shoppingTripsDaily).toBeGreaterThan(0);
