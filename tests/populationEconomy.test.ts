@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { advanceEconomy } from "../src/core/economy";
 import { advancePopulation, createPopulation } from "../src/core/population";
 import { deriveBuildingConnections } from "../src/core/observability";
+import { createInitialInfrastructure, updateInfrastructure } from "../src/core/infrastructure";
+import { createInitialLandUse } from "../src/core/landUse";
+import { OUTSIDE_COMMUTER_BUILDING_ID } from "../src/core/network";
 import type { Building } from "../src/models/types";
 
 describe("population", () => {
@@ -23,6 +26,8 @@ describe("population", () => {
     expect(first.people.filter((person) => person.ageGroup === "child").every((person) => person.schoolBuildingId === "school"))
       .toBe(true);
     expect(first.people.filter((person) => person.ageGroup === "adult").some((person) => person.workBuildingId !== undefined))
+      .toBe(true);
+    expect(first.people.every((person) => Object.values(person.needs).every((need) => need >= 0 && need <= 1)))
       .toBe(true);
   });
 
@@ -72,6 +77,80 @@ describe("population", () => {
       congestion: 0,
       parkingPressure: 0,
     }).tripRequests).toEqual([]);
+  });
+
+  it("schedules school, library, health, and recreation visits from resident needs", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const scheduledActivities = new Set(population.people.flatMap((person) =>
+      person.schedule.map((entry) => entry.activity)
+    ));
+
+    expect(scheduledActivities).toEqual(new Set([
+      "home",
+      "work",
+      "school",
+      "shopping",
+      "library",
+      "healthcare",
+      "leisure",
+    ]));
+    expect(population.people.filter((person) => person.ageGroup === "child").every((person) =>
+      person.schedule.some((entry) => entry.activity === "school")
+    )).toBe(true);
+    expect(population.people.filter((person) => person.ageGroup !== "child").some((person) =>
+      person.schedule.some((entry) => entry.activity === "library")
+    )).toBe(true);
+  });
+
+  it("uses weekend schedules without work or school obligations", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const weekend = advancePopulation(population.people, 2 * 1440 + 600, population.buildings, {
+      busAvailable: true,
+      congestion: 0,
+      parkingPressure: 0,
+    });
+
+    expect(weekend.people.every((person) => person.scheduleDay === 2)).toBe(true);
+    expect(weekend.people.every((person) =>
+      person.schedule.every((entry) => entry.activity !== "work" && entry.activity !== "school")
+    )).toBe(true);
+    expect(weekend.people.some((person) =>
+      person.schedule.some((entry) => entry.activity === "library" || entry.activity === "leisure")
+    )).toBe(true);
+  });
+
+  it("reduces a need when the resident reaches the matching service", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const visitor = population.people.find((person) =>
+      person.schedule.some((entry) => entry.activity === "library")
+    )!;
+    const libraryVisit = visitor.schedule.find((entry) => entry.activity === "library")!;
+    const before = visitor.needs.community;
+    const update = advancePopulation([visitor], libraryVisit.startMinute, population.buildings, {
+      busAvailable: true,
+      congestion: 0,
+      parkingPressure: 0,
+    });
+
+    expect(update.people[0]?.currentActivity).toBe("library");
+    expect(update.people[0]?.needs.community).toBeLessThan(before);
+    expect(update.tripRequests[0]?.destinationBuildingId).toBe(libraryVisit.buildingId);
+  });
+
+  it("connects every occupied home to at least one scheduled civic service", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const connections = deriveBuildingConnections(population.people, []);
+    const buildingById = new Map(population.buildings.map((building) => [building.id, building]));
+    const civicOrigins = new Set(connections
+      .filter((connection) => {
+        const destination = buildingById.get(connection.toBuildingId);
+        return connection.kind === "customer"
+          && (destination?.zone === "civic" || destination?.zone === "park");
+      })
+      .map((connection) => connection.fromBuildingId));
+    const occupiedHomes = population.buildings.filter((building) => building.residentIds.length > 0);
+
+    expect(occupiedHomes.every((home) => civicOrigins.has(home.id))).toBe(true);
   });
 });
 
@@ -130,6 +209,33 @@ describe("economy", () => {
       .toBe(true);
   });
 
+  it("reconciles each inspectable building ledger to the economy flow", () => {
+    const population = createPopulation(createBuildings());
+    const result = advanceEconomy({
+      ...population,
+      cityMinute: 1440,
+      freightEntryBuildingId: "regional-entry",
+    });
+    const shop = result.buildings.find((building) => building.id === "shop")!;
+    const accounting = shop.accounting!;
+
+    expect(accounting).toBeDefined();
+    expect(accounting.goodsReceived).toBeCloseTo(
+      accounting.localSupplies + accounting.importedSupplies,
+      8,
+    );
+    expect(accounting.transportCost).toBeGreaterThan(0);
+    expect(accounting.goodsSold).toBeGreaterThan(0);
+    expect(accounting.revenue).toBeCloseTo(accounting.goodsSold * accounting.unitPrice, 1);
+    expect(accounting.operatingCost).toBeCloseTo(
+      accounting.dailyWages + accounting.supplyCost + accounting.transportCost
+        + accounting.occupancyCost + accounting.maintenanceCost + accounting.utilityCost,
+      2,
+    );
+    expect(accounting.profit).toBeCloseTo(accounting.revenue - accounting.operatingCost, 2);
+    expect(accounting.customers).toBeGreaterThan(0);
+  });
+
   it("groups schedules and freight orders into inspectable building relationships", () => {
     const population = createPopulation(createBuildings());
     const economy = advanceEconomy({
@@ -164,6 +270,235 @@ describe("economy", () => {
       averageHappiness(affordableResult.households),
     );
   });
+
+  it("stops production and sales when no workers are available", () => {
+    const population = createPopulation(createBuildings());
+    const people = population.people.map((person) => ({
+      ...person,
+      ageGroup: "senior" as const,
+      workBuildingId: undefined,
+    }));
+    const result = advanceEconomy({ ...population, people, cityMinute: 1440 });
+    const shop = result.buildings.find((building) => building.id === "shop")!;
+    const factory = result.buildings.find((building) => building.id === "factory")!;
+
+    expect(result.economy.goodsProduced).toBe(0);
+    expect(result.economy.retailSales).toBe(0);
+    expect(result.economy.goodsImported).toBe(0);
+    expect(shop.accounting?.revenue).toBe(0);
+    expect(shop.accounting?.profit).toBeLessThan(0);
+    expect(factory.accounting?.revenue).toBe(0);
+    expect(factory.accounting?.profit).toBeLessThan(0);
+  });
+
+  it("reconciles rent, utilities, and civic services by operating model", () => {
+    const population = createPopulation(createBuildings());
+    const result = advanceEconomy({ ...population, cityMinute: 1440 });
+    const homes = result.buildings.filter((building) => building.buildingUse === "housing");
+    const school = result.buildings.find((building) => building.buildingUse === "school")!;
+    const rentIncome = homes.reduce((total, home) => total + (home.accounting?.rentIncome ?? 0), 0);
+    const utilityPayments = result.buildings.reduce(
+      (total, item) => total + (item.accounting?.utilityCost ?? 0),
+      0,
+    );
+
+    expect(result.economy.propertyRentIncome).toBeCloseTo(rentIncome, 3);
+    expect(result.economy.utilityPayments).toBeCloseTo(utilityPayments, 3);
+    expect(homes.every((home) => home.accounting?.operatingModel === "housing")).toBe(true);
+    expect(school.accounting?.operatingModel).toBe("civic");
+    expect(school.accounting?.serviceDelivered).toBeGreaterThan(0);
+    expect(school.accounting?.municipalFunding).toBe(school.accounting?.operatingCost);
+    expect(school.accounting?.profit).toBe(0);
+    for (const household of result.households) {
+      const personalCash = result.people
+        .filter((person) => person.householdId === household.id)
+        .reduce((total, person) => total + person.money, 0);
+      expect(personalCash).toBeCloseTo(household.money, 2);
+    }
+  });
+
+  it("matches occupied building utility bills to provider revenue", () => {
+    const population = createPopulation(createBuildings());
+    const firstDay = advanceEconomy({ ...population, cityMinute: 1440 });
+    const infrastructure = createInitialInfrastructure(firstDay.buildings);
+    const serviced = updateInfrastructure(firstDay.buildings, infrastructure, { elapsedDays: 1 });
+    const secondDay = advanceEconomy({
+      households: firstDay.households,
+      people: firstDay.people,
+      buildings: serviced.buildings,
+      cityMinute: 2880,
+    });
+    const providerRevenue = Object.values(serviced.infrastructure.state.utilities)
+      .reduce((total, utility) => total + utility.revenueDaily, 0);
+
+    expect(secondDay.economy.utilityPayments).toBeCloseTo(providerRevenue, 2);
+  });
+
+  it("derives civic service demand from scheduled visitors", () => {
+    const population = createPopulation(createInitialLandUse().buildings);
+    const result = advanceEconomy({ ...population, cityMinute: 1440 });
+    const expected = {
+      school: result.people.filter((person) => person.schedule.some((entry) => entry.activity === "school")).length,
+      library: result.people.filter((person) => person.schedule.some((entry) => entry.activity === "library")).length,
+      clinic: result.people.filter((person) => person.schedule.some((entry) => entry.activity === "healthcare")).length,
+      park: result.people.filter((person) => person.schedule.some((entry) => entry.activity === "leisure")).length,
+    };
+    const demandFor = (use: Building["buildingUse"]): number => result.buildings
+      .filter((building) => building.buildingUse === use)
+      .reduce((total, building) => total + (building.accounting?.serviceDemand ?? 0), 0);
+
+    expect(demandFor("school")).toBe(expected.school);
+    expect(demandFor("library")).toBe(expected.library);
+    expect(demandFor("clinic")).toBe(expected.clinic);
+    expect(demandFor("park")).toBe(expected.park);
+  });
+
+  it("raises retail prices under scarcity and lowers them when shelves are well supplied", () => {
+    const scarce = createPopulation(createBuildings().map((candidate) =>
+      candidate.id === "shop" ? { ...candidate, goodsInventory: 0 } : candidate
+    ));
+    const abundant = createPopulation(createBuildings().map((candidate) =>
+      candidate.id === "shop" ? { ...candidate, goodsInventory: 500 } : candidate
+    ));
+    const scarceResult = advanceEconomy({ ...scarce, cityMinute: 1440 });
+    const abundantResult = advanceEconomy({ ...abundant, cityMinute: 1440 });
+    const scarcePrice = scarceResult.buildings.find((candidate) => candidate.id === "shop")!.retailPrice!;
+    const abundantPrice = abundantResult.buildings.find((candidate) => candidate.id === "shop")!.retailPrice!;
+
+    expect(scarcePrice).toBeGreaterThan(abundantPrice);
+    expect(scarceResult.economy.averageRetailPrice).toBe(scarcePrice);
+  });
+
+  it("raises wage offers when planned positions are scarce relative to available workers", () => {
+    const population = createPopulation(createBuildings());
+    const adults = population.people.filter((person) => person.ageGroup === "adult");
+    const tight = advanceEconomy({
+      ...population,
+      people: adults.slice(0, 2),
+      cityMinute: 1440,
+    });
+    const loose = advanceEconomy({ ...population, cityMinute: 1440 });
+    const factoryOffer = (result: typeof tight): number => result.buildings
+      .find((candidate) => candidate.id === "factory")!.wageOffer!;
+
+    expect(factoryOffer(tight)).toBeGreaterThan(factoryOffer(loose));
+  });
+
+  it("reduces asking rent when tenant arrears show that the current rent is unaffordable", () => {
+    const stable = createPopulation(createBuildings(20));
+    const distressed = createPopulation(createBuildings(20));
+    distressed.households = distressed.households.map((household) => ({
+      ...household,
+      rentArrears: 1_000,
+      unaffordableDays: 10,
+    }));
+    const stableResult = advanceEconomy({ ...stable, cityMinute: 1440 });
+    const distressedResult = advanceEconomy({ ...distressed, cityMinute: 1440 });
+    const stableRent = stableResult.buildings.find((candidate) => candidate.id === "home-a")!.rent;
+    const distressedRent = distressedResult.buildings.find((candidate) => candidate.id === "home-a")!.rent;
+
+    expect(distressedRent).toBeLessThan(stableRent);
+  });
+
+  it("closes a business only after sustained losses deplete its reserve", () => {
+    const population = createPopulation(createBuildings().map((candidate) =>
+      candidate.id === "shop"
+        ? { ...candidate, cashReserve: 0, unprofitableDays: 13, goodsInventory: 0 }
+        : candidate
+    ));
+    const noWorkers = population.people.map((person) => ({
+      ...person,
+      ageGroup: "senior" as const,
+      workBuildingId: undefined,
+      employmentStatus: "not-in-labor-force" as const,
+    }));
+    const result = advanceEconomy({ ...population, people: noWorkers, cityMinute: 1440 });
+    const shop = result.buildings.find((candidate) => candidate.id === "shop")!;
+
+    expect(shop.closedDaysRemaining).toBe(30);
+    expect(shop.accounting?.operatingStatus).toBe("closed");
+    expect(result.economy.businessClosures).toBeGreaterThan(0);
+    expect(result.events.some((event) => event.includes("closed after"))).toBe(true);
+  });
+
+  it("uses finite outside job capacity and records the commute cost", () => {
+    const population = createPopulation(createBuildings().map((candidate) => ({
+      ...candidate,
+      jobCapacity: 0,
+    })));
+    const result = advanceEconomy({
+      ...population,
+      cityMinute: 1440,
+      externalLaborMarket: {
+        name: "Regional Employment Center",
+        jobCapacity: 2,
+        dailyWage: 200,
+        commuteCostDaily: 8,
+      },
+    });
+    const externalWorkers = result.people.filter((person) => person.employmentStatus === "external");
+
+    expect(externalWorkers).toHaveLength(2);
+    expect(result.economy.externalWorkers).toBe(2);
+    expect(externalWorkers.every((person) => person.workBuildingId === OUTSIDE_COMMUTER_BUILDING_ID)).toBe(true);
+    expect(externalWorkers.every((person) => person.commuteCostDaily === 8)).toBe(true);
+    expect(result.economy.unemploymentPercent).toBeGreaterThan(0);
+
+    const commute = advancePopulation([externalWorkers[0]!], 1440 + 480, result.buildings, {
+      busAvailable: true,
+      congestion: 0,
+      parkingPressure: 0,
+      startYear: 2026,
+    });
+    expect(commute.people[0]?.schedule.some((entry) =>
+      entry.activity === "work" && entry.buildingId === OUTSIDE_COMMUTER_BUILDING_ID
+    )).toBe(true);
+    expect(commute.tripRequests[0]).toMatchObject({
+      destinationBuildingId: OUTSIDE_COMMUTER_BUILDING_ID,
+      mode: "car",
+      purpose: "work",
+    });
+  });
+
+  it("lays off workers when a business closes or cuts its open positions", () => {
+    const population = createPopulation(createBuildings());
+    const factoryWorkers = population.people.filter((person) => person.workBuildingId === "factory");
+    const buildings = population.buildings.map((candidate) =>
+      candidate.id === "factory"
+        ? { ...candidate, closedDaysRemaining: 5 }
+        : candidate
+    );
+    const result = advanceEconomy({ ...population, buildings, cityMinute: 1440 });
+    const factory = result.buildings.find((candidate) => candidate.id === "factory")!;
+
+    expect(factoryWorkers.length).toBeGreaterThan(0);
+    expect(factory.employeeIds).toHaveLength(0);
+    expect(result.economy.layoffs).toBeGreaterThanOrEqual(factoryWorkers.length);
+    expect(result.events.some((event) => event.includes("laid off"))).toBe(true);
+  });
+
+  it("moves out households only after sustained rent hardship", () => {
+    const population = createPopulation(createBuildings(100));
+    const household = population.households[0]!;
+    const members = population.people.filter((person) => person.householdId === household.id);
+    const distressedHousehold = {
+      ...household,
+      money: 0,
+      rentArrears: 1_000,
+      unaffordableDays: 29,
+    };
+    const result = advanceEconomy({
+      households: [distressedHousehold],
+      people: members,
+      buildings: population.buildings.map((candidate) => ({ ...candidate, jobCapacity: 0 })),
+      cityMinute: 1440,
+    });
+
+    expect(result.households).toHaveLength(0);
+    expect(result.people).toHaveLength(0);
+    expect(result.economy.householdsMovedOut).toBe(1);
+    expect(result.economy.residentsMovedOut).toBe(members.length);
+  });
 });
 
 function createBuildings(homeRent = 20): Building[] {
@@ -188,6 +523,17 @@ function building(
     id,
     name: id,
     zone,
+    buildingUse: zone === "residential"
+      ? "housing"
+      : zone === "commercial"
+        ? "retail"
+        : zone === "industrial"
+          ? "industrial"
+          : zone === "park"
+            ? "park"
+            : id === "school"
+              ? "school"
+              : "library",
     x,
     z,
     floors: 1,

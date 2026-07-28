@@ -12,6 +12,7 @@ import { advanceCityEconomy } from "./cityEconomy";
 import { calendarFromElapsedDays } from "./timeScale";
 
 const UTILITY_KINDS: UtilityKind[] = ["power", "water", "waste"];
+const UTILITY_LOSS_RATE: Record<UtilityKind, number> = { power: 0.06, water: 0.08, waste: 0.04 };
 const MAX_TIMELINE_POINTS = 520;
 
 export const DEFAULT_CITY_POLICY: CityPolicySettings = {
@@ -60,6 +61,10 @@ export function summarizeCitySection(
   const businessRevenueDaily = sum(districts.map((district) => district.businessRevenueDaily));
   const businessCostsDaily = sum(districts.map((district) => district.businessCostsDaily));
   const businessProfitDaily = sum(districts.map((district) => district.businessProfitDaily));
+  const propertyRentIncomeDaily = sum(districts.map((district) => district.propertyRentIncomeDaily));
+  const propertyOperatingCostDaily = sum(districts.map((district) => district.propertyOperatingCostDaily));
+  const utilityCostDaily = sum(districts.map((district) => district.utilityCostDaily));
+  const civicOperatingCostDaily = sum(districts.map((district) => district.civicOperatingCostDaily));
   const goodsProducedDaily = sum(districts.map((district) => district.goodsProducedDaily));
   const goodsConsumedDaily = sum(districts.map((district) => district.goodsConsumedDaily));
   const grossCityProductDaily = businessRevenueDaily;
@@ -67,7 +72,9 @@ export function summarizeCitySection(
   const developedFloorArea = sum(districts.map((district) => district.developedFloorArea));
   const networkCapacity = sum(links.map((link) => link.roadCapacityDaily + link.transitCapacityDaily));
   const totalUtilityCapacity = sum(Object.values(utilityCapacity));
-  const maintenanceCostDaily = developedFloorArea * 0.022 + networkCapacity * 0.011 + totalUtilityCapacity * 0.09;
+  const utilityOperatingCostDaily = utilityCostDaily * 0.62 + totalUtilityCapacity * 0.012;
+  const maintenanceCostDaily = developedFloorArea * 0.008 + networkCapacity * 0.011
+    + utilityOperatingCostDaily + civicOperatingCostDaily;
   const annualizedMigrationIn = sum(districts.map((district) => Math.max(0, district.annualizedMigration)));
   const annualizedMigrationOut = sum(districts.map((district) => Math.max(0, -district.annualizedMigration)));
 
@@ -85,6 +92,11 @@ export function summarizeCitySection(
     businessRevenueDaily: round(businessRevenueDaily),
     businessCostsDaily: round(businessCostsDaily),
     businessProfitDaily: round(businessProfitDaily),
+    propertyRentIncomeDaily: round(propertyRentIncomeDaily),
+    propertyOperatingCostDaily: round(propertyOperatingCostDaily),
+    utilityCostDaily: round(utilityCostDaily),
+    civicServiceCoveragePercent: round(weightedAverage(districts, "civicServiceQualityPercent")),
+    civicOperatingCostDaily: round(civicOperatingCostDaily),
     goodsProducedDaily: round(goodsProducedDaily),
     goodsConsumedDaily: round(goodsConsumedDaily),
     goodsImportedDaily: round(sum(districts.map((district) => district.goodsImportedDaily))),
@@ -124,26 +136,25 @@ function advanceCityDay(
   const previousCalendar = calendarFromElapsedDays(state.startYear, state.elapsedDays);
   const connectedCapacity = districtCapacity(state);
   const demandByDistrict = state.districts.map(calculateUtilityDemand);
-  const totalUtilityDemand = Object.fromEntries(UTILITY_KINDS.map((kind) => [
+  const effectiveUtilityCapacity = mapRecord(
+    state.utilityCapacity,
+    (capacity) => capacity * policy.utilityCapacityScale,
+  );
+  const utilityAllocations = Object.fromEntries(UTILITY_KINDS.map((kind) => [
     kind,
-    sum(demandByDistrict.map((demand) => demand[kind])),
-  ])) as Record<UtilityKind, number>;
-  const baseUtilityCoverage = Object.fromEntries(UTILITY_KINDS.map((kind) => [
-    kind,
-    clamp01((state.utilityCapacity[kind] * policy.utilityCapacityScale) / Math.max(1, totalUtilityDemand[kind])),
-  ])) as Record<UtilityKind, number>;
+    allocateDistrictUtility(state.districts, demandByDistrict, kind, effectiveUtilityCapacity[kind]),
+  ])) as Record<UtilityKind, Map<string, number>>;
 
   state.districts = state.districts.map((district, index) => {
     const utilityDemand = demandByDistrict[index]!;
-    const priority = district.primaryZone === "civic" ? 1.08 : district.primaryZone === "residential" ? 1.04 : district.primaryZone === "park" ? 0.9 : 1;
     const utilityCoverage = Object.fromEntries(UTILITY_KINDS.map((kind) => [
       kind,
-      clamp01(baseUtilityCoverage[kind] * priority),
+      clamp01((utilityAllocations[kind].get(district.id) ?? 0) / Math.max(1e-9, utilityDemand[kind])),
     ])) as Record<UtilityKind, number>;
     return {
       ...district,
       utilityDemand: mapRecord(utilityDemand, round),
-      utilityCoverage: mapRecord(utilityCoverage, (value) => round(value)),
+      utilityCoverage: mapRecord(utilityCoverage, clamp01),
     };
   });
 
@@ -187,8 +198,9 @@ function advanceCityDay(
     );
     const spendingRoom = clamp01(district.disposableIncomeDaily / Math.max(1, district.householdIncomeDaily));
     const happiness = clamp(
-      34 + utilityReliability * 22 + (1 - unemploymentPercent / 100) * 18 + goodsCoverage * 12 +
-      (1 - congestionPercent / 100) * 7 + (1 - rentBurden) * 5 + spendingRoom * 6,
+      29 + utilityReliability * 22 + (1 - unemploymentPercent / 100) * 18 + goodsCoverage * 12 +
+      (1 - congestionPercent / 100) * 7 + (1 - rentBurden) * 5 + spendingRoom * 6 +
+      district.civicServiceQualityPercent / 100 * 5,
       0,
       100,
     );
@@ -231,8 +243,9 @@ function advanceCityDay(
     );
     const developedFloorArea = district.developedFloorArea + housingGrowth * 88 + commercialGrowth + industrialGrowth;
     const profitMargin = district.businessProfitDaily / Math.max(1, district.businessRevenueDaily);
+    const privateJobs = district.jobs * privateJobShare(district);
     const jobs = Math.max(0, district.jobs + (
-      commercialGrowth / 34 + industrialGrowth / 48 + district.jobs * clamp(profitMargin, -0.2, 0.2) * 0.00012 * elapsedDays
+      commercialGrowth / 34 + industrialGrowth / 48 + privateJobs * clamp(profitMargin, -0.2, 0.2) * 0.00012 * elapsedDays
     ));
     const dailyTrips = district.commuteTripsDaily + district.shoppingTripsDaily + district.freightTripsDaily;
     const accessScore = clamp01(
@@ -282,13 +295,15 @@ function advanceCityDay(
     };
   });
 
-  const preliminary = summarizeCitySection(state.districts, state.municipalBudget, state.taxRate, state.links, state.utilityCapacity);
-  state.municipalBudget = round(state.municipalBudget + (preliminary.taxRevenueDaily - preliminary.maintenanceCostDaily) * elapsedDays);
+  const preliminary = summarizeCitySection(state.districts, state.municipalBudget, state.taxRate, state.links, effectiveUtilityCapacity);
+  state.municipalBudget = round(state.municipalBudget + (
+    preliminary.taxRevenueDaily + preliminary.utilityCostDaily - preliminary.maintenanceCostDaily
+  ) * elapsedDays);
   state.elapsedDays = round(state.elapsedDays + elapsedDays);
   const calendar = calendarFromElapsedDays(state.startYear, state.elapsedDays);
   state.year = calendar.year;
   state.month = calendar.month;
-  state.metrics = summarizeCitySection(state.districts, state.municipalBudget, state.taxRate, state.links, state.utilityCapacity);
+  state.metrics = summarizeCitySection(state.districts, state.municipalBudget, state.taxRate, state.links, effectiveUtilityCapacity);
   maybeRecordTimeline(state, previousCalendar.month !== calendar.month || previousCalendar.year !== calendar.year);
   addEvents(state, previousCalendar, calendar, events);
 }
@@ -297,8 +312,65 @@ function calculateUtilityDemand(district: CityDistrictState): Record<UtilityKind
   return {
     power: district.population * 0.48 + district.developedFloorArea * 0.012,
     water: district.population * 0.39 + district.developedFloorArea * 0.008,
-    waste: district.population * 0.13 + district.commercialFloorArea * 0.018 + district.industrialFloorArea * 0.026,
+    waste: district.population * 0.13 + district.commercialFloorArea * 0.018
+      + district.industrialFloorArea * 0.026 + district.civicFloorArea * 0.012,
   };
+}
+
+function allocateDistrictUtility(
+  districts: readonly CityDistrictState[],
+  demandByDistrict: readonly Record<UtilityKind, number>[],
+  kind: UtilityKind,
+  capacity: number,
+): Map<string, number> {
+  const demandById = new Map(districts.map((district, index) => [
+    district.id,
+    Math.max(0, demandByDistrict[index]?.[kind] ?? 0),
+  ]));
+  const delivered = new Map<string, number>();
+  let remaining = Math.min(
+    sum([...demandById.values()]),
+    Math.max(0, capacity) * (1 - UTILITY_LOSS_RATE[kind]),
+  );
+  let active = districts.map((district) => district.id);
+
+  while (remaining > 1e-9 && active.length > 0) {
+    const totalWeight = sum(active.map((id) => {
+      const district = districts.find((candidate) => candidate.id === id);
+      const unmet = Math.max(0, (demandById.get(id) ?? 0) - (delivered.get(id) ?? 0));
+      return unmet * utilityPriority(district, kind);
+    }));
+    if (totalWeight <= 0) break;
+    const available = remaining;
+    let deliveredThisPass = 0;
+    for (const id of active) {
+      const district = districts.find((candidate) => candidate.id === id);
+      const unmet = Math.max(0, (demandById.get(id) ?? 0) - (delivered.get(id) ?? 0));
+      const allocation = Math.min(
+        unmet,
+        available * unmet * utilityPriority(district, kind) / totalWeight,
+      );
+      delivered.set(id, (delivered.get(id) ?? 0) + allocation);
+      deliveredThisPass += allocation;
+    }
+    remaining = Math.max(0, remaining - deliveredThisPass);
+    active = active.filter((id) => (delivered.get(id) ?? 0) < (demandById.get(id) ?? 0) - 1e-9);
+    if (deliveredThisPass <= 1e-9) break;
+  }
+  return delivered;
+}
+
+function utilityPriority(district: CityDistrictState | undefined, kind: UtilityKind): number {
+  if (district?.primaryZone === "civic") return 1.35;
+  if (district?.primaryZone === "residential") return kind === "waste" ? 1.15 : 1.25;
+  if (district?.primaryZone === "park") return 0.75;
+  return 1;
+}
+
+function privateJobShare(district: CityDistrictState): number {
+  const privateWeight = district.commercialFloorArea / 34 + district.industrialFloorArea / 48;
+  const civicWeight = district.civicFloorArea / 42;
+  return privateWeight + civicWeight > 0 ? privateWeight / (privateWeight + civicWeight) : 0;
 }
 
 function districtCapacity(state: CitySectionState): Map<string, { road: number; transit: number; freight: number }> {

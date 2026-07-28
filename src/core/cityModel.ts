@@ -9,6 +9,7 @@ import type {
   GoodsBasket,
 } from "../models/cityTypes";
 import {
+  advanceCityEconomy,
   createExternalMarketState,
   createInitialGoodsMarket,
   emptyGoodsBasket,
@@ -20,7 +21,15 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
   const districts = definition.districts.map(createDistrictState);
   const market = createInitialGoodsMarket();
   const externalMarkets = (definition.externalMarkets ?? []).map(createExternalMarketState);
-  const metrics = summarizeInitialCity(districts, definition.startingBudget);
+  const seededEconomy = advanceCityEconomy({
+    districts,
+    externalMarkets,
+    previousMarket: market,
+    transportCapacity: initialDistrictTransportCapacity(districts, definition.links),
+    elapsedDays: 1,
+  });
+  const seededDistricts = seededEconomy.districts.map(initializeDistrictIndicators);
+  const metrics = summarizeInitialCity(seededDistricts, definition.startingBudget);
   const timeline: CityTimelinePoint[] = [{
     day: 0,
     year: definition.startYear,
@@ -45,10 +54,10 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     taxRate: definition.taxRate,
     utilityCapacity: { ...definition.utilityCapacity },
     municipalBudget: definition.startingBudget,
-    districts,
+    districts: seededDistricts,
     links: definition.links.map((link) => ({ ...link })),
-    externalMarkets,
-    market,
+    externalMarkets: seededEconomy.externalMarkets,
+    market: seededEconomy.market,
     metrics,
     timeline,
   };
@@ -125,7 +134,10 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
     return {
       power: total.power + districtDefinition.population * 0.48 + developedFloorArea * 0.012,
       water: total.water + districtDefinition.population * 0.39 + developedFloorArea * 0.008,
-      waste: total.waste + districtDefinition.population * 0.13 + districtDefinition.commercialFloorArea * 0.018 + districtDefinition.industrialFloorArea * 0.026,
+      waste: total.waste + districtDefinition.population * 0.13
+        + districtDefinition.commercialFloorArea * 0.018
+        + districtDefinition.industrialFloorArea * 0.026
+        + districtDefinition.civicFloorArea * 0.012,
     };
   }, { power: 0, water: 0, waste: 0 });
   const links = [
@@ -212,7 +224,19 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
     businessRevenueDaily: 0,
     businessCostsDaily: 0,
     businessProfitDaily: 0,
-    utilityDemand: { power: 0, water: 0, waste: 0 },
+    propertyRentIncomeDaily: 0,
+    propertyOperatingCostDaily: 0,
+    utilityCostDaily: 0,
+    civicServiceDemand: 0,
+    civicServiceDelivered: 0,
+    civicServiceQualityPercent: 100,
+    civicOperatingCostDaily: 0,
+    utilityDemand: {
+      power: definition.population * 0.48 + developedFloorArea * 0.012,
+      water: definition.population * 0.39 + developedFloorArea * 0.008,
+      waste: definition.population * 0.13 + definition.commercialFloorArea * 0.018
+        + definition.industrialFloorArea * 0.026 + definition.civicFloorArea * 0.012,
+    },
     utilityCoverage: { power: 1, water: 1, waste: 1 },
     dailyTrips: definition.population * 2.15,
     congestionPercent: 0,
@@ -233,7 +257,10 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
   const population = sum(districts.map((district) => district.population));
   const jobs = sum(districts.map((district) => district.jobs));
   const labor = sum(districts.map((district) => district.laborForce));
-  const employedResidents = Math.min(labor, jobs);
+  const employedResidents = sum(districts.map((district) => district.employedResidents));
+  const businessRevenueDaily = sum(districts.map((district) => district.businessRevenueDaily));
+  const businessCostsDaily = sum(districts.map((district) => district.businessCostsDaily));
+  const businessProfitDaily = sum(districts.map((district) => district.businessProfitDaily));
   return {
     population,
     households: sum(districts.map((district) => district.households)),
@@ -241,17 +268,22 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     employedResidents,
     unemploymentPercent: labor > 0 ? ((labor - employedResidents) / labor) * 100 : 0,
     housingOccupancyPercent: weightedAverage(districts, "housingOccupancyPercent"),
-    grossCityProductDaily: employedResidents * 185,
-    householdIncomeDaily: 0,
-    disposableIncomeDaily: 0,
-    householdSpendingDaily: 0,
-    businessRevenueDaily: 0,
-    businessCostsDaily: 0,
-    businessProfitDaily: 0,
-    goodsProducedDaily: 0,
-    goodsConsumedDaily: 0,
-    goodsImportedDaily: 0,
-    goodsExportedDaily: 0,
+    grossCityProductDaily: businessRevenueDaily,
+    householdIncomeDaily: sum(districts.map((district) => district.householdIncomeDaily)),
+    disposableIncomeDaily: sum(districts.map((district) => district.disposableIncomeDaily)),
+    householdSpendingDaily: sum(districts.map((district) => district.householdSpendingDaily)),
+    businessRevenueDaily,
+    businessCostsDaily,
+    businessProfitDaily,
+    propertyRentIncomeDaily: sum(districts.map((district) => district.propertyRentIncomeDaily)),
+    propertyOperatingCostDaily: sum(districts.map((district) => district.propertyOperatingCostDaily)),
+    utilityCostDaily: sum(districts.map((district) => district.utilityCostDaily)),
+    civicServiceCoveragePercent: weightedAverage(districts, "civicServiceQualityPercent"),
+    civicOperatingCostDaily: sum(districts.map((district) => district.civicOperatingCostDaily)),
+    goodsProducedDaily: sum(districts.map((district) => district.goodsProducedDaily)),
+    goodsConsumedDaily: sum(districts.map((district) => district.goodsConsumedDaily)),
+    goodsImportedDaily: sum(districts.map((district) => district.goodsImportedDaily)),
+    goodsExportedDaily: sum(districts.map((district) => district.goodsExportedDaily)),
     averageLandValue: weightedAverage(districts, "landValue"),
     averageRentIndex: weightedAverage(districts, "rentIndex"),
     utilityCoveragePercent: 100,
@@ -261,7 +293,7 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     vehicleTripsDaily: sum(districts.map((district) => district.commuteTripsDaily * 0.55 + district.freightTripsDaily)),
     pedestrianTripsDaily: sum(districts.map((district) => district.pedestrianTripsDaily)),
     freightTripsDaily: sum(districts.map((district) => district.freightTripsDaily)),
-    externalCommutersDaily: 0,
+    externalCommutersDaily: sum(districts.map((district) => district.externalCommutersDaily)),
     annualizedMigrationIn: 0,
     annualizedMigrationOut: 0,
     annualizedNetMigration: 0,
@@ -273,6 +305,65 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     municipalBalance: budget,
     happiness: weightedAverage(districts, "happiness"),
   };
+}
+
+function initializeDistrictIndicators(district: CityDistrictState): CityDistrictState {
+  const utilityReliability = sum(Object.values(district.utilityCoverage)) / 3;
+  const unemploymentPercent = district.laborForce > 0
+    ? Math.max(0, (district.laborForce - district.employedResidents) / district.laborForce * 100)
+    : 0;
+  const goodsCoverage = district.goodsConsumedDaily
+    / Math.max(1, sum(Object.values(district.goodsDemandByType)));
+  const housingOccupancyPercent = clamp(
+    district.population / Math.max(1, district.housingUnits * 2.45) * 100,
+    0,
+    140,
+  );
+  const rentBurden = clamp(
+    district.households * district.rentIndex * 52 / Math.max(1, district.householdIncomeDaily),
+    0,
+    1,
+  );
+  const spendingRoom = clamp(
+    district.disposableIncomeDaily / Math.max(1, district.householdIncomeDaily),
+    0,
+    1,
+  );
+  const happiness = clamp(
+    29 + utilityReliability * 22 + (1 - unemploymentPercent / 100) * 18
+      + goodsCoverage * 12 + (1 - district.congestionPercent / 100) * 7
+      + (1 - rentBurden) * 5 + spendingRoom * 6
+      + district.civicServiceQualityPercent / 100 * 5,
+    0,
+    100,
+  );
+  return {
+    ...district,
+    dailyTrips: district.commuteTripsDaily + district.shoppingTripsDaily + district.freightTripsDaily,
+    unemploymentPercent,
+    housingOccupancyPercent,
+    happiness,
+  };
+}
+
+function initialDistrictTransportCapacity(
+  districts: readonly CityDistrictState[],
+  links: Readonly<CitySectionDefinition["links"]>,
+): Map<string, { road: number; transit: number; freight: number }> {
+  const capacity = new Map(districts.map((district) => [
+    district.id,
+    { road: 0, transit: 0, freight: 0 },
+  ]));
+  for (const linkDefinition of links) {
+    for (const districtId of [linkDefinition.fromDistrictId, linkDefinition.toDistrictId]) {
+      const district = capacity.get(districtId);
+      if (district === undefined) continue;
+      district.road += linkDefinition.roadCapacityDaily / 2;
+      district.transit += linkDefinition.transitCapacityDaily / 2;
+      district.freight += linkDefinition.freightCapacityDaily / 2;
+    }
+  }
+  return capacity;
 }
 
 function validateExternalMarket(market: ExternalMarketDefinition, ids: Set<string>): void {
@@ -365,4 +456,8 @@ function weightedAverage<K extends keyof CityDistrictState>(districts: readonly 
 
 function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }

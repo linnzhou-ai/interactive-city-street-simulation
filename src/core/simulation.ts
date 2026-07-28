@@ -1,6 +1,6 @@
 import { advanceCitySection } from "./cityEngine";
 import { createCitySectionState, createDemoCitySectionDefinition } from "./cityModel";
-import { advanceEconomy } from "./economy";
+import { advanceEconomy, type ExternalLaborMarket } from "./economy";
 import {
   createInitialInfrastructure,
   updateInfrastructure,
@@ -12,7 +12,7 @@ import { OUTSIDE_FREIGHT_BUILDING_ID } from "./network";
 import { deriveBuildingConnections } from "./observability";
 import { advancePopulation, createPopulation } from "./population";
 import { calendarFromElapsedDays, cityMinutesPerSecond } from "./timeScale";
-import type { CitySectionDefinition, CitySystemEvent, TimeHorizon } from "../models/cityTypes";
+import type { CitySectionDefinition, CitySectionState, CitySystemEvent, TimeHorizon } from "../models/cityTypes";
 import type {
   ActivityType,
   ScenarioSettings,
@@ -48,6 +48,7 @@ export class Simulation {
   private settings: ScenarioSettings;
   private state!: SimulationState;
   private mobility!: MobilitySystem;
+  private mobilitySnapshot!: MobilitySnapshot;
   private infrastructure!: InfrastructureModel;
   private cityMinute = START_MINUTE;
   private lastProcessedMinute = Math.floor(START_MINUTE);
@@ -151,7 +152,9 @@ export class Simulation {
 
     this.updateClock();
     this.updateSignalState();
-    this.processCityBoundaries(this.mobility.getSnapshot());
+    if (Math.floor(this.cityMinute) > this.lastProcessedMinute) {
+      this.processCityBoundaries(this.mobilitySnapshot);
+    }
 
     let visualSeconds = Math.min(scaledSeconds, 5);
     while (visualSeconds > EPSILON) {
@@ -160,9 +163,10 @@ export class Simulation {
       visualSeconds -= step;
     }
     const mobility = this.mobility.getSnapshot();
+    this.mobilitySnapshot = mobility;
     this.syncMobility(mobility);
     this.updateCongestionEvents(mobility);
-    this.updateMetrics();
+    this.updateMetrics(mobility);
   }
 
   private initialize(running: boolean): void {
@@ -178,13 +182,15 @@ export class Simulation {
 
     const initialLand = createInitialLandUse();
     const city = createCitySectionState(this.cityDefinition);
-    const population = createPopulation(initialLand.buildings);
+    const population = createPopulation(initialLand.buildings, city.startYear);
     const economy = advanceEconomy({
       households: population.households,
       people: population.people,
       buildings: population.buildings,
       cityMinute: this.cityMinute,
       freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
+      consumerPriceIndex: city.market.consumerPriceIndex,
+      externalLaborMarket: detailedExternalLaborMarket(city, population.people.length),
     });
 
     this.infrastructure = createInitialInfrastructure(economy.buildings, {
@@ -232,10 +238,16 @@ export class Simulation {
       events: [],
     };
     this.recordEvent("population", `${economy.people.length} residents began their daily routines.`, "info");
-    this.recordEvent("economy", `${economy.economy.employedWorkers} workers connected to local jobs.`, "info");
+    this.recordEvent(
+      "economy",
+      `${economy.economy.employedWorkers} workers found jobs, including ${economy.economy.externalWorkers} outside the section.`,
+      "info",
+    );
     this.mobility.consumeTrips(economy.tripRequests);
-    this.syncMobility(this.mobility.getSnapshot());
-    this.updateMetrics();
+    const mobility = this.mobility.getSnapshot();
+    this.mobilitySnapshot = mobility;
+    this.syncMobility(mobility);
+    this.updateMetrics(mobility);
   }
 
   private advanceDetail(step: number): void {
@@ -257,6 +269,7 @@ export class Simulation {
           this.state.infrastructure.parkingCapacity,
         ),
         congestion: mobility.roadCongestionPercent / 100,
+        startYear: this.state.city.startYear,
       },
     );
     this.state.people = population.people;
@@ -284,6 +297,8 @@ export class Simulation {
       buildings: this.state.buildings,
       cityMinute: dayIndex * 1440,
       freightEntryBuildingId: OUTSIDE_FREIGHT_BUILDING_ID,
+      consumerPriceIndex: this.state.city.market.consumerPriceIndex,
+      externalLaborMarket: detailedExternalLaborMarket(this.state.city, this.state.people.length),
     });
     this.state.households = economy.households;
     this.state.people = economy.people;
@@ -291,8 +306,6 @@ export class Simulation {
     this.state.buildingConnections = deriveBuildingConnections(economy.people, economy.tripRequests);
     this.state.economy = economy.economy;
     if (this.settings.timeHorizon === "day") this.mobility.consumeTrips(economy.tripRequests);
-    this.refreshInfrastructure(1);
-
     const growthBefore = this.state.landUse.growthEvents;
     const utilityCoverage = averageUtilityCoverage(this.state);
     const landUse = updateLandUse(this.state.landUse, this.state.buildings, {
@@ -314,6 +327,7 @@ export class Simulation {
       `${formatNumber(economy.economy.goodsProduced)} goods produced; ${economy.economy.deliveriesCompleted} deliveries dispatched.`,
       "info",
     );
+    economy.events.forEach((message) => this.recordEvent("economy", message, "warning"));
     const newGrowth = landUse.landUse.growthEvents - growthBefore;
     if (newGrowth > 0) {
       this.recordEvent("land-use", `${newGrowth} building ${newGrowth === 1 ? "project added" : "projects added"} floor area.`, "info");
@@ -473,8 +487,7 @@ export class Simulation {
     this.lastCongestionBand = band;
   }
 
-  private updateMetrics(): void {
-    const mobility = this.mobility.getSnapshot();
+  private updateMetrics(mobility: MobilitySnapshot): void {
     const commercial = this.state.buildings.filter((building) => building.zone === "commercial");
     const retailDemand = sum(commercial.map((building) => building.customerDemand));
     const retailInventory = sum(commercial.map((building) => building.goodsInventory));
@@ -568,6 +581,31 @@ function createInitialMetrics(
     cityHousingOccupancyPercent: city.metrics.housingOccupancyPercent,
     cityTransitSharePercent: city.metrics.transitSharePercent,
     simulatedDays: city.elapsedDays,
+  };
+}
+
+function detailedExternalLaborMarket(
+  city: Readonly<CitySectionState>,
+  representativePeople: number,
+): ExternalLaborMarket | undefined {
+  const markets = city.externalMarkets
+    .filter((market) => market.externalJobs > 0 && market.commuterCapacityDaily > 0)
+    .sort((left, right) => left.distanceKm - right.distanceKm);
+  const nearest = markets[0];
+  if (nearest === undefined || representativePeople <= 0) return undefined;
+  const residentsPerRepresentative = city.metrics.population / representativePeople;
+  const externalCapacity = sum(markets.map((market) =>
+    Math.min(market.externalJobs, market.commuterCapacityDaily)
+  ));
+  const labor = sum(city.districts.map((district) => district.laborForce));
+  const cityWage = labor > 0
+    ? sum(city.districts.map((district) => district.averageWageDaily * district.laborForce)) / labor
+    : 145;
+  return {
+    name: nearest.name,
+    jobCapacity: Math.max(1, Math.round(externalCapacity / Math.max(1, residentsPerRepresentative))),
+    dailyWage: Math.max(70, cityWage * 1.04),
+    commuteCostDaily: nearest.distanceKm * 0.32,
   };
 }
 

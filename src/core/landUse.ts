@@ -233,6 +233,9 @@ function addFloor(building: Building): Building {
     rent: round(building.rent * 1.04),
     residentCapacity: Math.round(building.residentCapacity * multiplier),
     jobCapacity: Math.round(building.jobCapacity * multiplier),
+    maximumJobCapacity: Math.round(
+      (building.maximumJobCapacity ?? building.jobCapacity) * multiplier,
+    ),
     productionRate: round(building.productionRate * multiplier),
     customerDemand: round(building.customerDemand * multiplier),
     utilityDemand: {
@@ -403,6 +406,19 @@ function building(
     id,
     name,
     zone,
+    buildingUse: zone === "residential"
+      ? "housing"
+      : zone === "commercial"
+        ? "retail"
+        : zone === "industrial"
+          ? "industrial"
+          : zone === "park"
+            ? "park"
+            : id.includes("school")
+              ? "school"
+              : id.includes("health")
+                ? "clinic"
+                : "library",
     x,
     z,
     floors,

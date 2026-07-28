@@ -112,6 +112,13 @@ export interface CityDistrictState extends CityDistrictDefinition {
   businessRevenueDaily: number;
   businessCostsDaily: number;
   businessProfitDaily: number;
+  propertyRentIncomeDaily: number;
+  propertyOperatingCostDaily: number;
+  utilityCostDaily: number;
+  civicServiceDemand: number;
+  civicServiceDelivered: number;
+  civicServiceQualityPercent: number;
+  civicOperatingCostDaily: number;
   utilityDemand: Record<UtilityKind, number>;
   utilityCoverage: Record<UtilityKind, number>;
   commuteTripsDaily: number;
@@ -142,6 +149,11 @@ export interface CityAggregateMetrics {
   businessRevenueDaily: number;
   businessCostsDaily: number;
   businessProfitDaily: number;
+  propertyRentIncomeDaily: number;
+  propertyOperatingCostDaily: number;
+  utilityCostDaily: number;
+  civicServiceCoveragePercent: number;
+  civicOperatingCostDaily: number;
   goodsProducedDaily: number;
   goodsConsumedDaily: number;
   goodsImportedDaily: number;

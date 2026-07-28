@@ -17,10 +17,14 @@ export interface UtilityConnection {
 
 export interface UtilityNetwork {
   kind: UtilityKind;
+  sourceName: string;
   baseCapacity: number;
   capacityScale: number;
   capacity: number;
   lossRate: number;
+  unitPrice: number;
+  variableCost: number;
+  fixedCostPerCapacity: number;
   connections: UtilityConnection[];
 }
 
@@ -48,11 +52,55 @@ export interface InfrastructureUpdate {
   buildings: Building[];
 }
 
-const DEFAULT_CAPACITIES: Record<UtilityKind, number> = {
-  power: 500,
-  water: 450,
-  waste: 300,
+const UTILITY_PROVIDERS: Record<UtilityKind, {
+  sourceName: string;
+  capacity: number;
+  unitPrice: number;
+  variableCost: number;
+  fixedCostPerCapacity: number;
+}> = {
+  power: {
+    sourceName: "Regional electric grid",
+    capacity: 500,
+    unitPrice: 0.18,
+    variableCost: 0.11,
+    fixedCostPerCapacity: 0.015,
+  },
+  water: {
+    sourceName: "Municipal water treatment",
+    capacity: 450,
+    unitPrice: 0.12,
+    variableCost: 0.07,
+    fixedCostPerCapacity: 0.012,
+  },
+  waste: {
+    sourceName: "Municipal sanitation service",
+    capacity: 300,
+    unitPrice: 0.16,
+    variableCost: 0.1,
+    fixedCostPerCapacity: 0.018,
+  },
 };
+
+export const UTILITY_CUSTOMER_RATES: Record<UtilityKind, number> = {
+  power: UTILITY_PROVIDERS.power.unitPrice,
+  water: UTILITY_PROVIDERS.water.unitPrice,
+  waste: UTILITY_PROVIDERS.waste.unitPrice,
+};
+
+export function buildingUtilityDemand(building: Building, kind: UtilityKind): number {
+  const activityRatio = building.buildingUse === "housing"
+    ? building.residentCapacity > 0
+      ? building.residentIds.length / building.residentCapacity
+      : 0
+    : building.jobCapacity > 0
+      ? building.employeeIds.length / building.jobCapacity
+      : building.buildingUse === "park"
+        ? 0.35
+        : 0;
+  const loadRatio = 0.15 + clamp01(activityRatio) * 0.85;
+  return nonNegative(building.utilityDemand[kind]) * loadRatio;
+}
 
 const DEFAULT_LOSS_RATES: Record<UtilityKind, number> = {
   power: 0.06,
@@ -67,15 +115,19 @@ export function createInitialInfrastructure(
   const capacityScale = bounded(options.capacityScale, 1, 0, 4);
   const networks = Object.fromEntries(
     UTILITY_KINDS.map((kind) => {
-      const capacity = nonNegative(
-        options.capacities?.[kind] ?? DEFAULT_CAPACITIES[kind],
-      );
       const lossRate = bounded(
         options.lossRates?.[kind],
         DEFAULT_LOSS_RATES[kind],
         0,
         0.5,
       );
+      const dailyDemand = sum(buildings.map((building) =>
+        buildingUtilityDemand(building, kind)
+      ));
+      const reserveCapacity = dailyDemand > 0
+        ? dailyDemand * 1.2 / (1 - lossRate)
+        : UTILITY_PROVIDERS[kind].capacity;
+      const capacity = nonNegative(options.capacities?.[kind] ?? reserveCapacity);
       return [kind, createNetwork(kind, capacity, capacityScale, lossRate, buildings)];
     }),
   ) as Record<UtilityKind, UtilityNetwork>;
@@ -111,43 +163,49 @@ export function updateInfrastructure(
   const elapsedDays = bounded(options.elapsedDays, 1, 0, 30);
   const networks = updateNetworks(infrastructure.networks, buildings, options);
   const powerAllocation = allocateUtility(buildings, networks.power, (building) =>
-    nonNegative(building.utilityDemand.power),
+    buildingUtilityDemand(building, "power"),
   );
   const waterAllocation = allocateUtility(buildings, networks.water, (building) =>
-    nonNegative(building.utilityDemand.water),
+    buildingUtilityDemand(building, "water"),
+  );
+  const wasteServiceAllocation = allocateUtility(
+    buildings,
+    networks.waste,
+    (building) => buildingUtilityDemand(building, "waste"),
   );
   const pendingWaste = new Map(
     buildings.map((building) => [
       building.id,
       nonNegative(building.wasteStored) +
-        nonNegative(building.utilityDemand.waste) * elapsedDays,
+        buildingUtilityDemand(building, "waste") * elapsedDays,
     ]),
   );
-  const wasteAllocation = allocateUtility(
+  const wasteCollectionAllocation = allocateUtility(
     buildings,
     networks.waste,
     (building) => pendingWaste.get(building.id) ?? 0,
+    networks.waste.capacity * elapsedDays,
   );
   let collectedThisUpdate = 0;
 
   const updatedBuildings = buildings.map((building) => {
-    const power = serviceFor(building.id, building.utilityDemand.power, powerAllocation);
-    const water = serviceFor(building.id, building.utilityDemand.water, waterAllocation);
+    const power = serviceFor(building.id, buildingUtilityDemand(building, "power"), powerAllocation);
+    const water = serviceFor(building.id, buildingUtilityDemand(building, "water"), waterAllocation);
     const wastePending = pendingWaste.get(building.id) ?? 0;
     const wasteCollected = Math.min(
       wastePending,
-      wasteAllocation.deliveredByBuilding.get(building.id) ?? 0,
+      wasteCollectionAllocation.deliveredByBuilding.get(building.id) ?? 0,
     );
-    const waste = wastePending > 0 ? clamp01(wasteCollected / wastePending) : 1;
+    const waste = serviceFor(
+      building.id,
+      buildingUtilityDemand(building, "waste"),
+      wasteServiceAllocation,
+    );
     const wasteStored = round(Math.max(0, wastePending - wasteCollected));
     const storagePressure = clamp01(
-      wasteStored / Math.max(1, nonNegative(building.utilityDemand.waste) * 5),
+      wasteStored / Math.max(1, buildingUtilityDemand(building, "waste") * 5),
     );
-    const efficiency = clamp(
-      0.1 + power * 0.35 + water * 0.35 + waste * 0.2 - storagePressure * 0.25,
-      0.05,
-      1,
-    );
+    const efficiency = buildingEfficiency(building, power, water, waste, storagePressure);
     collectedThisUpdate += wasteCollected;
 
     return {
@@ -191,7 +249,7 @@ export function updateInfrastructure(
     utilities: {
       power: utilityState(networks.power, powerAllocation),
       water: utilityState(networks.water, waterAllocation),
-      waste: utilityState(networks.waste, wasteAllocation),
+      waste: utilityState(networks.waste, wasteServiceAllocation),
     },
     transitLines: infrastructure.state.transitLines.map((line) => ({
       ...line,
@@ -223,14 +281,19 @@ function createNetwork(
   lossRate: number,
   buildings: readonly Building[],
 ): UtilityNetwork {
+  const provider = UTILITY_PROVIDERS[kind];
   return {
     kind,
+    sourceName: provider.sourceName,
     baseCapacity: round(baseCapacity),
     capacityScale,
     capacity: round(baseCapacity * capacityScale),
     lossRate,
+    unitPrice: provider.unitPrice,
+    variableCost: provider.variableCost,
+    fixedCostPerCapacity: provider.fixedCostPerCapacity,
     connections: buildings.map((building) => {
-      const demand = nonNegative(building.utilityDemand[kind]);
+      const demand = buildingUtilityDemand(building, kind);
       return {
         buildingId: building.id,
         maxThroughput: round(
@@ -281,6 +344,7 @@ function allocateUtility(
   buildings: readonly Building[],
   network: UtilityNetwork,
   demandFor: (building: Building) => number,
+  capacity = network.capacity,
 ): UtilityAllocation {
   const buildingById = new Map(buildings.map((building) => [building.id, building]));
   const deliveredByBuilding = new Map<string, number>();
@@ -293,7 +357,7 @@ function allocateUtility(
   const totalDemand = sum([...demandById.values()]);
   let remaining = Math.min(
     totalDemand,
-    nonNegative(network.capacity) * (1 - clamp(network.lossRate, 0, 0.5)),
+    nonNegative(capacity) * (1 - clamp(network.lossRate, 0, 0.5)),
   );
   let activeIds = network.connections
     .filter((connection) => buildingById.has(connection.buildingId))
@@ -350,6 +414,25 @@ function allocateUtility(
   };
 }
 
+function buildingEfficiency(
+  building: Building,
+  power: number,
+  water: number,
+  waste: number,
+  storagePressure: number,
+): number {
+  const byUse: Record<Building["buildingUse"], number> = {
+    housing: power * 0.38 + water * 0.42 + waste * 0.2,
+    retail: power * 0.45 + water * 0.3 + waste * 0.25,
+    industrial: power * 0.48 + water * 0.32 + waste * 0.2,
+    school: power * 0.38 + water * 0.42 + waste * 0.2,
+    library: power * 0.58 + water * 0.22 + waste * 0.2,
+    clinic: power * 0.48 + water * 0.42 + waste * 0.1,
+    park: power * 0.1 + water * 0.58 + waste * 0.32,
+  };
+  return clamp(byUse[building.buildingUse] - storagePressure * 0.25, 0, 1);
+}
+
 function serviceFor(
   buildingId: string,
   demand: number,
@@ -365,8 +448,12 @@ function utilityState(
   network: UtilityNetwork,
   allocation: UtilityAllocation,
 ): UtilityNetworkState {
+  const revenueDaily = allocation.delivered * network.unitPrice;
+  const operatingCostDaily = allocation.delivered * network.variableCost
+    + network.capacity * network.fixedCostPerCapacity;
   return {
     kind: network.kind,
+    sourceName: network.sourceName,
     capacity: round(network.capacity),
     demand: allocation.demand,
     delivered: allocation.delivered,
@@ -375,6 +462,10 @@ function utilityState(
         ? round(clamp(allocation.delivered / allocation.demand, 0, 1) * 100)
         : 100,
     lossPercent: round(network.lossRate * 100),
+    unitPrice: round(network.unitPrice),
+    revenueDaily: round(revenueDaily),
+    operatingCostDaily: round(operatingCostDaily),
+    netRevenueDaily: round(revenueDaily - operatingCostDaily),
   };
 }
 
@@ -383,16 +474,24 @@ function initialUtilityState(
   buildings: readonly Building[],
 ): UtilityNetworkState {
   const demand = sum(
-    buildings.map((building) => nonNegative(building.utilityDemand[network.kind])),
+    buildings.map((building) => buildingUtilityDemand(building, network.kind)),
   );
   const delivered = Math.min(demand, network.capacity * (1 - network.lossRate));
+  const revenueDaily = delivered * network.unitPrice;
+  const operatingCostDaily = delivered * network.variableCost
+    + network.capacity * network.fixedCostPerCapacity;
   return {
     kind: network.kind,
+    sourceName: network.sourceName,
     capacity: round(network.capacity),
     demand: round(demand),
     delivered: round(delivered),
     coveragePercent: demand > 0 ? round((delivered / demand) * 100) : 100,
     lossPercent: round(network.lossRate * 100),
+    unitPrice: round(network.unitPrice),
+    revenueDaily: round(revenueDaily),
+    operatingCostDaily: round(operatingCostDaily),
+    netRevenueDaily: round(revenueDaily - operatingCostDaily),
   };
 }
 

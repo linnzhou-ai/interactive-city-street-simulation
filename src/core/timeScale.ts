@@ -37,6 +37,13 @@ export function formatLongDate(startYear: number, elapsedDays: number): string {
   return `${MONTH_NAMES[calendar.month - 1]} ${calendar.dayOfMonth}, ${calendar.year}`;
 }
 
+export function formatClockTime(timeOfDayMinutes: number): string {
+  const normalizedMinutes = ((Math.floor(timeOfDayMinutes) % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalizedMinutes / 60);
+  const minutes = normalizedMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
 function daysBeforeYear(startYear: number, targetYear: number): number {
   let days = 0;
   for (let year = startYear; year < targetYear; year += 1) days += daysInYear(year);

@@ -120,6 +120,7 @@ const DEFAULT_CONFIG: MobilityConfig = {
 export class MobilitySystem {
   private readonly buildings: readonly BuildingAccess[];
   private readonly network: MobilityNetwork;
+  private readonly roadEdges: MobilityNetworkEdge[];
   private readonly roadAgents = new Map<string, RoadAgent>();
   private readonly pedestrianAgents = new Map<string, PedestrianAgent>();
   private readonly buses = new Map<string, BusRuntime>();
@@ -155,6 +156,7 @@ export class MobilitySystem {
     this.network = network
       ? normalizeNetwork(network)
       : buildStreetNetwork(buildings, { roadCapacity: this.config.roadCapacity });
+    this.roadEdges = this.network.edges.filter(isRoadEdge);
     this.setRoadCapacity(this.config.roadCapacity);
   }
 
@@ -194,10 +196,8 @@ export class MobilitySystem {
   setRoadCapacity(capacity: number): void {
     const nextCapacity = Math.max(1, Math.floor(capacity));
     this.config = { ...this.config, roadCapacity: nextCapacity };
-    for (const edge of this.network.edges) {
-      if (isRoadEdge(edge)) {
-        edge.capacity = nextCapacity;
-      }
+    for (const edge of this.roadEdges) {
+      edge.capacity = nextCapacity;
     }
     this.refreshEdgeOccupancy();
   }
@@ -270,13 +270,12 @@ export class MobilitySystem {
 
   getSnapshot(): MobilitySnapshot {
     this.refreshEdgeOccupancy();
-    const roadEdges = this.network.edges.filter(isRoadEdge);
-    const roadVolume = roadEdges.reduce((total, edge) => total + edge.occupancy, 0);
-    const congestion = roadEdges.length > 0
-      ? roadEdges.reduce(
+    const roadVolume = this.roadEdges.reduce((total, edge) => total + edge.occupancy, 0);
+    const congestion = this.roadEdges.length > 0
+      ? this.roadEdges.reduce(
           (total, edge) => total + Math.min(1, edge.occupancy / Math.max(1, edge.capacity)),
           0,
-        ) / roadEdges.length
+        ) / this.roadEdges.length
       : 0;
     const vehicles = [...this.roadAgents.values()].map((agent) => ({
       ...agent.vehicle,

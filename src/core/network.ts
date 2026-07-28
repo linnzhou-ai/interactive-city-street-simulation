@@ -10,6 +10,7 @@ import type {
 } from "../models/types";
 
 export const OUTSIDE_FREIGHT_BUILDING_ID = "outside-freight";
+export const OUTSIDE_COMMUTER_BUILDING_ID = "outside-commuter-gateway";
 export const WEST_BUS_STOP_NODE_ID = "bus-stop-west";
 export const EAST_BUS_STOP_NODE_ID = "bus-stop-east";
 
@@ -275,6 +276,34 @@ export function buildStreetNetwork(
     capacity: roadCapacity,
     freeFlowSpeed: 8,
     monetaryCost: { freight: 0.05, service: 0.04 },
+  });
+
+  addNode({
+    id: accessNodeId(OUTSIDE_COMMUTER_BUILDING_ID),
+    kind: "access",
+    x: 85,
+    z: -4,
+    buildingId: OUTSIDE_COMMUTER_BUILDING_ID,
+  });
+  addEdge({
+    id: "access-outside-commuter-in",
+    from: accessNodeId(OUTSIDE_COMMUTER_BUILDING_ID),
+    to: "road-east-in",
+    modes: ["car"],
+    length: 15,
+    capacity: roadCapacity,
+    freeFlowSpeed: 8,
+    monetaryCost: { car: 0.045 },
+  });
+  addEdge({
+    id: "access-outside-commuter-out",
+    from: "road-east-out",
+    to: accessNodeId(OUTSIDE_COMMUTER_BUILDING_ID),
+    modes: ["car"],
+    length: 15,
+    capacity: roadCapacity,
+    freeFlowSpeed: 8,
+    monetaryCost: { car: 0.045 },
   });
 
   const roadAccessByArm = {

@@ -16,6 +16,7 @@
         <div class="scene-label" aria-hidden="true">
           <span id="active-layer-label">City systems overview</span>
           <strong id="city-name-output">Market-River City Section</strong>
+          <small id="detail-mode-output">Street detail</small>
         </div>
       </main>
 
@@ -25,96 +26,148 @@
           <h1>Street Systems Simulator</h1>
         </div>
         <div class="clock-block" aria-label="Simulation time">
-          <span id="day-output">Day 1 · Day horizon</span>
-          <strong id="time-output">Jan 1, 2026</strong>
+          <div>
+            <span id="day-output">Day 1 · Day horizon</span>
+            <strong id="time-output">Jan 1, 2026</strong>
+          </div>
+          <time id="hour-output" datetime="07:00">07:00</time>
         </div>
         <div class="simulation-actions" aria-label="Simulation controls">
           <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
+          <button id="mobile-panel-button" class="mobile-panel-button" type="button" aria-label="Show inspector" aria-pressed="false" title="Show inspector">i</button>
           <button id="run-button" class="primary-button" type="button">Run</button>
           <button id="pause-button" type="button">Pause</button>
           <button id="reset-button" type="button">Reset</button>
+          <button id="settings-button" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings</button>
         </div>
       </header>
 
-      <aside class="inspector-panel hud-panel" aria-labelledby="inspector-title">
-        <nav class="layer-tabs" aria-label="Simulation layers">
-          <button class="layer-tab" type="button" data-layer="overview" aria-pressed="true">
-            Overview
-          </button>
-          <button class="layer-tab" type="button" data-layer="people" aria-pressed="false">
-            People
-          </button>
-          <button class="layer-tab" type="button" data-layer="economy" aria-pressed="false">
-            Economy
-          </button>
-          <button class="layer-tab" type="button" data-layer="infrastructure" aria-pressed="false">
-            Utilities
-          </button>
-          <button class="layer-tab" type="button" data-layer="land-use" aria-pressed="false">
-            Land use
-          </button>
-        </nav>
+      <nav class="map-mode-bar hud-panel" aria-label="Map modes">
+        <span class="map-mode-label">Map mode</span>
+        <div class="map-mode-buttons">
+          <button type="button" data-visual-layer="none" data-layer="overview" aria-pressed="true">Standard</button>
+          <button type="button" data-visual-layer="congestion" data-layer="infrastructure" aria-pressed="false">Traffic</button>
+          <button type="button" data-visual-layer="pedestrian-wait" data-layer="infrastructure" aria-pressed="false">Walking</button>
+          <button type="button" data-visual-layer="land-value" data-layer="land-use" aria-pressed="false">Land value</button>
+          <button type="button" data-visual-layer="utilities" data-layer="infrastructure" aria-pressed="false">Utilities</button>
+          <button type="button" data-visual-layer="jobs" data-layer="people" aria-pressed="false">Jobs</button>
+          <button type="button" data-visual-layer="shortages" data-layer="economy" aria-pressed="false">Shortages</button>
+          <button type="button" data-visual-layer="migration" data-layer="people" aria-pressed="false">Migration</button>
+          <button type="button" data-visual-layer="freight" data-layer="economy" aria-pressed="false">Freight</button>
+          <button type="button" data-visual-layer="profit" data-layer="economy" aria-pressed="false">Profit</button>
+        </div>
+        <div class="heat-legend map-mode-legend" aria-label="Current map scale">
+          <span id="heat-low-label">Base</span><i></i><span id="heat-high-label">Color</span>
+        </div>
+      </nav>
 
-        <section class="inspector-content">
-          <p class="panel-kicker">Live model</p>
-          <h2 id="inspector-title">Street health</h2>
-          <p id="inspector-summary" class="inspector-summary">All systems are initializing.</p>
-          <dl class="snapshot-list">
-            <div>
-              <dt id="inspector-label-1">Population</dt>
-              <dd id="inspector-value-1">0</dd>
-            </div>
-            <div>
-              <dt id="inspector-label-2">Active trips</dt>
-              <dd id="inspector-value-2">0</dd>
-            </div>
-            <div>
-              <dt id="inspector-label-3">Jobs filled</dt>
-              <dd id="inspector-value-3">0%</dd>
-            </div>
-            <div>
-              <dt id="inspector-label-4">Utility coverage</dt>
-              <dd id="inspector-value-4">0%</dd>
-            </div>
-          </dl>
-        </section>
+      <aside id="inspector-panel" class="inspector-panel hud-panel" aria-labelledby="inspector-title">
+        <div id="dashboard-panel" class="dashboard-panel">
+          <section class="inspector-content">
+            <p class="panel-kicker">Selected map mode</p>
+            <h2 id="inspector-title">Street health</h2>
+            <p id="inspector-summary" class="inspector-summary">All systems are initializing.</p>
+            <dl class="snapshot-list">
+              <div><dt id="inspector-label-1">Population</dt><dd id="inspector-value-1">0</dd></div>
+              <div><dt id="inspector-label-2">Active trips</dt><dd id="inspector-value-2">0</dd></div>
+              <div><dt id="inspector-label-3">Jobs filled</dt><dd id="inspector-value-3">0%</dd></div>
+              <div><dt id="inspector-label-4">Utility coverage</dt><dd id="inspector-value-4">0%</dd></div>
+            </dl>
+          </section>
 
-        <section class="event-section" aria-labelledby="event-title">
-          <div class="section-heading">
-            <p class="panel-kicker">Street log</p>
-            <h2 id="event-title">Recent events</h2>
+          <section class="representation-section" aria-labelledby="representation-title">
+            <div class="section-heading compact-heading">
+              <p class="panel-kicker">Model scale</p>
+              <h2 id="representation-title">Representation</h2>
+            </div>
+            <dl class="representation-grid">
+              <div><dt>Representative person</dt><dd id="representation-person">1 : 0</dd></div>
+              <div><dt>Detailed buildings</dt><dd id="representation-buildings">0 of 0 districts</dd></div>
+            </dl>
+            <p id="representation-activity" class="representation-note">Waiting for sampled activity.</p>
+          </section>
+
+          <section class="cause-section" aria-labelledby="cause-title">
+            <div class="section-heading compact-heading">
+              <p class="panel-kicker">Why?</p>
+              <h2 id="cause-title">Current causes</h2>
+            </div>
+            <dl id="cause-list" class="cause-list"></dl>
+          </section>
+
+          <details class="baseline-section disclosure-section">
+            <summary>Baseline comparison</summary>
+            <div id="baseline-list" class="baseline-list"></div>
+            <ol id="timeline-markers" class="timeline-markers"></ol>
+          </details>
+
+          <section class="event-section" aria-labelledby="event-title">
+            <div class="section-heading">
+              <p class="panel-kicker">Grouped by system</p>
+              <h2 id="event-title">Alerts and updates</h2>
+            </div>
+            <div id="event-list" class="event-list" aria-live="polite">
+              <p>No alerts yet</p>
+            </div>
+          </section>
+        </div>
+
+        <section id="selection-panel" class="selection-panel" aria-labelledby="selection-title" hidden>
+          <header class="selection-heading">
+            <div>
+              <p id="selection-kicker" class="panel-kicker">Selected entity</p>
+              <h2 id="selection-title">Details</h2>
+            </div>
+            <button id="selection-close" class="icon-button" type="button" aria-label="Close details" title="Close details">&times;</button>
+          </header>
+          <p id="selection-summary" class="selection-summary"></p>
+          <div class="inspection-motion-row">
+            <span id="inspection-motion-status">Paused for inspection</span>
+            <label><input id="inspection-run-toggle" type="checkbox" /> Run while open</label>
           </div>
-          <ol id="event-list" class="event-list" aria-live="polite">
-            <li>No events yet</li>
-          </ol>
+          <dl id="selection-stats" class="selection-stats"></dl>
+          <p id="selection-diagnosis" class="selection-diagnosis"></p>
+          <section id="selection-timeline-section" class="selection-timeline-section" aria-labelledby="selection-timeline-title" hidden>
+            <p id="selection-timeline-title" class="panel-kicker">Daily timeline</p>
+            <ol id="selection-timeline" class="entity-timeline"></ol>
+          </section>
+          <section class="selection-connections" aria-labelledby="selection-connections-title">
+            <p id="selection-connections-title" class="panel-kicker">Connection totals</p>
+            <div id="selection-connections" class="connection-groups"></div>
+          </section>
         </section>
       </aside>
 
-      <aside id="selection-panel" class="selection-panel hud-panel" aria-labelledby="selection-title" hidden>
-        <header class="selection-heading">
-          <div>
-            <p id="selection-kicker" class="panel-kicker">Selected entity</p>
-            <h2 id="selection-title">Details</h2>
-          </div>
-          <button id="selection-close" class="icon-button" type="button" aria-label="Close details" title="Close details">&times;</button>
-        </header>
-        <p id="selection-summary" class="selection-summary"></p>
-        <dl id="selection-stats" class="selection-stats"></dl>
-        <section class="selection-connections" aria-labelledby="selection-connections-title">
-          <p id="selection-connections-title" class="panel-kicker">Connections</p>
-          <ol id="selection-connections" class="connection-list"></ol>
-        </section>
-      </aside>
-
-      <aside class="controls-panel hud-panel" aria-labelledby="scenario-title">
+      <button id="settings-scrim" class="settings-scrim" type="button" aria-label="Close settings" aria-hidden="true" tabindex="-1"></button>
+      <aside id="settings-drawer" class="settings-drawer hud-panel" aria-labelledby="scenario-title" aria-hidden="true" inert>
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Scenario</p>
-            <h2 id="scenario-title">Operating conditions</h2>
+            <p class="panel-kicker">Model settings</p>
+            <h2 id="scenario-title">Scenario controls</h2>
           </div>
-          <div class="signal-state" aria-label="Current signal state">
-            <span id="signal-phase">Vehicles</span>
-            <strong><span id="signal-time-remaining">6.0</span>s</strong>
+          <div class="drawer-heading-actions">
+            <div class="signal-state" aria-label="Current signal state">
+              <span id="signal-phase">Vehicles</span>
+              <strong><span id="signal-time-remaining">6.0</span>s</strong>
+            </div>
+            <button id="settings-close" class="icon-button" type="button" aria-label="Close settings" title="Close settings">&times;</button>
+          </div>
+        </div>
+
+        <div class="control-group inspection-controls">
+          <p>Map overlays</p>
+          <fieldset class="flow-toggles">
+            <legend>Visible flows</legend>
+            <label><input type="checkbox" value="commute" checked /> Commutes</label>
+            <label><input type="checkbox" value="customer" checked /> Customers &amp; visits</label>
+            <label><input type="checkbox" value="supply" checked /> Supplies</label>
+            <label><input type="checkbox" value="daily-route" checked /> Daily routes</label>
+          </fieldset>
+          <div class="flow-legend" aria-label="Flow color legend">
+            <span><i style="--legend-color: #49a7e8"></i>Commute</span>
+            <span><i style="--legend-color: #e0a83d"></i>Visitor / customer</span>
+            <span><i style="--legend-color: #db735d"></i>Supply</span>
+            <span><i style="--legend-color: #f0dd70"></i>Daily route</span>
           </div>
         </div>
 
@@ -132,6 +185,7 @@
               <output id="simulation-speed-output" for="simulation-speed-control">1.0x</output>
             </div>
             <input id="simulation-speed-control" type="range" min="0.5" max="4" step="0.5" value="1" />
+            <small id="simulation-speed-effect" class="control-effect"></small>
           </div>
         </div>
 
@@ -145,6 +199,21 @@
           </dl>
         </div>
 
+        <details class="process-panel control-group">
+          <summary>Today's simulation steps</summary>
+          <ol>
+            <li>Businesses request workers and supplies.</li>
+            <li>Residents work and receive wages.</li>
+            <li>Businesses produce goods.</li>
+            <li>Freight delivers local or imported supplies.</li>
+            <li>Households shop within their budgets.</li>
+            <li>Businesses calculate revenue and profit.</li>
+            <li>Prices, employment and land value adjust.</li>
+            <li>Households evaluate happiness and migration.</li>
+            <li>Resulting trips enter the street network.</li>
+          </ol>
+        </details>
+
         <div class="control-group">
           <p>Street operations</p>
           <div class="range-control">
@@ -153,6 +222,7 @@
               <output id="speed-limit-output" for="speed-limit-control">25 mph</output>
             </div>
             <input id="speed-limit-control" type="range" min="10" max="45" step="5" value="25" />
+            <small id="speed-limit-effect" class="control-effect"></small>
           </div>
           <div class="range-control">
             <div class="control-row">
@@ -160,6 +230,7 @@
               <output id="signal-cycle-output" for="signal-cycle-control">12s</output>
             </div>
             <input id="signal-cycle-control" type="range" min="6" max="40" step="2" value="12" />
+            <small id="signal-cycle-effect" class="control-effect"></small>
           </div>
           <div class="range-control">
             <div class="control-row">
@@ -167,6 +238,7 @@
               <output id="transit-headway-output" for="transit-headway-control">8 min</output>
             </div>
             <input id="transit-headway-control" type="range" min="3" max="20" step="1" value="8" />
+            <small id="transit-headway-effect" class="control-effect"></small>
           </div>
           <div class="range-control">
             <div class="control-row">
@@ -174,6 +246,7 @@
               <output id="road-capacity-output" for="road-capacity-control">20 vehicles</output>
             </div>
             <input id="road-capacity-control" type="range" min="8" max="40" step="2" value="20" />
+            <small id="road-capacity-effect" class="control-effect"></small>
           </div>
         </div>
 
@@ -185,6 +258,7 @@
               <output id="utility-capacity-output" for="utility-capacity-control">100%</output>
             </div>
             <input id="utility-capacity-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
+            <small id="utility-capacity-effect" class="control-effect"></small>
           </div>
           <div class="range-control">
             <div class="control-row">
@@ -192,6 +266,7 @@
               <output id="zoning-strictness-output" for="zoning-strictness-control">100%</output>
             </div>
             <input id="zoning-strictness-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
+            <small id="zoning-strictness-effect" class="control-effect"></small>
           </div>
         </div>
       </aside>

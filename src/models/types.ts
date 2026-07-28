@@ -7,7 +7,10 @@ export type VehicleType = "car" | "bus" | "truck" | "service";
 export type ZoneType = "residential" | "commercial" | "industrial" | "civic" | "park";
 export type AgeGroup = "child" | "adult" | "senior";
 export type IncomeBand = "low" | "middle" | "high";
-export type ActivityType = "home" | "work" | "school" | "shopping" | "leisure";
+export type EmploymentStatus = "local" | "external" | "unemployed" | "not-in-labor-force";
+export type ActivityType = "home" | "work" | "school" | "shopping" | "library" | "healthcare" | "leisure";
+export type ResidentNeed = "education" | "goods" | "health" | "community" | "recreation";
+export type ResidentNeeds = Record<ResidentNeed, number>;
 export type UtilityKind = "power" | "water" | "waste";
 export type NetworkKind = "road" | "sidewalk" | "crosswalk" | "bus-stop" | "access";
 export type BuildingConnectionKind = "commute" | "customer" | "supply";
@@ -62,6 +65,7 @@ export interface ScheduledActivity {
   startMinute: number;
   endMinute: number;
   buildingId: string;
+  need?: ResidentNeed;
 }
 
 export interface Person {
@@ -79,6 +83,13 @@ export interface Person {
   destinationBuildingId?: string;
   preferredMode: TravelMode;
   schedule: ScheduledActivity[];
+  scheduleDay: number;
+  needs: ResidentNeeds;
+  employmentStatus: EmploymentStatus;
+  dailyWage: number;
+  commuteCostDaily: number;
+  unemployedDays: number;
+  externalWorkplaceName?: string;
   happiness: number;
   money: number;
   tripsCompleted: number;
@@ -94,6 +105,8 @@ export interface Household {
   goods: number;
   consumptionNeed: number;
   rentPerDay: number;
+  rentArrears: number;
+  unaffordableDays: number;
   happiness: number;
 }
 
@@ -109,10 +122,48 @@ export interface UtilityService {
   waste: number;
 }
 
+export type BuildingOperatingModel = "business" | "housing" | "civic" | "amenity";
+export type BuildingOperatingStatus = "operating" | "understaffed" | "closed" | "occupied" | "funded";
+export type CivicServiceKind = "education" | "health" | "library" | "recreation" | "none";
+export type BuildingUse = "housing" | "retail" | "industrial" | "school" | "library" | "clinic" | "park";
+
+export interface BuildingAccounting {
+  operatingModel: BuildingOperatingModel;
+  operatingStatus: BuildingOperatingStatus;
+  serviceKind: CivicServiceKind;
+  requiredWorkers: number;
+  staffingRatio: number;
+  averageWage: number;
+  unitPrice: number;
+  cashReserve: number;
+  workforceChange: number;
+  lossStreak: number;
+  dailyWages: number;
+  rentIncome: number;
+  occupancyCost: number;
+  maintenanceCost: number;
+  utilityCost: number;
+  goodsReceived: number;
+  localSupplies: number;
+  importedSupplies: number;
+  supplyCost: number;
+  transportCost: number;
+  goodsSold: number;
+  revenue: number;
+  operatingCost: number;
+  profit: number;
+  customers: number;
+  municipalFunding: number;
+  serviceDemand: number;
+  serviceDelivered: number;
+  serviceQuality: number;
+}
+
 export interface Building {
   id: string;
   name: string;
   zone: ZoneType;
+  buildingUse: BuildingUse;
   x: number;
   z: number;
   floors: number;
@@ -124,6 +175,12 @@ export interface Building {
   residentIds: string[];
   jobCapacity: number;
   employeeIds: string[];
+  maximumJobCapacity?: number;
+  wageOffer?: number;
+  retailPrice?: number;
+  cashReserve?: number;
+  unprofitableDays?: number;
+  closedDaysRemaining?: number;
   goodsInventory: number;
   productionRate: number;
   customerDemand: number;
@@ -132,6 +189,7 @@ export interface Building {
   efficiency: number;
   pollution: number;
   wasteStored: number;
+  accounting?: BuildingAccounting;
 }
 
 export interface BuildingConnection {
@@ -209,8 +267,21 @@ export interface EconomyState {
   retailSales: number;
   householdSpending: number;
   businessRevenue: number;
+  propertyRentIncome: number;
+  utilityPayments: number;
+  civicServiceCost: number;
+  civicServiceCoveragePercent: number;
   availableJobs: number;
   employedWorkers: number;
+  externalWorkers: number;
+  averageWage: number;
+  averageRetailPrice: number;
+  hires: number;
+  layoffs: number;
+  businessClosures: number;
+  residentsMovedOut: number;
+  householdsMovedOut: number;
+  rentArrears: number;
   unemploymentPercent: number;
   averageRent: number;
   zoneDemand: Record<"residential" | "commercial" | "industrial", number>;
@@ -226,11 +297,16 @@ export interface LandUseState {
 
 export interface UtilityNetworkState {
   kind: UtilityKind;
+  sourceName: string;
   capacity: number;
   demand: number;
   delivered: number;
   coveragePercent: number;
   lossPercent: number;
+  unitPrice: number;
+  revenueDaily: number;
+  operatingCostDaily: number;
+  netRevenueDaily: number;
 }
 
 export interface InfrastructureState {

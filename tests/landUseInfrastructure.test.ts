@@ -140,7 +140,7 @@ describe("infrastructure", () => {
     expect(averageEfficiency(shortage.buildings)).toBeLessThan(
       averageEfficiency(abundant.buildings),
     );
-    expect(shortage.buildings.every((item) => item.efficiency >= 0.05)).toBe(true);
+    expect(shortage.buildings.every((item) => item.efficiency >= 0)).toBe(true);
   });
 
   it("keeps repeated updates at a constant capacity scale stable", () => {
@@ -179,7 +179,7 @@ describe("infrastructure", () => {
     const recovered = updateInfrastructure(
       missedCollection.buildings,
       missedCollection.infrastructure,
-      { capacities: { waste: 2000 }, elapsedDays: 0 },
+      { capacities: { waste: 2000 }, elapsedDays: 1 },
     );
 
     expect(totalWaste(missedCollection.buildings)).toBeGreaterThan(
@@ -191,6 +191,86 @@ describe("infrastructure", () => {
     );
     expect(recovered.infrastructure.state.wasteCollected).toBeGreaterThan(0);
     expect(recovered.infrastructure.state.utilities.waste.coveragePercent).toBe(100);
+  });
+
+  it("reconciles named utility-provider revenue, cost, and physical capacity", () => {
+    const { buildings } = createInitialLandUse();
+    const result = updateInfrastructure(buildings, createInitialInfrastructure(buildings), {
+      elapsedDays: 1,
+      capacities: { power: 100, water: 90, waste: 70 },
+    });
+
+    for (const kind of ["power", "water", "waste"] as const) {
+      const network = result.infrastructure.networks[kind];
+      const utility = result.infrastructure.state.utilities[kind];
+      expect(utility.sourceName.length).toBeGreaterThan(0);
+      expect(utility.delivered).toBeLessThanOrEqual(network.capacity * (1 - network.lossRate) + 0.001);
+      expect(utility.revenueDaily).toBeCloseTo(utility.delivered * utility.unitPrice, 2);
+      expect(utility.netRevenueDaily).toBeCloseTo(
+        utility.revenueDaily - utility.operatingCostDaily,
+        2,
+      );
+    }
+  });
+
+  it("produces the same waste result in one day or 24 hourly updates", () => {
+    const { buildings } = createInitialLandUse();
+    const daily = updateInfrastructure(buildings, createInitialInfrastructure(buildings), {
+      elapsedDays: 1,
+    });
+    let hourlyBuildings = buildings;
+    let hourlyInfrastructure = createInitialInfrastructure(buildings);
+    for (let hour = 0; hour < 24; hour += 1) {
+      const update = updateInfrastructure(hourlyBuildings, hourlyInfrastructure, {
+        elapsedDays: 1 / 24,
+      });
+      hourlyBuildings = update.buildings;
+      hourlyInfrastructure = update.infrastructure;
+    }
+
+    expect(totalWaste(hourlyBuildings)).toBeCloseTo(totalWaste(daily.buildings), 1);
+    expect(hourlyInfrastructure.state.wasteCollected).toBeCloseTo(
+      daily.infrastructure.state.wasteCollected,
+      1,
+    );
+  });
+
+  it("does not generate or collect waste when no simulation time passes", () => {
+    const { buildings } = createInitialLandUse();
+    const loaded = buildings.map((item) => ({ ...item, wasteStored: item.wasteStored + 10 }));
+    const infrastructure = createInitialInfrastructure(loaded);
+    const result = updateInfrastructure(loaded, infrastructure, { elapsedDays: 0 });
+
+    expect(totalWaste(result.buildings)).toBe(totalWaste(loaded));
+    expect(result.infrastructure.state.wasteCollected).toBe(infrastructure.state.wasteCollected);
+  });
+
+  it("charges standby load instead of full demand for vacant buildings", () => {
+    const { buildings } = createInitialLandUse();
+    const vacant = createInitialInfrastructure(buildings);
+    const occupiedBuildings = buildings.map((item) => ({
+      ...item,
+      residentIds: item.residentCapacity > 0 ? Array.from({ length: item.residentCapacity }, (_, index) => `resident-${index}`) : [],
+      employeeIds: item.jobCapacity > 0 ? Array.from({ length: item.jobCapacity }, (_, index) => `employee-${index}`) : [],
+    }));
+    const occupied = createInitialInfrastructure(occupiedBuildings);
+
+    expect(vacant.state.utilities.power.demand).toBeLessThan(occupied.state.utilities.power.demand);
+    expect(vacant.state.utilities.water.demand).toBeLessThan(occupied.state.utilities.water.demand);
+    expect(vacant.state.utilities.waste.demand).toBeLessThan(occupied.state.utilities.waste.demand);
+  });
+
+  it("increases provider operating cost when capacity expands", () => {
+    const { buildings } = createInitialLandUse();
+    const infrastructure = createInitialInfrastructure(buildings);
+    const base = updateInfrastructure(buildings, infrastructure, { capacityScale: 1, elapsedDays: 0 });
+    const expanded = updateInfrastructure(buildings, infrastructure, { capacityScale: 1.5, elapsedDays: 0 });
+
+    for (const kind of ["power", "water", "waste"] as const) {
+      expect(expanded.infrastructure.state.utilities[kind].operatingCostDaily).toBeGreaterThan(
+        base.infrastructure.state.utilities[kind].operatingCostDaily,
+      );
+    }
   });
 });
 

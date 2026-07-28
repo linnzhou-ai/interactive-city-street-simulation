@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { advanceCitySection } from "../src/core/cityEngine";
+import { resolveProductionCapacity } from "../src/core/cityEconomy";
 import {
   createCitySectionState,
   createDemoCitySectionDefinition,
   validateCitySectionDefinition,
 } from "../src/core/cityModel";
-import { calendarFromElapsedDays, cityMinutesPerSecond, formatLongDate } from "../src/core/timeScale";
+import { calendarFromElapsedDays, cityMinutesPerSecond, formatClockTime, formatLongDate } from "../src/core/timeScale";
 import type { CitySectionDefinition } from "../src/models/cityTypes";
 
 describe("city section model", () => {
@@ -91,6 +92,101 @@ describe("city section model", () => {
     expect(state.districts.every((district) => district.householdWealth >= 0)).toBe(true);
   });
 
+  it("does not classify housing, civic buildings, or parks as goods producers", () => {
+    const definition = createDemoCitySectionDefinition();
+    for (const district of definition.districts) {
+      const capacity = resolveProductionCapacity(district);
+      if (district.primaryZone === "commercial" || district.primaryZone === "industrial") {
+        expect(Object.values(capacity).some((value) => value > 0)).toBe(true);
+      } else {
+        expect(capacity).toEqual({ food: 0, consumerGoods: 0, industrialMaterials: 0 });
+      }
+    }
+  });
+
+  it("stops city production, sales, and civic delivery without workers", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    initial.districts = initial.districts.map((district) => ({
+      ...district,
+      population: 0,
+      households: 0,
+      children: 0,
+      adults: 0,
+      seniors: 0,
+      laborForce: 0,
+      employedResidents: 0,
+      householdWealth: 0,
+    }));
+    initial.externalMarkets = initial.externalMarkets.map((market) => ({
+      ...market,
+      commuterCapacityDaily: 0,
+      externalJobs: 0,
+    }));
+    const state = advanceCitySection(initial, 1).state;
+
+    expect(state.metrics.goodsProducedDaily).toBe(0);
+    expect(state.metrics.goodsConsumedDaily).toBe(0);
+    expect(state.metrics.businessRevenueDaily).toBe(0);
+    expect(state.metrics.businessProfitDaily).toBeLessThan(0);
+    expect(state.metrics.civicServiceCoveragePercent).toBe(0);
+    expect(state.districts.every((district) => district.civicServiceDelivered === 0)).toBe(true);
+  });
+
+  it("reconciles city rent, utility, and civic-service accounts", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    const state = advanceCitySection(initial, 1).state;
+    const rentIncome = state.districts.reduce(
+      (total, district) => total + district.propertyRentIncomeDaily,
+      0,
+    );
+    const utilityPayments = state.districts.reduce(
+      (total, district) => total + district.utilityCostDaily,
+      0,
+    );
+    const civicCost = state.districts.reduce(
+      (total, district) => total + district.civicOperatingCostDaily,
+      0,
+    );
+
+    expect(state.metrics.propertyRentIncomeDaily).toBeCloseTo(rentIncome, 2);
+    expect(state.metrics.utilityCostDaily).toBeCloseTo(utilityPayments, 2);
+    expect(state.metrics.civicOperatingCostDaily).toBeCloseTo(civicCost, 2);
+    expect(state.metrics.civicServiceCoveragePercent).toBeGreaterThan(0);
+    expect(state.metrics.civicServiceCoveragePercent).toBeLessThanOrEqual(100);
+    expect(state.municipalBudget).toBeCloseTo(
+      initial.municipalBudget + state.metrics.taxRevenueDaily
+        + state.metrics.utilityCostDaily - state.metrics.maintenanceCostDaily,
+      2,
+    );
+  });
+
+  it("keeps demand-gated civic staffing fiscally stable over two years", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    const state = advanceCitySection(initial, 730).state;
+
+    expect(state.metrics.civicOperatingCostDaily).toBeLessThan(
+      state.metrics.taxRevenueDaily + state.metrics.utilityCostDaily,
+    );
+    expect(state.municipalBudget).toBeGreaterThan(0);
+    expect(state.municipalBudget).toBeLessThan(500_000_000);
+    expect(state.metrics.civicServiceCoveragePercent).toBeGreaterThan(50);
+  });
+
+  it("conserves city utility delivery after network losses", () => {
+    const initial = createCitySectionState(createDemoCitySectionDefinition());
+    const state = advanceCitySection(initial, 1, { utilityCapacityScale: 0.5 }).state;
+    const lossRate = { power: 0.06, water: 0.08, waste: 0.04 } as const;
+    for (const kind of ["power", "water", "waste"] as const) {
+      const delivered = state.districts.reduce(
+        (total, district) => total + district.utilityDemand[kind] * district.utilityCoverage[kind],
+        0,
+      );
+      expect(delivered).toBeLessThanOrEqual(
+        initial.utilityCapacity[kind] * 0.5 * (1 - lossRate[kind]) + 1,
+      );
+    }
+  });
+
   it("reports migration in, migration out, and net migration separately", () => {
     const state = advanceCitySection(createCitySectionState(createDemoCitySectionDefinition()), 30).state;
 
@@ -159,6 +255,8 @@ describe("city section model", () => {
     expect(cityMinutesPerSecond("year")).toBe(10080);
     expect(calendarFromElapsedDays(2026, 365)).toMatchObject({ year: 2027, month: 1, dayOfMonth: 1 });
     expect(formatLongDate(2026, 59)).toBe("Mar 1, 2026");
+    expect(formatClockTime(7 * 60 + 5)).toBe("07:05");
+    expect(formatClockTime(1500)).toBe("01:00");
   });
 });
 

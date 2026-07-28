@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Building, TravelMode, TripRequest } from "../src/models/types";
 import { MobilitySystem } from "../src/core/mobility";
 import {
+  OUTSIDE_COMMUTER_BUILDING_ID,
   OUTSIDE_FREIGHT_BUILDING_ID,
   buildStreetNetwork,
   calculateEdgeCost,
@@ -43,6 +44,7 @@ describe("street network routing", () => {
       trip("walk-route", "walk"),
       trip("bus-route", "bus"),
       trip("freight-route", "freight", OUTSIDE_FREIGHT_BUILDING_ID, "east-shop"),
+      trip("outside-job-route", "car", "west-home", OUTSIDE_COMMUTER_BUILDING_ID),
     ];
 
     for (const request of requests) {
@@ -69,6 +71,9 @@ describe("street network routing", () => {
     expect(network.nodes.some((node) => node.kind === "bus-stop")).toBe(true);
     expect(
       network.nodes.some((node) => node.buildingId === OUTSIDE_FREIGHT_BUILDING_ID),
+    ).toBe(true);
+    expect(
+      network.nodes.some((node) => node.buildingId === OUTSIDE_COMMUTER_BUILDING_ID),
     ).toBe(true);
     for (const building of buildings) {
       expect(network.nodes.some((node) => node.buildingId === building.id)).toBe(true);

@@ -7,6 +7,7 @@ import type {
   GoodsBasket,
   GoodType,
 } from "../models/cityTypes";
+import { UTILITY_CUSTOMER_RATES } from "./infrastructure";
 
 export const GOODS: GoodType[] = ["food", "consumerGoods", "industrialMaterials"];
 export const BASE_GOODS_PRICES: GoodsBasket = {
@@ -45,6 +46,7 @@ interface CityEconomyResult {
 interface WorkingDistrict {
   district: CityDistrictState;
   availableGoods: GoodsBasket;
+  marketSupply: GoodsBasket;
   demand: GoodsBasket;
   produced: GoodsBasket;
   employedResidents: number;
@@ -93,22 +95,32 @@ export function createExternalMarketState(definition: ExternalMarketDefinition):
 
 export function resolveProductionCapacity(definition: CityDistrictDefinition): GoodsBasket {
   const defaults: Record<CityDistrictDefinition["primaryZone"], GoodsBasket> = {
-    residential: { food: 0.65, consumerGoods: 0.25, industrialMaterials: 0.1 },
-    commercial: { food: 0.3, consumerGoods: 0.55, industrialMaterials: 0.15 },
+    residential: { food: 0, consumerGoods: 0, industrialMaterials: 0 },
+    commercial: { food: 0.35, consumerGoods: 0.65, industrialMaterials: 0 },
     industrial: { food: 0.05, consumerGoods: 0.35, industrialMaterials: 0.6 },
-    civic: { food: 0.25, consumerGoods: 0.45, industrialMaterials: 0.3 },
-    park: { food: 0.8, consumerGoods: 0.15, industrialMaterials: 0.05 },
+    civic: { food: 0, consumerGoods: 0, industrialMaterials: 0 },
+    park: { food: 0, consumerGoods: 0, industrialMaterials: 0 },
   };
   const profile = { ...defaults[definition.primaryZone], ...definition.productionProfile };
   const profileTotal = sum(GOODS.map((good) => Math.max(0, profile[good])));
-  return mapGoods((good) => definition.goodsProductionCapacity * Math.max(0, profile[good]) / Math.max(1, profileTotal));
+  if (profileTotal <= 0) return emptyGoodsBasket();
+  return mapGoods((good) => definition.goodsProductionCapacity * Math.max(0, profile[good]) / profileTotal);
 }
 
 export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const elapsedDays = input.elapsedDays;
   const externalMarkets = input.externalMarkets.map(resetExternalMarket);
   const totalLabor = sum(input.districts.map((district) => district.laborForce));
-  const totalJobs = sum(input.districts.map((district) => district.jobs));
+  const civicDemandTotal = sum(input.districts.map(civicServiceDemand));
+  const civicCapacityAtFullStaff = sum(input.districts.map((district) =>
+    civicJobSlots(district) * average(Object.values(district.utilityCoverage)) * 18
+  ));
+  const civicLaborScale = civicCapacityAtFullStaff > 0
+    ? clamp01(civicDemandTotal / civicCapacityAtFullStaff)
+    : 0;
+  const totalJobs = sum(input.districts.map((district) =>
+    effectiveJobSlots(district, civicLaborScale)
+  ));
   const localWorkers = Math.min(totalLabor, totalJobs);
   const outboundCommuters = allocateCommuters(
     externalMarkets,
@@ -134,7 +146,8 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const capacity = input.transportCapacity.get(district.id) ?? { road: 1, transit: 0, freight: 0 };
     const accessReliability = clamp(1 - district.congestionPercent / 450, 0.78, 1);
     const employedResidents = district.laborForce * residentEmploymentRatio * accessReliability;
-    const vacancyRate = district.jobs > 0 ? Math.max(0, district.jobs - district.laborForce) / district.jobs : 0;
+    const districtJobs = effectiveJobSlots(district, civicLaborScale);
+    const vacancyRate = districtJobs > 0 ? Math.max(0, districtJobs - district.laborForce) / districtJobs : 0;
     const averageWageDaily = (district.averageIncome / 260) * clamp(
       0.88 + vacancyRate * 0.24 + utilityReliability * 0.08 - district.congestionPercent / 900,
       0.72,
@@ -150,22 +163,25 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       food: Math.min(
         district.population * 0.3,
         (availableCash * 0.15) / Math.max(1, previousPrices.food),
-      ) * priceResponse(BASE_GOODS_PRICES.food, previousPrices.food),
+      ) * priceResponse(BASE_GOODS_PRICES.food, previousPrices.food)
+        * workplaceFillRatio * utilityReliability,
       consumerGoods: Math.min(
         district.population * 0.085 * clamp(district.averageIncome / 55_000, 0.65, 1.5),
         (availableCash * 0.11) / Math.max(1, previousPrices.consumerGoods),
-      ) * priceResponse(BASE_GOODS_PRICES.consumerGoods, previousPrices.consumerGoods),
+      ) * priceResponse(BASE_GOODS_PRICES.consumerGoods, previousPrices.consumerGoods)
+        * workplaceFillRatio * utilityReliability,
       industrialMaterials: (
         district.commercialFloorArea / 90 + district.industrialFloorArea / 55
-      ) * clamp(utilityReliability, 0.35, 1.1),
+      ) * workplaceFillRatio * utilityReliability,
     };
-    const laborUtilization = district.laborForce > 0 ? employedResidents / district.laborForce : 1;
-    const productionUtilization = clamp01(laborUtilization * utilityReliability * accessReliability);
+    const productionUtilization = privateJobSlots(district) > 0
+      ? clamp01(workplaceFillRatio * utilityReliability * accessReliability)
+      : 0;
     const plannedConsumerGoods = district.productionCapacity.consumerGoods * productionUtilization * elapsedDays;
     const materialsNeeded = plannedConsumerGoods * 0.28;
     const materialsAvailable = district.goodsInventory.industrialMaterials;
     const consumerInputCoverage = materialsNeeded > 0
-      ? clamp(materialsAvailable / materialsNeeded, 0.25, 1)
+      ? clamp(materialsAvailable / materialsNeeded, 0, 1)
       : 1;
     const produced: GoodsBasket = {
       food: district.productionCapacity.food * productionUtilization * elapsedDays,
@@ -178,9 +194,11 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       consumerGoods: district.goodsInventory.consumerGoods + produced.consumerGoods,
       industrialMaterials: district.goodsInventory.industrialMaterials - materialsUsed + produced.industrialMaterials,
     };
+    const marketSupply = mapGoods((good) => availableGoods[good] * productionUtilization);
     return {
       district,
       availableGoods,
+      marketSupply,
       demand: mapGoods((good) => Math.max(0, demand[good] * elapsedDays)),
       produced,
       employedResidents,
@@ -194,7 +212,7 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   });
 
   const demandDaily = totalBasket(working.map((entry) => entry.demand));
-  const localSupplyDaily = totalBasket(working.map((entry) => entry.availableGoods));
+  const localSupplyDaily = totalBasket(working.map((entry) => entry.marketSupply));
   const importsDaily = emptyGoodsBasket();
   const exportsDaily = emptyGoodsBasket();
   const fulfilledDaily = emptyGoodsBasket();
@@ -271,11 +289,24 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const localUsed = mapGoods((good) => Math.min(demandDaily[good], localSupplyDaily[good]));
   const totalFreightTrips = sum(externalMarkets.map((market) => market.freightTripsDaily)) +
     sum(GOODS.map((good) => localUsed[good] * GOODS_WEIGHT[good])) * crossDistrictShare(working, localSupplyDaily) / TRUCK_CAPACITY;
+  const cityHouseholdSalesDaily = (
+    fulfilledDaily.food * prices.food + fulfilledDaily.consumerGoods * prices.consumerGoods
+  ) / Math.max(elapsedDays, 1e-9);
+  const retailActivityTotal = sum(working.map((entry) => privateActivityWeight(entry.district, "retail")));
+  const civicCapacityTotal = sum(working.map((entry) => civicServiceCapacity(
+    entry.district,
+    workplaceFillRatio,
+    entry.utilityReliability,
+    civicLaborScale,
+  )));
+  const civicCoverage = civicDemandTotal > 0
+    ? clamp01(civicCapacityTotal / civicDemandTotal)
+    : 1;
 
   const districts = working.map((entry) => {
     const districtDemandTotal = sumBasket(entry.demand);
     const cityDemandTotal = sumBasket(demandDaily);
-    const districtSupplyTotal = sumBasket(entry.availableGoods);
+    const districtSupplyTotal = sumBasket(entry.marketSupply);
     const citySupplyTotal = sumBasket(localSupplyDaily);
     const demandShare = districtDemandTotal / Math.max(1, cityDemandTotal);
     const supplyShare = districtSupplyTotal / Math.max(1, citySupplyTotal);
@@ -286,10 +317,10 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       importsDaily[good] * entry.demand[good] / Math.max(1, demandDaily[good]),
     );
     const goodsExportedByType = mapGoods((good) =>
-      exportsDaily[good] * entry.availableGoods[good] / Math.max(1, localSupplyDaily[good]),
+      exportsDaily[good] * entry.marketSupply[good] / Math.max(1, localSupplyDaily[good]),
     );
     const goodsInventory = mapGoods((good) => {
-      const localDraw = localUsed[good] * entry.availableGoods[good] / Math.max(1, localSupplyDaily[good]);
+      const localDraw = localUsed[good] * entry.marketSupply[good] / Math.max(1, localSupplyDaily[good]);
       return Math.max(0, entry.availableGoods[good] - localDraw - goodsExportedByType[good]);
     });
     const householdSpendingDaily = (
@@ -301,22 +332,37 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       0,
       householdCash - entry.rentPaidDaily * elapsedDays - householdSpendingDaily * elapsedDays,
     );
-    const workplaceWorkers = entry.district.jobs * workplaceFillRatio;
-    const wageBill = workplaceWorkers * entry.averageWageDaily;
+    const privateWorkers = privateJobSlots(entry.district) * workplaceFillRatio;
+    const civicWorkers = civicJobSlots(entry.district) * civicLaborScale * workplaceFillRatio;
+    const privateWageBill = privateWorkers * entry.averageWageDaily;
+    const civicWageBill = civicWorkers * entry.averageWageDaily;
     const materialsCost = goodsConsumedByType.industrialMaterials * prices.industrialMaterials / Math.max(elapsedDays, 1e-9);
-    const outputRevenue = wageBill * (1.16 + entry.utilityReliability * 0.18);
-    const goodsRevenue = householdSpendingDaily + materialsCost;
+    const outputRevenue = privateWageBill * (1.16 + entry.utilityReliability * 0.18);
+    const retailRevenue = cityHouseholdSalesDaily
+      * privateActivityWeight(entry.district, "retail")
+      / Math.max(1, retailActivityTotal);
+    const materialsRevenue = localUsed.industrialMaterials * prices.industrialMaterials
+      * supplyShare / Math.max(elapsedDays, 1e-9);
     const exportRevenue = sum(GOODS.map((good) =>
       goodsExportedByType[good] * prices[good],
     )) / Math.max(elapsedDays, 1e-9);
-    const businessRevenueDaily = outputRevenue + goodsRevenue + exportRevenue;
+    const businessRevenueDaily = outputRevenue + retailRevenue + materialsRevenue + exportRevenue;
     const businessRent = (entry.district.commercialFloorArea + entry.district.industrialFloorArea) * entry.district.rentIndex * 0.035;
     const allocatedTransportCost = transportCostDaily * (demandShare + supplyShare) / 2;
-    const businessCostsDaily = wageBill + materialsCost + businessRent + allocatedTransportCost;
+    const utilityCostDaily = utilityPayment(entry.district);
+    const useWeights = utilityUseWeights(entry.district);
+    const businessUtilityCost = utilityCostDaily * useWeights.business;
+    const propertyOperatingCostDaily = entry.district.housingUnits * 0.72
+      + utilityCostDaily * useWeights.housing;
+    const civicOperatingCostDaily = civicWageBill
+      + entry.district.civicFloorArea * 0.045
+      + utilityCostDaily * useWeights.civic;
+    const businessCostsDaily = privateWageBill + materialsCost + businessRent
+      + allocatedTransportCost + businessUtilityCost;
     const businessProfitDaily = businessRevenueDaily - businessCostsDaily;
     const districtExternalCommuters = (
       outboundCommuters * entry.district.laborForce / Math.max(1, totalLabor) +
-      inboundCommuters * entry.district.jobs / Math.max(1, totalJobs)
+      inboundCommuters * effectiveJobSlots(entry.district, civicLaborScale) / Math.max(1, totalJobs)
     );
     const commuteTripsDaily = (entry.employedResidents + districtExternalCommuters) * 1.82;
     const goodsCoverage = districtDemandTotal > 0 ? sumBasket(goodsConsumedByType) / districtDemandTotal : 1;
@@ -336,6 +382,13 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       businessRevenueDaily: round(businessRevenueDaily),
       businessCostsDaily: round(businessCostsDaily),
       businessProfitDaily: round(businessProfitDaily),
+      propertyRentIncomeDaily: round(entry.rentPaidDaily),
+      propertyOperatingCostDaily: round(propertyOperatingCostDaily),
+      utilityCostDaily: round(utilityCostDaily),
+      civicServiceDemand: round(civicServiceDemand(entry.district)),
+      civicServiceDelivered: round(civicServiceDemand(entry.district) * civicCoverage),
+      civicServiceQualityPercent: round(civicCoverage * 100),
+      civicOperatingCostDaily: round(civicOperatingCostDaily),
       goodsInventory: mapGoods((good) => round(goodsInventory[good])),
       goodsDemandByType: mapGoods((good) => round(entry.demand[good] / Math.max(elapsedDays, 1e-9))),
       goodsProducedByType: mapGoods((good) => round(entry.produced[good] / Math.max(elapsedDays, 1e-9))),
@@ -375,6 +428,62 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   };
   if (demandTotal <= 0) market.localSupplyPercent = 100;
   return { districts, externalMarkets, market };
+}
+
+function privateJobShare(district: CityDistrictState): number {
+  const privateWeight = privateActivityWeight(district, "all");
+  const civicWeight = district.civicFloorArea / 42;
+  return privateWeight + civicWeight > 0 ? privateWeight / (privateWeight + civicWeight) : 0;
+}
+
+function privateJobSlots(district: CityDistrictState): number {
+  return district.jobs * privateJobShare(district);
+}
+
+function civicJobSlots(district: CityDistrictState): number {
+  return district.jobs - privateJobSlots(district);
+}
+
+function effectiveJobSlots(district: CityDistrictState, civicLaborScale: number): number {
+  return privateJobSlots(district) + civicJobSlots(district) * civicLaborScale;
+}
+
+function privateActivityWeight(
+  district: CityDistrictState,
+  kind: "all" | "retail",
+): number {
+  if (kind === "retail") return Math.max(0, district.commercialFloorArea / 34);
+  return Math.max(0, district.commercialFloorArea / 34 + district.industrialFloorArea / 48);
+}
+
+function civicServiceDemand(district: CityDistrictState): number {
+  return district.children + district.population * 0.3;
+}
+
+function civicServiceCapacity(
+  district: CityDistrictState,
+  workplaceFillRatio: number,
+  utilityReliability: number,
+  civicLaborScale: number,
+): number {
+  const civicWorkers = civicJobSlots(district) * civicLaborScale * workplaceFillRatio;
+  return civicWorkers * utilityReliability * 18;
+}
+
+function utilityPayment(district: CityDistrictState): number {
+  return sum((Object.keys(UTILITY_CUSTOMER_RATES) as Array<keyof typeof UTILITY_CUSTOMER_RATES>).map((kind) =>
+    district.utilityDemand[kind] * district.utilityCoverage[kind] * UTILITY_CUSTOMER_RATES[kind]
+  ));
+}
+
+function utilityUseWeights(
+  district: CityDistrictState,
+): { housing: number; business: number; civic: number } {
+  const housing = district.population * 18;
+  const business = district.commercialFloorArea + district.industrialFloorArea;
+  const civic = district.civicFloorArea;
+  const total = Math.max(1, housing + business + civic);
+  return { housing: housing / total, business: business / total, civic: civic / total };
 }
 
 function allocateCommuters(
@@ -444,7 +553,7 @@ function transportCostPerUnit(
 
 function crossDistrictShare(working: readonly WorkingDistrict[], supply: GoodsBasket): number {
   const concentration = sum(working.map((entry) => {
-    const share = sumBasket(entry.availableGoods) / Math.max(1, sumBasket(supply));
+    const share = sumBasket(entry.marketSupply) / Math.max(1, sumBasket(supply));
     return share * share;
   }));
   return clamp(1 - concentration, 0.15, 0.85);

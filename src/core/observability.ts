@@ -18,9 +18,17 @@ export function deriveBuildingConnections(
     if (person.workBuildingId !== undefined) {
       addConnection(connections, "commute", person.homeBuildingId, person.workBuildingId, 1, person.id);
     }
-    const shopping = person.schedule.find((activity) => activity.activity === "shopping");
-    if (shopping !== undefined) {
-      addConnection(connections, "customer", person.homeBuildingId, shopping.buildingId, 1, person.id);
+    const visitBuildingIds = new Set(person.schedule
+      .filter((activity) =>
+        activity.activity === "shopping"
+        || activity.activity === "school"
+        || activity.activity === "library"
+        || activity.activity === "healthcare"
+        || activity.activity === "leisure"
+      )
+      .map((activity) => activity.buildingId));
+    for (const buildingId of visitBuildingIds) {
+      addConnection(connections, "customer", person.homeBuildingId, buildingId, 1, person.id);
     }
   }
 
