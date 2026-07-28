@@ -86,6 +86,8 @@ export interface SignalSnapshot {
 
 export interface VehicleSnapshot {
   id: number;
+  segmentId: string;
+  laneId: string;
   x: number;
   z: number;
   heading: number;
@@ -97,6 +99,7 @@ export interface VehicleSnapshot {
 
 export interface PedestrianSnapshot {
   id: number;
+  segmentId: string;
   x: number;
   z: number;
   heading: number;

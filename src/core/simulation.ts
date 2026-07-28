@@ -7,7 +7,9 @@ import type {
   SignalTiming,
   SimulationMetrics,
   SimulationState,
+  FeatureDesign,
 } from "../models/types";
+import type { RoadSegmentModel } from "../data/roadLanes";
 import { LiveTrafficSystem } from "./liveTraffic";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
@@ -71,6 +73,10 @@ export class Simulation {
 
   getSignal(intersectionId: string): SignalSnapshot | undefined {
     return this.traffic.getSignal(intersectionId);
+  }
+
+  getRoadSegment(segmentId: string): RoadSegmentModel | undefined {
+    return this.traffic.getRoadSegment(segmentId);
   }
 
   start(): void {
@@ -164,6 +170,13 @@ export class Simulation {
   setDesignImpact(impact: DesignImpact): void {
     this.designImpact = { ...impact };
     this.updateMetrics();
+  }
+
+  setRoadDesigns(
+    designs: ReadonlyMap<string, Readonly<FeatureDesign>>,
+  ): void {
+    this.traffic.setRoadDesigns(designs);
+    this.syncTrafficState();
   }
 
   update(deltaSeconds: number): void {

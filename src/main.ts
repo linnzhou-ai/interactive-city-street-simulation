@@ -345,12 +345,7 @@ function updateSelectionPanel(): void {
 
   const summaries =
     selectedFeature.kind === "street"
-      ? [
-          formatLaneChange(design.laneDelta),
-          design.bikeLane ? "Protected bike lane" : "No bike lane",
-          design.widenedSidewalk ? "Wider sidewalk" : "Standard sidewalk",
-          formatDirection(design.laneDirection, selectedFeature.axis),
-        ]
+      ? streetDesignSummaries(selectedFeature, design)
       : [
           design.crosswalk ? "High-vis crosswalk" : "Standard crosswalk",
           design.pedestrianIsland ? "Pedestrian island" : "No refuge island",
@@ -465,6 +460,7 @@ function applyBuildTool(tool: BuildTool): void {
 
 function syncDesign(): void {
   renderer.setDesigns(designs);
+  simulation.setRoadDesigns(designs);
   const impact: DesignImpact = {
     laneCapacityDelta: 0,
     bikeLanes: 0,
@@ -485,17 +481,42 @@ function syncDesign(): void {
 }
 
 function getDesign(featureId: string): FeatureDesign {
+  const road = simulation.getRoadSegment(featureId);
   return (
     designs.get(featureId) ?? {
       laneDelta: 0,
-      bikeLane: false,
+      bikeLane: road?.lanes.some((lane) => lane.type === "bike") ?? false,
       widenedSidewalk: false,
       crosswalk: false,
       pedestrianIsland: false,
-      laneDirection: "two-way",
+      laneDirection: road?.directionality ?? "two-way",
       signalCycleSeconds: simulation.getSettings().signalCycleSeconds,
     }
   );
+}
+
+function streetDesignSummaries(
+  feature: DistrictFeature,
+  design: Readonly<FeatureDesign>,
+): string[] {
+  const road = simulation.getRoadSegment(feature.id);
+  if (!road) {
+    return [
+      formatLaneChange(design.laneDelta),
+      formatDirection(design.laneDirection, feature.axis),
+    ];
+  }
+  return [
+    `${road.roadClass.replace("-", " ")} · ${road.travelLaneCount} travel lanes`,
+    road.lanes.some((lane) => lane.type === "bike")
+      ? "Protected bike lane"
+      : "No bike lane",
+    road.lanes.some((lane) => lane.type === "parking")
+      ? "Curb parking lane"
+      : "No parking lane",
+    design.widenedSidewalk ? "Wider sidewalk" : "Standard sidewalk",
+    formatDirection(road.directionality, feature.axis),
+  ];
 }
 
 function applyScenario(settings: {

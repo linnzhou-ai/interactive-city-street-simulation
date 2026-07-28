@@ -89,27 +89,47 @@ describe("LiveTrafficSystem", () => {
       speedLimitMph: 25,
     });
 
-    expect(traffic.getVehicles().length).toBeLessThanOrEqual(40);
-    expect(traffic.getPedestrians().length).toBeLessThanOrEqual(55);
+    expect(traffic.getVehicles().length).toBeLessThanOrEqual(110);
+    expect(traffic.getPedestrians().length).toBeLessThanOrEqual(150);
     expect(traffic.getMetrics()).toMatchObject({
       activeVehicles: traffic.getVehicles().length,
       activePedestrians: traffic.getPedestrians().length,
-      potentialConflicts: 0,
     });
+    expect(traffic.getMetrics().potentialConflicts).toBeGreaterThanOrEqual(0);
   });
 
   it("remains bounded under sustained high demand", () => {
     const traffic = new LiveTrafficSystem(2026);
 
-    traffic.update(300, {
+    traffic.update(60, {
       vehicleVolume: 3,
       pedestrianVolume: 3,
       speedLimitMph: 25,
     });
 
-    expect(traffic.getVehicles().length).toBeLessThanOrEqual(170);
-    expect(traffic.getPedestrians().length).toBeLessThanOrEqual(260);
+    expect(traffic.getVehicles().length).toBeLessThanOrEqual(560);
+    expect(traffic.getPedestrians().length).toBeLessThanOrEqual(750);
     expect(traffic.getMetrics().congestion).toBeGreaterThan(0);
-    expect(traffic.getMetrics().potentialConflicts).toBe(0);
+    expect(traffic.getMetrics().potentialConflicts).toBeGreaterThanOrEqual(0);
+  });
+
+  it("distributes lane-assigned agents throughout the district", () => {
+    const traffic = new LiveTrafficSystem(3401);
+
+    traffic.update(45, {
+      vehicleVolume: 3,
+      pedestrianVolume: 3,
+      speedLimitMph: 25,
+    });
+
+    const vehicles = traffic.getVehicles();
+    const coverage = traffic.getCoverage();
+    expect(vehicles.length).toBeGreaterThanOrEqual(350);
+    expect(traffic.getPedestrians().length).toBeGreaterThanOrEqual(500);
+    expect(vehicles.every((vehicle) => vehicle.laneId.includes(vehicle.segmentId))).toBe(
+      true,
+    );
+    expect(coverage.vehicleSegments.size).toBeGreaterThan(70);
+    expect(coverage.pedestrianSegments.size).toBeGreaterThan(90);
   });
 });

@@ -10,6 +10,12 @@ import {
   PENN_ROAD_GRAPH,
   PENN_STREETS,
 } from "../data/pennRoadGraph";
+import {
+  createRoadSegmentModel,
+  isDrivableLane,
+  ROAD_SEGMENT_BY_ID,
+} from "../data/roadLanes";
+import type { RoadSegmentModel } from "../data/roadLanes";
 import type {
   CameraMode,
   DistrictFeature,
@@ -51,6 +57,8 @@ const WALK_PLAYER_HEIGHT = 1.78;
 const WALK_EYE_HEIGHT = 1.68;
 const WALK_GRAVITY = 18;
 const MAX_COLLISION_STEP = 0.18;
+const VEHICLE_INSTANCE_CAPACITY = 700;
+const PEDESTRIAN_INSTANCE_CAPACITY = 1_000;
 
 interface SignalAssembly {
   intersectionId: string;
@@ -94,15 +102,23 @@ export class ThreeRenderer {
   private readonly analysisGroup = new THREE.Group();
   private readonly trafficGroup = new THREE.Group();
   private readonly pedestrianGroup = new THREE.Group();
-  private readonly vehiclePool: THREE.Group[] = [];
-  private readonly pedestrianPool: THREE.Group[] = [];
+  private readonly vehicleBodies: THREE.InstancedMesh;
+  private readonly vehicleCabins: THREE.InstancedMesh;
+  private readonly pedestrianBodies: THREE.InstancedMesh;
+  private readonly pedestrianHeads: THREE.InstancedMesh;
+  private readonly agentTransform = new THREE.Object3D();
+  private readonly agentColor = new THREE.Color();
   private readonly signalAssemblies: SignalAssembly[] = [];
   private readonly flyKeys = new Set<string>();
   private readonly collisionIndex = new SpatialHash<CollisionVolume>(96);
   private readonly walkableIndex = new SpatialHash<WalkableSurface>(96);
   private readonly collisionDebugGroup = new THREE.Group();
+  private readonly trafficDebugGroup = new THREE.Group();
   private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
     "collisionDebug",
+  );
+  private readonly trafficDebugEnabled = new URLSearchParams(window.location.search).has(
+    "trafficDebug",
   );
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
   private selectedFeatureId: string | null = null;
@@ -148,10 +164,43 @@ export class ThreeRenderer {
     this.controls.maxDistance = 2_700;
     this.controls.maxPolarAngle = Math.PI / 2.04;
 
-    this.scene.add(this.designGroup, this.analysisGroup, this.trafficGroup, this.pedestrianGroup);
+    this.scene.add(
+      this.designGroup,
+      this.analysisGroup,
+      this.trafficGroup,
+      this.pedestrianGroup,
+      this.trafficDebugGroup,
+    );
+    this.vehicleBodies = createAgentInstances(
+      new THREE.BoxGeometry(1.9, 0.72, 4.2),
+      new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.08 }),
+      VEHICLE_INSTANCE_CAPACITY,
+    );
+    this.vehicleCabins = createAgentInstances(
+      new THREE.BoxGeometry(1.66, 0.68, 1.9),
+      new THREE.MeshStandardMaterial({
+        color: "#aec8ce",
+        roughness: 0.2,
+        metalness: 0.12,
+      }),
+      VEHICLE_INSTANCE_CAPACITY,
+    );
+    this.pedestrianBodies = createAgentInstances(
+      new THREE.CapsuleGeometry(0.28, 0.72, 3, 6),
+      new THREE.MeshStandardMaterial({ roughness: 0.9 }),
+      PEDESTRIAN_INSTANCE_CAPACITY,
+    );
+    this.pedestrianHeads = createAgentInstances(
+      new THREE.SphereGeometry(0.25, 8, 6),
+      new THREE.MeshStandardMaterial({ roughness: 0.9 }),
+      PEDESTRIAN_INSTANCE_CAPACITY,
+    );
+    this.trafficGroup.add(this.vehicleBodies, this.vehicleCabins);
+    this.pedestrianGroup.add(this.pedestrianBodies, this.pedestrianHeads);
     this.buildLightingAndSky();
     this.buildGround();
     this.buildRoadsAndSidewalks();
+    this.buildTrafficDebug();
     this.buildDistrictArchitecture();
     this.buildLandmarks();
     this.buildTreesAndStreetFurniture();
@@ -408,25 +457,14 @@ export class ThreeRenderer {
         this.scene.add(sidewalk);
       }
 
-      const centerLine = box(
-        length * 0.96,
-        0.025,
-        feature.name === "Market Street" ? 0.3 : 0.2,
-        this.materials.yellowLine,
-      );
-      centerLine.position.copy(center);
-      centerLine.position.y = RENDER_HEIGHTS.roadMarking;
-      centerLine.rotation.y = angle;
-      this.scene.add(centerLine);
-
-      if (width >= MAJOR_ROAD_WIDTH) {
-        for (const laneOffset of [-width * 0.25, width * 0.25]) {
-          const laneLine = box(length * 0.94, 0.02, 0.14, this.materials.whiteLine);
-          laneLine.position.copy(center).addScaledVector(normal, laneOffset);
-          laneLine.position.y = RENDER_HEIGHTS.roadMarking + 0.01;
-          laneLine.rotation.y = angle;
-          this.scene.add(laneLine);
-        }
+      const roadModel = ROAD_SEGMENT_BY_ID.get(feature.id);
+      if (roadModel) {
+        this.addRoadLaneMarkings(
+          feature,
+          roadModel,
+          this.scene,
+          RENDER_HEIGHTS.roadMarking,
+        );
       }
     }
 
@@ -1453,37 +1491,21 @@ export class ThreeRenderer {
   }
 
   private addStreetDesign(feature: DistrictFeature, design: FeatureDesign): void {
-    if (
-      design.laneDelta !== 0 ||
-      design.bikeLane ||
-      design.widenedSidewalk ||
-      design.laneDirection !== "two-way"
-    ) {
-      const overlay = createSegmentMesh(
-        feature,
-        roadWidth(feature) + design.laneDelta * 3.2,
-        0.04,
-        this.materials.editedAsphalt,
-      );
-      overlay.position.y = RENDER_HEIGHTS.roadSurface + 0.025;
-      this.designGroup.add(overlay);
-      const line = createSegmentMesh(feature, 0.22, 0.03, this.materials.yellowLine);
-      line.position.y = RENDER_HEIGHTS.selectionSurface + 0.01;
-      this.designGroup.add(line);
-    }
-    if (design.bikeLane) {
-      for (const side of [-1, 1]) {
-        const lane = createOffsetSegmentMesh(
-          feature,
-          side * (roadWidth(feature) / 2 - 2),
-          2.1,
-          0.04,
-          this.materials.bikeLane,
-        );
-        lane.position.y = RENDER_HEIGHTS.selectionSurface + 0.015;
-        this.designGroup.add(lane);
-      }
-    }
+    const roadModel = createRoadSegmentModel(feature, design);
+    const overlay = createSegmentMesh(
+      feature,
+      roadModel.totalWidthMeters,
+      0.04,
+      this.materials.editedAsphalt,
+    );
+    overlay.position.y = RENDER_HEIGHTS.roadSurface + 0.025;
+    this.designGroup.add(overlay);
+    this.addRoadLaneMarkings(
+      feature,
+      roadModel,
+      this.designGroup,
+      RENDER_HEIGHTS.selectionSurface + 0.01,
+    );
     if (design.widenedSidewalk) {
       for (const side of [-1, 1]) {
         const walk = createOffsetSegmentMesh(
@@ -1526,38 +1548,186 @@ export class ThreeRenderer {
   }
 
   private syncVehicles(vehicles: readonly VehicleSnapshot[]): void {
-    while (this.vehiclePool.length < vehicles.length) {
-      const object = createCar("#ffffff", "sedan");
-      this.vehiclePool.push(object);
-      this.trafficGroup.add(object);
-    }
-    for (let index = 0; index < this.vehiclePool.length; index += 1) {
-      const object = this.vehiclePool[index];
+    const count = Math.min(vehicles.length, VEHICLE_INSTANCE_CAPACITY);
+    for (let index = 0; index < count; index += 1) {
       const vehicle = vehicles[index];
-      object.visible = vehicle !== undefined;
-      if (!vehicle) continue;
-      object.position.set(vehicle.x, 0.25, vehicle.z);
-      object.rotation.y = vehicle.heading;
-      updateCarAppearance(object, vehicle.color, vehicle.kind);
+      const scale = vehicleScale(vehicle.kind);
+      this.setAgentMatrix(
+        this.vehicleBodies,
+        index,
+        vehicle.x,
+        0.25 + 0.72 * scale[1],
+        vehicle.z,
+        vehicle.heading,
+        scale,
+      );
+      const cabinOffset = -0.2 * scale[2];
+      this.setAgentMatrix(
+        this.vehicleCabins,
+        index,
+        vehicle.x + Math.sin(vehicle.heading) * cabinOffset,
+        0.25 + 1.26 * scale[1],
+        vehicle.z + Math.cos(vehicle.heading) * cabinOffset,
+        vehicle.heading,
+        scale,
+      );
+      this.vehicleBodies.setColorAt(index, this.agentColor.set(vehicle.color));
+      this.vehicleCabins.setColorAt(index, this.agentColor.set("#aec8ce"));
     }
+    updateInstanceCount(this.vehicleBodies, count);
+    updateInstanceCount(this.vehicleCabins, count);
   }
 
   private syncPedestrians(
     pedestrians: readonly PedestrianSnapshot[],
   ): void {
-    while (this.pedestrianPool.length < pedestrians.length) {
-      const object = createPerson("#ffffff", 0);
-      this.pedestrianPool.push(object);
-      this.pedestrianGroup.add(object);
-    }
-    for (let index = 0; index < this.pedestrianPool.length; index += 1) {
-      const object = this.pedestrianPool[index];
+    const count = Math.min(pedestrians.length, PEDESTRIAN_INSTANCE_CAPACITY);
+    for (let index = 0; index < count; index += 1) {
       const pedestrian = pedestrians[index];
-      object.visible = pedestrian !== undefined;
-      if (!pedestrian) continue;
-      object.position.set(pedestrian.x, 0.28, pedestrian.z);
-      object.rotation.y = pedestrian.heading;
-      updatePersonAppearance(object, pedestrian.color, pedestrian.variant);
+      const heightScale = 0.92 + pedestrian.variant * 0.035;
+      const scale: readonly [number, number, number] = [1, heightScale, 1];
+      this.setAgentMatrix(
+        this.pedestrianBodies,
+        index,
+        pedestrian.x,
+        0.28 + 1.25 * heightScale,
+        pedestrian.z,
+        pedestrian.heading,
+        scale,
+      );
+      this.setAgentMatrix(
+        this.pedestrianHeads,
+        index,
+        pedestrian.x,
+        0.28 + 2.1 * heightScale,
+        pedestrian.z,
+        pedestrian.heading,
+        scale,
+      );
+      this.pedestrianBodies.setColorAt(
+        index,
+        this.agentColor.set(pedestrian.color),
+      );
+      this.pedestrianHeads.setColorAt(
+        index,
+        this.agentColor.set(
+          ["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][
+            pedestrian.variant % 4
+          ],
+        ),
+      );
+    }
+    updateInstanceCount(this.pedestrianBodies, count);
+    updateInstanceCount(this.pedestrianHeads, count);
+  }
+
+  private setAgentMatrix(
+    mesh: THREE.InstancedMesh,
+    index: number,
+    x: number,
+    y: number,
+    z: number,
+    heading: number,
+    scale: readonly [number, number, number],
+  ): void {
+    this.agentTransform.position.set(x, y, z);
+    this.agentTransform.rotation.set(0, heading, 0);
+    this.agentTransform.scale.set(scale[0], scale[1], scale[2]);
+    this.agentTransform.updateMatrix();
+    mesh.setMatrixAt(index, this.agentTransform.matrix);
+  }
+
+  private addRoadLaneMarkings(
+    feature: DistrictFeature,
+    road: Readonly<RoadSegmentModel>,
+    group: THREE.Object3D,
+    y: number,
+  ): void {
+    if (road.directionality === "two-way") {
+      const centerLine = createOffsetSegmentMesh(
+        feature,
+        0,
+        0.24,
+        0.025,
+        this.materials.yellowLine,
+      );
+      centerLine.position.y = y;
+      group.add(centerLine);
+    }
+    const travelLanes = road.lanes.filter(isDrivableLane);
+    for (const direction of ["forward", "reverse"] as const) {
+      const directional = travelLanes
+        .filter((lane) => lane.direction === direction)
+        .sort((a, b) => a.offsetMeters - b.offsetMeters);
+      for (let index = 1; index < directional.length; index += 1) {
+        const offset =
+          (directional[index - 1].offsetMeters +
+            directional[index].offsetMeters) /
+          2;
+        const divider = createOffsetSegmentMesh(
+          feature,
+          offset,
+          0.13,
+          0.022,
+          this.materials.whiteLine,
+        );
+        divider.scale.x = 0.94;
+        divider.position.y = y + 0.006;
+        group.add(divider);
+      }
+    }
+    for (const lane of road.lanes.filter((candidate) => candidate.type === "bike")) {
+      const bikeSurface = createOffsetSegmentMesh(
+        feature,
+        lane.offsetMeters,
+        lane.widthMeters,
+        0.018,
+        this.materials.bikeLane,
+      );
+      bikeSurface.position.y = y - 0.003;
+      group.add(bikeSurface);
+    }
+  }
+
+  private buildTrafficDebug(): void {
+    if (!this.trafficDebugEnabled) return;
+    const debugMaterials = {
+      general: new THREE.MeshBasicMaterial({ color: "#58e4c2" }),
+      turn: new THREE.MeshBasicMaterial({ color: "#ffcb66" }),
+      bus: new THREE.MeshBasicMaterial({ color: "#ca85ff" }),
+      bike: new THREE.MeshBasicMaterial({ color: "#46b9ff" }),
+    } as const;
+    for (const feature of this.features) {
+      if (feature.kind !== "street") continue;
+      const road = ROAD_SEGMENT_BY_ID.get(feature.id);
+      if (!road) continue;
+      for (const lane of road.lanes) {
+        if (lane.type === "parking") continue;
+        const centerline = createOffsetSegmentMesh(
+          feature,
+          lane.offsetMeters,
+          lane.type === "bike" ? 0.16 : 0.11,
+          0.02,
+          debugMaterials[lane.type],
+        );
+        centerline.position.y = RENDER_HEIGHTS.selectionSurface + 0.08;
+        this.trafficDebugGroup.add(centerline);
+      }
+    }
+    const nodeMaterial = new THREE.MeshBasicMaterial({ color: "#ff6f59" });
+    for (const feature of this.features) {
+      if (feature.kind !== "intersection") continue;
+      const position = geoToWorld(feature.path[0]);
+      const node = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.75, 0.75, 0.07, 10),
+        nodeMaterial,
+      );
+      node.position.set(
+        position.x,
+        RENDER_HEIGHTS.selectionSurface + 0.12,
+        position.z,
+      );
+      this.trafficDebugGroup.add(node);
     }
   }
 
@@ -1912,59 +2082,10 @@ function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
   return start.clone().add(end).multiplyScalar(0.5);
 }
 
-function createCar(color: string, kind: VehicleKind): THREE.Group {
-  const group = new THREE.Group();
-  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.34, metalness: 0.08 });
-  const glass = new THREE.MeshStandardMaterial({ color: "#aec8ce", roughness: 0.2, metalness: 0.12 });
-  const rubber = new THREE.MeshStandardMaterial({ color: "#171b1d", roughness: 0.94 });
-  const body = box(1.9, 0.72, 4.2, paint);
-  body.position.y = 0.72;
-  const hood = box(1.86, 0.32, 1.25, paint);
-  hood.position.set(0, 1.05, 1.35);
-  const cabin = box(1.66, 0.68, 1.9, glass);
-  cabin.position.set(0, 1.26, -0.2);
-  group.add(body, hood, cabin);
-  for (const x of [-1.02, 1.02]) {
-    for (const z of [-1.25, 1.25]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.22, 12), rubber);
-      wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(x, 0.55, z);
-      group.add(wheel);
-    }
-  }
-  group.traverse((child) => {
-    if (child instanceof THREE.Mesh) child.castShadow = true;
-  });
-  group.userData.paint = paint;
-  updateCarAppearance(group, color, kind);
-  return group;
-}
-
-function createPerson(color: string, variant: number): THREE.Group {
-  const group = new THREE.Group();
-  const clothing = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
-  const skin = new THREE.MeshStandardMaterial({
-    color: ["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant],
-    roughness: 0.9,
-  });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.72, 4, 8), clothing);
-  body.position.y = 1.25;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), skin);
-  head.position.y = 2.1;
-  group.add(body, head);
-  group.userData.clothing = clothing;
-  group.userData.skin = skin;
-  return group;
-}
-
-function updateCarAppearance(
-  object: THREE.Group,
-  color: string,
+function vehicleScale(
   kind: VehicleKind,
-): void {
-  const paint = object.userData.paint as THREE.MeshStandardMaterial | undefined;
-  paint?.color.set(color);
-  const scale =
+): readonly [number, number, number] {
+  return (
     kind === "compact"
       ? [0.92, 0.9, 0.86]
       : kind === "suv"
@@ -1973,21 +2094,26 @@ function updateCarAppearance(
           ? [1.08, 1.28, 1.28]
           : kind === "bus"
             ? [1.15, 1.35, 2.2]
-            : [1, 1, 1];
-  object.scale.set(scale[0], scale[1], scale[2]);
+            : [1, 1, 1]
+  );
 }
 
-function updatePersonAppearance(
-  object: THREE.Group,
-  color: string,
-  variant: number,
-): void {
-  const clothing = object.userData.clothing as
-    | THREE.MeshStandardMaterial
-    | undefined;
-  const skin = object.userData.skin as THREE.MeshStandardMaterial | undefined;
-  clothing?.color.set(color);
-  skin?.color.set(["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant % 4]);
+function createAgentInstances(
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  capacity: number,
+): THREE.InstancedMesh {
+  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
+  mesh.count = 0;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+function updateInstanceCount(mesh: THREE.InstancedMesh, count: number): void {
+  mesh.count = count;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 }
 
 function createSignalLensMaterial(color: string): THREE.MeshStandardMaterial {
