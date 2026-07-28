@@ -1,49 +1,57 @@
-# Simulation architecture
+# Foundation architecture
 
-The application separates district-scale systems, street-detail systems, and
-schematic Three.js rendering:
+The application separates deterministic simulation state, structured
+geographic data, and standalone Three.js rendering:
 
-- `src/core/cityModel.ts` validates external district/network input and provides
-  the replaceable demo city section.
-- `src/core/cityEngine.ts` advances aggregate demographics, employment, goods,
-  migration, land, housing, transport, utilities, taxation, maintenance, and
-  municipal balance in deterministic daily steps.
-- `src/core/cityEconomy.ts` matches workers and jobs, updates household and
-  business accounts, clears local goods markets, allocates bounded outside trade,
-  and generates commute, shopping, pedestrian, and freight demand.
-- `src/core/timeScale.ts` maps day, week, month, and year horizons to calendar time.
-- `src/core/simulation.ts` coordinates the long-term engine with the bounded
-  street-detail model, controls, events, and metrics.
-- `src/core/population.ts` creates households and demographics, assigns daily
-  schedules, and emits explainable travel choices.
-- `src/core/network.ts` builds the multimodal graph and calculates generalized
-  route cost from time, congestion, price, comfort, and turns.
-- `src/core/mobility.ts` moves cars, freight, buses, and pedestrians while applying
-  signals, capacity, queues, following gaps, transit dwell, and conflict proxies.
-- `src/core/economy.ts` handles jobs, wages, household consumption, production,
-  retail inventory, imports, exports, and freight requests in the street-detail
-  layer.
-- `src/core/infrastructure.ts` allocates power, water, and waste capacity and tracks
-  roads, parking, condition, and transit service.
-- `src/core/landUse.ts` applies zoning, terrain and height constraints, then updates
-  suitability, land value, rent, and permitted building growth.
-- `src/models/types.ts` defines shared contracts used by all three contributors.
-- `src/models/cityTypes.ts` is the integration contract for partner city data.
-- `src/rendering/threeRenderer.ts` draws a low-detail district and network schematic
-  without changing simulation state.
-- `src/main.ts` connects controls, animation timing, rendering, and metric output.
+- `src/core/simulation.ts` owns time, signal phases, design impacts, and metrics.
+- `src/data/pennRoadGraph.ts` owns Penn/University City street, intersection,
+  and landmark coordinates.
+- `src/models/types.ts` defines shared simulation, geographic, and UI contracts.
+- `src/rendering/threeRenderer.ts` converts latitude/longitude to local meters
+  and generates the complete visible 3D district.
+- `src/main.ts` connects UI controls, animation timing, editing, and metrics.
 
-Long-horizon state advances only in completed daily steps. This keeps annual runs
-frame-rate independent and avoids minute-by-minute loops. The street layer advances
-at most five representative seconds per browser update so vehicles never dominate
-the cost of a month- or year-scale scenario.
+## World generation
 
-## Team boundaries
+Penn center is the local origin. Geographic points are converted to X/Z meters
+before rendering. The geographic graph is only an input; there is no visible
+map, basemap, satellite imagery, globe, or provider-generated ground.
 
-- **Linn:** street environment, sidewalks, crosswalks, pedestrians, and safety logic.
-- **Albert:** vehicles, traffic signals, congestion, and the simulation loop.
-- **Chanyoung:** interface, controls, metrics, build tooling, and integration.
+The renderer generates:
 
-Changes to shared types should be discussed before implementation because they affect every
-subsystem. Completed work should be merged into `main` through small pull requests, and each
-personal branch should be updated from `main` frequently.
+- ground, lawns, plazas, asphalt roads, markings, sidewalks, and crosswalks;
+- district blocks using twelve building archetypes and irregular volume
+  combinations;
+- ten custom Penn landmark models;
+- rooftop details, varied instanced trees, streetlights, campus furniture, and
+  parked vehicles;
+- moving vehicles, pedestrians, animated signals, selection geometry, and
+  intervention overlays;
+- a sky dome, sunlight, ambient fill, soft shadows, tone mapping, and distance
+  fog.
+
+## Interaction model
+
+- **Orbit** uses damped Three.js orbit controls.
+- **Fly** uses drag-to-look, `W/A/S/D`, `E/Q`, `Shift`, and altitude-dependent
+  speed. Movement is split into swept substeps and resolved against nearby
+  collision volumes with axis sliding.
+- **Walk** uses pointer-lock mouse look, a human-scale capsule, gravity,
+  walkable-surface sampling, safe spawn resolution, and optional jumping.
+- **Build** selects road meshes and renders modifications above the existing
+  3D street.
+- **Simulate** preserves the deterministic simulation and metrics while agents
+  move across district-scale routes.
+
+## Collision
+
+Rendering and collision remain separate. Generated building volumes register
+simplified world-space bounding boxes after scene generation. A spatial hash
+provides the broad phase, so movement checks only nearby buildings. Roads,
+sidewalks, plazas, lawns, and open ground register independent walkable surface
+heights.
+
+`src/core/collision.ts` owns the substepped sliding resolver used to prevent
+high-speed tunneling. The developer-only `collisionDebug=1` query parameter
+visualizes the collision boxes, player collider, ground probe, navigation mode,
+and grounded state.

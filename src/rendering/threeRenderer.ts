@@ -1,290 +1,326 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { CityDistrictState, CityLinkDefinition } from "../models/cityTypes";
+import {
+  resolveSubsteppedMovement,
+} from "../core/collision";
+import {
+  PENN_AVENUES,
+  PENN_CENTER,
+  PENN_LANDMARKS,
+  PENN_ROAD_GRAPH,
+  PENN_STREETS,
+} from "../data/pennRoadGraph";
 import type {
-  AgentPosition,
-  Building,
-  BuildingConnectionKind,
-  GridCellDesign,
-  GridSignalDesign,
-  Pedestrian,
+  CameraMode,
+  DistrictFeature,
+  EnvironmentMode,
+  FeatureDesign,
+  GeoPoint,
+  MapOverlayMode,
+  PedestrianSnapshot,
+  PlacedBuilding,
+  SignalSnapshot,
   SimulationState,
-  TransitStop,
-  Vehicle,
-  ZoneType,
+  VehicleKind,
+  VehicleSnapshot,
 } from "../models/types";
-import { BUILD_CELL_SIZE, BUILD_GRID_SIZE } from "../models/types";
 
-const WORLD_SCALE = 0.62;
-const CITY_DETAIL_DISTANCE = 205;
-const VEHICLE_COLORS = ["#ef5a45", "#2f75c9", "#e2ad3c", "#2f956f", "#865fb0"];
-const CONNECTION_COLORS = { commute: "#49a7e8", customer: "#e0a83d", supply: "#db735d" };
-const ZONE_COLORS: Record<ZoneType, string> = {
-  residential: "#69a8a0",
-  commercial: "#d8a755",
-  industrial: "#b66c52",
-  civic: "#688fc3",
-  park: "#5d9b67",
-};
+const METERS_PER_DEGREE_LATITUDE = 111_320;
+const METERS_PER_DEGREE_LONGITUDE =
+  METERS_PER_DEGREE_LATITUDE * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+const ROAD_WIDTH = 15;
+const MAJOR_ROAD_WIDTH = 22;
+const SIDEWALK_WIDTH = 6;
+const WORLD_SIZE = 5_200;
+const RENDER_HEIGHTS = {
+  ground: -0.08,
+  lawn: 0.02,
+  blockCenter: 0.15,
+  roadCenter: 0.04,
+  roadSurface: 0.08,
+  intersectionSurface: 0.105,
+  sidewalkCenter: 0.15,
+  sidewalkSurface: 0.29,
+  roadMarking: 0.14,
+  crosswalk: 0.18,
+  selectionSurface: 0.155,
+} as const;
+const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
+const FLY_COLLIDER_RADIUS = 0.45;
+const WALK_COLLIDER_RADIUS = 0.38;
+const WALK_PLAYER_HEIGHT = 1.78;
+const WALK_EYE_HEIGHT = 1.68;
+const WALK_GRAVITY = 18;
+const MAX_COLLISION_STEP = 0.18;
 
-export type VisualLayer =
-  | "none"
-  | "congestion"
-  | "pedestrian-wait"
-  | "land-value"
-  | "utilities"
-  | "jobs"
-  | "shortages"
-  | "migration"
-  | "freight"
-  | "profit";
-
-export type VisibleFlow = "commute" | "customer" | "supply" | "daily-route";
-export type SceneDetailMode = "city" | "street" | "entity";
-
-export interface DaylightState {
-  daylight: number;
-  sunriseMinutes: number;
-  sunsetMinutes: number;
-  sunProgress: number;
+interface SignalAssembly {
+  intersectionId: string;
+  axis: DistrictFeature["axis"];
+  red: THREE.MeshStandardMaterial;
+  yellow: THREE.MeshStandardMaterial;
+  green: THREE.MeshStandardMaterial;
+  walk: THREE.MeshStandardMaterial;
+  dontWalk: THREE.MeshStandardMaterial;
 }
 
-export interface VisualLayerMetrics {
-  congestion: number;
-  pedestrianWait: number;
-  landValue: number;
-  utilities: number;
-  jobs: number;
-  shortages: number;
-  migration: number;
-  freight: number;
-  profit: number;
+interface CollisionVolume extends SpatialBounds {
+  box: THREE.Box3;
 }
 
-export type SceneSelection =
-  | { kind: "building"; id: string }
-  | { kind: "person"; id: string }
-  | null;
-
-export function resolveSceneDetailMode(cameraDistance: number, hasSelection: boolean): SceneDetailMode {
-  if (hasSelection) return "entity";
-  return cameraDistance > CITY_DETAIL_DISTANCE ? "city" : "street";
+interface WalkableSurface extends SpatialBounds {
+  height: number;
 }
 
-export function calculateDaylight(timeOfDayMinutes: number, calendarMonth: number): DaylightState {
-  const minute = ((timeOfDayMinutes % 1440) + 1440) % 1440;
-  const month = THREE.MathUtils.clamp(calendarMonth, 1, 12);
-  const seasonalOffset = Math.sin((month - 3) / 12 * Math.PI * 2);
-  const daylightHours = 12 + seasonalOffset * 3;
-  const sunriseMinutes = 720 - daylightHours * 30;
-  const sunsetMinutes = 720 + daylightHours * 30;
-  const twilightMinutes = 45;
-  const sunProgress = THREE.MathUtils.clamp(
-    (minute - sunriseMinutes) / (sunsetMinutes - sunriseMinutes),
-    0,
-    1,
-  );
-
-  let daylight = 0.04;
-  if (minute >= sunriseMinutes && minute <= sunsetMinutes) {
-    daylight = 0.22 + Math.sin(sunProgress * Math.PI) * 0.78;
-  } else if (minute >= sunriseMinutes - twilightMinutes && minute < sunriseMinutes) {
-    daylight = THREE.MathUtils.lerp(0.04, 0.22, (minute - sunriseMinutes + twilightMinutes) / twilightMinutes);
-  } else if (minute > sunsetMinutes && minute <= sunsetMinutes + twilightMinutes) {
-    daylight = THREE.MathUtils.lerp(0.22, 0.04, (minute - sunsetMinutes) / twilightMinutes);
-  }
-
-  return { daylight, sunriseMinutes, sunsetMinutes, sunProgress };
+interface SpatialBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
 }
 
-export function flowForConnection(kind: BuildingConnectionKind): VisibleFlow {
-  return kind;
-}
-
-export function valueForVisualLayer(layer: VisualLayer, metrics: VisualLayerMetrics): number {
-  switch (layer) {
-    case "congestion": return metrics.congestion;
-    case "pedestrian-wait": return metrics.pedestrianWait;
-    case "land-value": return metrics.landValue;
-    case "utilities": return metrics.utilities;
-    case "jobs": return metrics.jobs;
-    case "shortages": return metrics.shortages;
-    case "migration": return metrics.migration;
-    case "freight": return metrics.freight;
-    case "profit": return metrics.profit;
-    case "none": return 0.5;
-  }
-}
-
-export function colorForVisualLayer(layer: VisualLayer, value: number): number {
-  const clamped = THREE.MathUtils.clamp(value, 0, 1);
-  if (layer === "none") return 0xffffff;
-  if (layer === "land-value") return colorRamp(clamped, 0x315a78, 0x6fae9c, 0xf0c14b);
-  if (layer === "utilities" || layer === "jobs" || layer === "migration" || layer === "profit") {
-    return colorRamp(clamped, 0xc94d44, 0xe5ca62, 0x4d9b65);
-  }
-  return colorRamp(clamped, 0x3b76a5, 0xe1ca58, 0xc94d44);
-}
-
-export function isVisibleVehicleSegment(segmentId: string): boolean {
-  return segmentId.startsWith("road-") || segmentId.startsWith("movement-");
-}
-
-export function isVisiblePedestrianSegment(segmentId: string): boolean {
-  return segmentId.startsWith("sidewalk-") || segmentId.startsWith("crosswalk-");
-}
-
-interface SceneVisualMetrics {
-  districts: ReadonlyMap<string, VisualLayerMetrics>;
-  buildings: ReadonlyMap<string, VisualLayerMetrics>;
-}
-
-interface VisualMetricsCache {
-  elapsedSeconds: number;
-  layer: VisualLayer;
-  buildings: readonly Building[];
-  districts: readonly CityDistrictState[];
-  vehicles: readonly Vehicle[];
-  pedestrians: readonly Pedestrian[];
-  metrics: SceneVisualMetrics;
+type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
+interface BuildingInteractionHandlers {
+  onPlace: (x: number, z: number) => void;
+  onSelect: (id: string | null) => void;
+  onMove: (id: string, x: number, z: number) => void;
 }
 
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.1, 340);
+  private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.5, 7_000);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
-  private readonly sun = new THREE.DirectionalLight("#fff3d7", 4.2);
-  private readonly skyLight = new THREE.HemisphereLight("#e8f6ff", "#486247", 2.3);
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
-  private readonly vehicles = new Map<string, THREE.Group>();
-  private readonly pedestrians = new Map<string, THREE.Group>();
-  private readonly buildings = new Map<string, THREE.Group>();
-  private readonly districtMeshes = new Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>>();
-  private readonly cityLinkMeshes = new Map<string, THREE.Mesh>();
-  private readonly transitStopGroups = new Map<string, THREE.Group>();
-  private readonly connectionLines = new THREE.Group();
-  private readonly streetElements = new THREE.Group();
-  private readonly buildGridGroup = new THREE.Group();
-  private readonly buildGridHelper = new THREE.GridHelper(
-    BUILD_GRID_SIZE * BUILD_CELL_SIZE,
-    BUILD_GRID_SIZE,
-    "#75e4c4",
-    "#8aa99c",
+  private readonly collisionClosest = new THREE.Vector3();
+  private readonly features = PENN_ROAD_GRAPH;
+  private readonly featureMeshes = new Map<string, THREE.Mesh>();
+  private readonly selectableRoads: THREE.Mesh[] = [];
+  private readonly designGroup = new THREE.Group();
+  private readonly analysisGroup = new THREE.Group();
+  private readonly trafficGroup = new THREE.Group();
+  private readonly pedestrianGroup = new THREE.Group();
+  private readonly placedBuildingGroup = new THREE.Group();
+  private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
+  private readonly placementPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private readonly placementPoint = new THREE.Vector3();
+  private readonly dragOffset = new THREE.Vector3();
+  private readonly vehiclePool: THREE.Group[] = [];
+  private readonly pedestrianPool: THREE.Group[] = [];
+  private readonly signalAssemblies: SignalAssembly[] = [];
+  private readonly flyKeys = new Set<string>();
+  private readonly collisionIndex = new SpatialHash<CollisionVolume>(96);
+  private readonly walkableIndex = new SpatialHash<WalkableSurface>(96);
+  private readonly collisionDebugGroup = new THREE.Group();
+  private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
+    "collisionDebug",
   );
-  private buildMode = false;
-  private selection: SceneSelection = null;
-  private visualLayer: VisualLayer = "none";
-  private visibleFlows = new Set<VisibleFlow>(["commute", "customer", "supply", "daily-route"]);
-  private detailMode: SceneDetailMode = "street";
-  private visualMetricsCache: VisualMetricsCache | null = null;
-  private connectionRenderSignature = "";
-  private lastShadowUpdateMs = Number.NEGATIVE_INFINITY;
-  private pointerStart: { x: number; y: number } | null = null;
+  private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
+  private buildingInteractionHandlers: BuildingInteractionHandlers | null = null;
+  private selectedFeatureId: string | null = null;
+  private selectedPlacedBuildingId: string | null = null;
+  private buildingPlacementEnabled = false;
+  private draggingBuildingId: string | null = null;
+  private buildMode = true;
+  private cameraMode: CameraMode = "orbit";
+  private flySpeedScale = 1;
+  private flyYaw = 0;
+  private flyPitch = -0.55;
+  private walkVerticalVelocity = 0;
+  private grounded = false;
+  private collisionDebugPlayer: THREE.Mesh | null = null;
+  private collisionDebugRay: THREE.Line | null = null;
+  private collisionDebugStatus: HTMLOutputElement | null = null;
+  private looking = false;
+  private lastPointer = new THREE.Vector2();
+  private pointerDown = new THREE.Vector2();
+  private lastFrameTimestamp = performance.now();
 
-  constructor(
-    private readonly canvas: HTMLCanvasElement,
-    private readonly onSelection: (selection: SceneSelection) => void = () => undefined,
-  ) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  private readonly materials = createWorldMaterials();
+
+  constructor(private readonly canvas: HTMLCanvasElement) {
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: "high-performance",
+    });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.08;
 
-    this.scene.background = new THREE.Color("#b9d4df");
-    this.scene.fog = new THREE.Fog("#b9d4df", 135, 300);
-    this.camera.position.set(98, 106, 116);
+    this.scene.background = new THREE.Color("#9fc3d3");
+    this.scene.fog = new THREE.FogExp2("#a9c3c8", 0.00038);
 
+    this.camera.position.set(720, 720, 920);
     this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.target.set(0, 0, 0);
+    this.controls.target.set(-90, 0, 70);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.06;
-    this.controls.minDistance = 18;
-    this.controls.maxDistance = 230;
-    this.controls.maxPolarAngle = Math.PI / 2.08;
+    this.controls.dampingFactor = 0.055;
+    this.controls.minDistance = 24;
+    this.controls.maxDistance = 2_700;
+    this.controls.maxPolarAngle = Math.PI / 2.04;
 
-    this.buildLighting();
-    this.scene.add(this.streetElements);
-    this.buildStreet();
-    this.buildGridHelper.position.y = 0.58;
-    this.buildGridHelper.visible = false;
-    this.buildGridGroup.visible = false;
-    this.scene.add(this.buildGridHelper, this.buildGridGroup);
-    this.scene.add(this.connectionLines);
-    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.addEventListener("pointerup", this.handlePointerUp);
+    this.scene.add(
+      this.designGroup,
+      this.analysisGroup,
+      this.trafficGroup,
+      this.pedestrianGroup,
+      this.placedBuildingGroup,
+    );
+    this.buildLightingAndSky();
+    this.buildGround();
+    this.buildRoadsAndSidewalks();
+    this.buildDistrictArchitecture();
+    this.buildLandmarks();
+    this.buildTreesAndStreetFurniture();
+    this.buildParkedCars();
+    this.buildCollisionIndexes();
+    this.buildCollisionDebug();
+    this.buildSignals();
+    this.bindInput();
+    this.updateFeatureHighlights();
   }
 
-  setSelection(selection: SceneSelection): void {
-    this.selection = selection;
-    this.detailMode = resolveSceneDetailMode(
-      this.camera.position.distanceTo(this.controls.target),
-      selection !== null,
-    );
-    this.connectionRenderSignature = "";
+  getFeatures(): readonly DistrictFeature[] {
+    return this.features;
+  }
+
+  getCameraSnapshot(): GeoPoint & { heading: number } {
+    const point = worldToGeo(this.camera.position.x, this.camera.position.z);
+    return {
+      ...point,
+      altitude: this.camera.position.y,
+      heading: this.camera.rotation.y,
+    };
+  }
+
+  flyTo(point: GeoPoint, altitude = 260): void {
+    const target = geoToWorld(point);
+    this.camera.position.set(target.x + altitude * 0.7, altitude, target.z + altitude * 0.9);
+    this.controls.target.set(target.x, 8, target.z);
+    this.camera.lookAt(this.controls.target);
+    this.controls.update();
+  }
+
+  setSelectionHandler(handler: (feature: DistrictFeature) => void): void {
+    this.selectionHandler = handler;
+  }
+
+  setBuildingInteractionHandlers(handlers: BuildingInteractionHandlers): void {
+    this.buildingInteractionHandlers = handlers;
+  }
+
+  setBuildingPlacementEnabled(enabled: boolean): void {
+    this.buildingPlacementEnabled = enabled;
+    if (this.cameraMode === "orbit") {
+      this.canvas.style.cursor = enabled ? "crosshair" : "grab";
+    }
+  }
+
+  setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
+    clearGroup(this.placedBuildingGroup);
+    this.placedBuildingMeshes.clear();
+    for (const building of buildings) {
+      const group = this.createPlacedBuilding(building);
+      this.placedBuildingMeshes.set(building.id, group);
+      this.placedBuildingGroup.add(group);
+    }
+    this.updatePlacedBuildingSelection();
+  }
+
+  setSelectedPlacedBuilding(id: string | null): void {
+    this.selectedPlacedBuildingId = id;
+    this.updatePlacedBuildingSelection();
+  }
+
+  setEnvironmentStatusHandler(handler: EnvironmentStatusHandler): void {
+    handler("rendered", "Standalone Three.js urban district");
   }
 
   setBuildMode(enabled: boolean): void {
     this.buildMode = enabled;
-    this.buildGridHelper.visible = enabled;
-    this.buildGridGroup.visible = enabled;
-    this.streetElements.visible = !enabled;
-    this.connectionLines.visible = !enabled;
-    for (const collection of [
-      this.buildings,
-      this.vehicles,
-      this.pedestrians,
-      this.transitStopGroups,
-    ]) {
-      for (const object of collection.values()) object.visible = !enabled;
+    this.updateFeatureHighlights();
+  }
+
+  setCameraMode(mode: CameraMode): void {
+    const previousMode = this.cameraMode;
+    this.cameraMode = mode;
+    this.flyKeys.clear();
+    this.looking = false;
+    this.controls.enabled = mode === "orbit";
+    this.canvas.style.cursor =
+      mode === "orbit" && !this.buildingPlacementEnabled ? "grab" : "crosshair";
+    if (previousMode === "walk" && document.pointerLockElement === this.canvas) {
+      document.exitPointerLock();
     }
-    for (const object of this.districtMeshes.values()) object.visible = !enabled;
-    for (const object of this.cityLinkMeshes.values()) object.visible = !enabled;
-    if (enabled) {
-      this.setSelection(null);
-      this.camera.position.set(36, 42, 42);
-      this.controls.target.set(0, 0, 0);
+    if (mode === "fly" || mode === "walk") {
+      const direction = new THREE.Vector3();
+      this.camera.getWorldDirection(direction);
+      this.flyYaw = Math.atan2(-direction.x, -direction.z);
+      this.flyPitch = Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1));
+      if (mode === "walk") this.enterWalkMode();
+      this.applyFlyRotation();
     } else {
-      this.camera.position.set(98, 106, 116);
-      this.controls.target.set(0, 0, 0);
-      this.visualMetricsCache = null;
+      const direction = new THREE.Vector3();
+      this.camera.getWorldDirection(direction);
+      this.controls.target.copy(this.camera.position).addScaledVector(direction, 45);
     }
-    this.controls.update();
-    this.renderer.shadowMap.needsUpdate = true;
   }
 
-  setGridDesign(
-    cells: readonly GridCellDesign[],
-    signals: readonly GridSignalDesign[] = [],
-  ): void {
-    this.clearBuildGrid();
-    for (const cell of cells) this.buildGridCell(cell);
-    this.addAutomaticStopLines(cells);
-    for (const signal of signals) this.buildGridSignal(signal);
-    this.renderer.shadowMap.needsUpdate = true;
+  setSelectedFeature(featureId: string | null): void {
+    this.selectedFeatureId = featureId;
+    this.updateFeatureHighlights();
   }
 
-  setVisualLayer(layer: VisualLayer): void {
-    if (this.visualLayer === layer) return;
-    this.visualLayer = layer;
-    this.visualMetricsCache = null;
+  setDesigns(designs: ReadonlyMap<string, FeatureDesign>): void {
+    clearGroup(this.designGroup);
+    for (const [featureId, design] of designs) {
+      const feature = this.features.find((candidate) => candidate.id === featureId);
+      if (!feature) continue;
+      if (feature.kind === "street") this.addStreetDesign(feature, design);
+      else this.addIntersectionDesign(feature, design);
+    }
   }
 
-  setVisibleFlows(flows: ReadonlySet<VisibleFlow> | readonly VisibleFlow[]): void {
-    const nextFlows = new Set(flows);
-    if (setsEqual(this.visibleFlows, nextFlows)) return;
-    this.visibleFlows = nextFlows;
-    this.connectionRenderSignature = "";
-    this.clearConnectionLines();
-  }
-
-  getDetailMode(): SceneDetailMode {
-    return this.detailMode;
+  setMapOverlay(mode: MapOverlayMode): void {
+    clearGroup(this.analysisGroup);
+    if (mode === "none") return;
+    const material = new THREE.MeshBasicMaterial({
+      color:
+        mode === "congestion" ? "#f47b54" : mode === "pedestrians" ? "#59bdd7" : "#ef5c4f",
+      transparent: true,
+      opacity: mode === "conflicts" ? 0.38 : 0.3,
+      depthWrite: false,
+    });
+    if (mode === "conflicts") {
+      for (const [index, feature] of this.features
+        .filter((candidate) => candidate.kind === "intersection")
+        .entries()) {
+        if (index % 2 !== 0) continue;
+        const position = geoToWorld(feature.path[0]);
+        const marker = new THREE.Mesh(new THREE.CircleGeometry(15, 24), material);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(position.x, 0.42, position.z);
+        this.analysisGroup.add(marker);
+      }
+      return;
+    }
+    for (const [index, feature] of this.features
+      .filter((candidate) => candidate.kind === "street")
+      .entries()) {
+      if (index % (mode === "congestion" ? 3 : 4) !== 0) continue;
+      this.analysisGroup.add(
+        createSegmentMesh(
+          feature,
+          mode === "congestion" ? ROAD_WIDTH * 0.78 : ROAD_WIDTH * 0.52,
+          0.3,
+          material,
+        ),
+      );
+    }
   }
 
   resize(): void {
@@ -295,1140 +331,2009 @@ export class ThreeRenderer {
   }
 
   render(state: Readonly<SimulationState>): void {
-    this.controls.update();
-    if (this.buildMode) {
-      this.renderer.render(this.scene, this.camera);
-      return;
-    }
-    this.detailMode = resolveSceneDetailMode(
-      this.camera.position.distanceTo(this.controls.target),
-      this.selection !== null,
-    );
-    const visualMetrics = this.getVisualMetrics(state);
-    this.syncCityLinks(state.city.links, state.city.districts);
-    this.syncCityDistricts(state.city.districts, visualMetrics.districts);
-    this.syncBuildings(state.buildings, visualMetrics.buildings);
-    this.syncTransitStops(state.infrastructure.transitStops, state.network.nodes);
+    const now = performance.now();
+    const frameSeconds = Math.min((now - this.lastFrameTimestamp) / 1000, 0.1);
+    this.lastFrameTimestamp = now;
+    if (this.cameraMode === "fly") this.updateFlyCamera(frameSeconds);
+    if (this.cameraMode === "walk") this.updateWalkCamera(frameSeconds);
+
     this.syncVehicles(state.vehicles);
     this.syncPedestrians(state.pedestrians);
-    this.syncSelection(state);
-    this.syncSelectionDimming(state);
-    this.updateDaylight(state.timeOfDayMinutes, state.calendarMonth);
+    this.updateSignals(state.signals);
 
+    if (this.cameraMode === "orbit") this.controls.update();
+    this.updateCollisionDebug();
     this.renderer.render(this.scene, this.camera);
   }
 
-  private readonly handlePointerDown = (event: PointerEvent): void => {
-    this.pointerStart = { x: event.clientX, y: event.clientY };
-  };
+  private buildLightingAndSky(): void {
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(4_800, 32, 18),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: {
+          topColor: { value: new THREE.Color("#5f91b5") },
+          bottomColor: { value: new THREE.Color("#d8ddd0") },
+        },
+        vertexShader:
+          "varying vec3 vWorldPosition; void main(){ vec4 p=modelMatrix*vec4(position,1.0); vWorldPosition=p.xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
+        fragmentShader:
+          "uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vWorldPosition; void main(){ float h=normalize(vWorldPosition).y; float f=pow(max(h,0.0),0.55); gl_FragColor=vec4(mix(bottomColor,topColor,f),1.0); }",
+      }),
+    );
+    this.scene.add(sky);
 
-  private readonly handlePointerUp = (event: PointerEvent): void => {
-    if (
-      this.pointerStart === null ||
-      Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 5
-    ) {
-      this.pointerStart = null;
-      return;
+    const hemisphere = new THREE.HemisphereLight("#dff3ff", "#536044", 2.35);
+    this.scene.add(hemisphere);
+
+    const sun = new THREE.DirectionalLight("#fff3d6", 4.8);
+    sun.position.set(-620, 1_050, 470);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = -1_050;
+    sun.shadow.camera.right = 1_050;
+    sun.shadow.camera.top = 1_050;
+    sun.shadow.camera.bottom = -1_050;
+    sun.shadow.camera.near = 100;
+    sun.shadow.camera.far = 2_500;
+    sun.shadow.bias = -0.0002;
+    this.scene.add(sun);
+
+    const fill = new THREE.DirectionalLight("#b6d4e2", 1.1);
+    fill.position.set(900, 420, -700);
+    this.scene.add(fill);
+  }
+
+  private buildGround(): void {
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE),
+      this.materials.ground,
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = RENDER_HEIGHTS.ground;
+    ground.receiveShadow = true;
+    ground.userData.walkable = true;
+    this.scene.add(ground);
+
+    const campusLawn = new THREE.Mesh(
+      new THREE.PlaneGeometry(520, 350),
+      this.materials.campusGrass,
+    );
+    campusLawn.rotation.x = -Math.PI / 2;
+    campusLawn.position.set(-70, RENDER_HEIGHTS.lawn, 140);
+    campusLawn.receiveShadow = true;
+    campusLawn.userData.walkable = true;
+    this.scene.add(campusLawn);
+
+    for (const [x, z, width, depth] of [
+      [-120, 125, 185, 90],
+      [260, 300, 150, 110],
+      [410, 30, 190, 130],
+      [-520, -250, 150, 100],
+    ] as const) {
+      const lawn = new THREE.Mesh(
+        new THREE.PlaneGeometry(width, depth),
+        this.materials.lawn,
+      );
+      lawn.rotation.x = -Math.PI / 2;
+      lawn.position.set(x, RENDER_HEIGHTS.lawn, z);
+      lawn.userData.walkable = true;
+      this.scene.add(lawn);
     }
-    this.pointerStart = null;
+  }
+
+  private buildRoadsAndSidewalks(): void {
+    for (const feature of this.features) {
+      if (feature.kind !== "street") continue;
+      const width = roadWidth(feature);
+      const material = this.materials.asphalt.clone();
+      const road = createSegmentMesh(feature, width, ROAD_HEIGHT, material);
+      road.userData.featureId = feature.id;
+      road.userData.walkable = true;
+      road.receiveShadow = true;
+      this.featureMeshes.set(feature.id, road);
+      this.selectableRoads.push(road);
+      this.scene.add(road);
+
+      const [start, end] = feature.path.map(geoToWorld);
+      const direction = end.clone().sub(start);
+      const length = direction.length();
+      const center = start.clone().add(end).multiplyScalar(0.5);
+      const angle = Math.atan2(direction.x, direction.z);
+      const normal = new THREE.Vector3(Math.cos(angle), 0, -Math.sin(angle));
+      const sidewalkOffset = width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
+      for (const side of [-1, 1]) {
+        const sidewalk = box(
+          length,
+          0.28,
+          SIDEWALK_WIDTH,
+          this.materials.sidewalk,
+        );
+        sidewalk.position.copy(center).addScaledVector(normal, sidewalkOffset * side);
+        sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
+        sidewalk.rotation.y = angle;
+        sidewalk.receiveShadow = true;
+        sidewalk.userData.walkable = true;
+        this.scene.add(sidewalk);
+      }
+
+      const centerLine = box(
+        length * 0.96,
+        0.025,
+        feature.name === "Market Street" ? 0.3 : 0.2,
+        this.materials.yellowLine,
+      );
+      centerLine.position.copy(center);
+      centerLine.position.y = RENDER_HEIGHTS.roadMarking;
+      centerLine.rotation.y = angle;
+      this.scene.add(centerLine);
+
+      if (width >= MAJOR_ROAD_WIDTH) {
+        for (const laneOffset of [-width * 0.25, width * 0.25]) {
+          const laneLine = box(length * 0.94, 0.02, 0.14, this.materials.whiteLine);
+          laneLine.position.copy(center).addScaledVector(normal, laneOffset);
+          laneLine.position.y = RENDER_HEIGHTS.roadMarking + 0.01;
+          laneLine.rotation.y = angle;
+          this.scene.add(laneLine);
+        }
+      }
+    }
+
+    for (const feature of this.features.filter(
+      (candidate) => candidate.kind === "intersection",
+    )) {
+      const position = geoToWorld(feature.path[0]);
+      const intersection = box(
+        MAJOR_ROAD_WIDTH + 0.8,
+        0.05,
+        MAJOR_ROAD_WIDTH + 0.8,
+        this.materials.asphalt,
+      );
+      intersection.position.set(
+        position.x,
+        RENDER_HEIGHTS.intersectionSurface - 0.025,
+        position.z,
+      );
+      intersection.receiveShadow = true;
+      intersection.userData.walkable = true;
+      intersection.userData.featureId = feature.id;
+      this.selectableRoads.push(intersection);
+      this.scene.add(intersection);
+      if (position.length() > 930) continue;
+      this.addCrosswalk(position.x, position.z);
+    }
+  }
+
+  private addCrosswalk(x: number, z: number): void {
+    for (let index = -3; index <= 3; index += 1) {
+      const stripeA = box(1.35, 0.025, 6.2, this.materials.whiteLine);
+      stripeA.position.set(x + index * 2.25, RENDER_HEIGHTS.crosswalk, z - 10.5);
+      const stripeB = stripeA.clone();
+      stripeB.position.z = z + 10.5;
+      const stripeC = box(6.2, 0.025, 1.35, this.materials.whiteLine);
+      stripeC.position.set(x - 10.5, RENDER_HEIGHTS.crosswalk, z + index * 2.25);
+      const stripeD = stripeC.clone();
+      stripeD.position.x = x + 10.5;
+      this.scene.add(stripeA, stripeB, stripeC, stripeD);
+    }
+  }
+
+  private buildDistrictArchitecture(): void {
+    const rng = seededRandom(20260727);
+    for (let avenueIndex = 0; avenueIndex < PENN_AVENUES.length - 1; avenueIndex += 1) {
+      for (let streetIndex = 0; streetIndex < PENN_STREETS.length - 1; streetIndex += 1) {
+        const west = geoToWorld({
+          longitude: PENN_AVENUES[avenueIndex + 1].longitude,
+          latitude: PENN_CENTER.latitude,
+        }).x;
+        const east = geoToWorld({
+          longitude: PENN_AVENUES[avenueIndex].longitude,
+          latitude: PENN_CENTER.latitude,
+        }).x;
+        const north = geoToWorld({
+          longitude: PENN_CENTER.longitude,
+          latitude: PENN_STREETS[streetIndex].latitude,
+        }).z;
+        const south = geoToWorld({
+          longitude: PENN_CENTER.longitude,
+          latitude: PENN_STREETS[streetIndex + 1].latitude,
+        }).z;
+        const blockCenter = new THREE.Vector3((west + east) / 2, 0, (north + south) / 2);
+        const blockWidth = Math.abs(east - west) - 31;
+        const blockDepth = Math.abs(south - north) - 31;
+        if (blockWidth < 22 || blockDepth < 22) continue;
+
+        const paving = box(blockWidth, 0.16, blockDepth, this.materials.blockPaving);
+        paving.position.set(blockCenter.x, RENDER_HEIGHTS.blockCenter, blockCenter.z);
+        paving.receiveShadow = true;
+        paving.userData.walkable = true;
+        this.scene.add(paving);
+
+        if (this.nearLandmark(blockCenter.x, blockCenter.z, 80)) continue;
+        const distance = Math.hypot(blockCenter.x, blockCenter.z);
+        const core = distance < 760;
+        const buildingCount = core ? 2 + Math.floor(rng() * 3) : 1 + Math.floor(rng() * 2);
+        for (let index = 0; index < buildingCount; index += 1) {
+          const cellWidth = blockWidth / buildingCount;
+          const width = Math.max(18, cellWidth * (0.58 + rng() * 0.28));
+          const depth = Math.max(20, blockDepth * (0.55 + rng() * 0.28));
+          const x =
+            blockCenter.x -
+            blockWidth / 2 +
+            cellWidth * (index + 0.5) +
+            (rng() - 0.5) * cellWidth * 0.18;
+          const z = blockCenter.z + (rng() - 0.5) * blockDepth * 0.2;
+          const archetype = Math.floor(rng() * 12);
+          this.addArchetypeBuilding(archetype, x, z, width, depth, core, rng);
+        }
+      }
+    }
+
+    this.addDistantSkyline(rng);
+  }
+
+  private addArchetypeBuilding(
+    archetype: number,
+    x: number,
+    z: number,
+    width: number,
+    depth: number,
+    core: boolean,
+    rng: () => number,
+  ): void {
+    const group = new THREE.Group();
+    group.position.set(x, 0.26, z);
+    group.rotation.y = (rng() - 0.5) * 0.06;
+    const baseHeight = core ? 18 + rng() * 48 : 14 + rng() * 78;
+
+    if (archetype === 0 || archetype === 1) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight, this.materials.historicBrick, true);
+      this.addPitchedRoof(group, 0, baseHeight, 0, width * 0.88, depth * 0.88, "#59433d");
+      if (archetype === 0) {
+        this.addVolume(
+          group,
+          0,
+          -depth * 0.12,
+          width * 0.22,
+          depth * 0.35,
+          baseHeight * 1.38,
+          this.materials.darkStone,
+          true,
+        );
+      }
+    } else if (archetype === 2) {
+      this.addVolume(group, -width * 0.22, 0, width * 0.56, depth, baseHeight, this.materials.redBrick, true);
+      this.addVolume(group, width * 0.28, depth * 0.18, width * 0.44, depth * 0.64, baseHeight * 0.78, this.materials.redBrick, true);
+    } else if (archetype === 3 || archetype === 4) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight * 0.32, this.materials.concrete, true);
+      this.addVolume(group, 0, 0, width * 0.68, depth * 0.74, baseHeight, this.materials.glass, true);
+      this.addRoofDetails(group, width * 0.5, depth * 0.5, baseHeight, rng);
+    } else if (archetype === 5) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight * 0.28, this.materials.limestone, true);
+      this.addVolume(group, 0, 0, width * 0.56, depth * 0.62, baseHeight * 1.45, this.materials.dorm, true);
+      this.addRoofDetails(group, width * 0.4, depth * 0.45, baseHeight * 1.45, rng);
+    } else if (archetype === 6) {
+      const count = Math.max(3, Math.floor(width / 12));
+      for (let index = 0; index < count; index += 1) {
+        const unitWidth = width / count - 0.5;
+        const unitX = -width / 2 + (index + 0.5) * (width / count);
+        const height = 12 + (index % 3) * 2.5;
+        this.addVolume(
+          group,
+          unitX,
+          0,
+          unitWidth,
+          depth * 0.8,
+          height,
+          index % 2 ? this.materials.rowhouseRed : this.materials.rowhouseTan,
+          true,
+        );
+        this.addPitchedRoof(group, unitX, height, 0, unitWidth * 0.92, depth * 0.74, "#504740");
+      }
+    } else if (archetype === 7) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight * 0.82, this.materials.office, true);
+      this.addVolume(group, width * 0.18, 0, width * 0.42, depth * 0.72, baseHeight * 1.25, this.materials.glass, true);
+    } else if (archetype === 8) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight * 0.55, this.materials.hospital, true);
+      this.addVolume(group, -width * 0.24, 0, width * 0.42, depth * 0.82, baseHeight * 1.2, this.materials.hospital, true);
+      this.addVolume(group, width * 0.24, 0, width * 0.42, depth * 0.72, baseHeight, this.materials.glass, true);
+      this.addRoofDetails(group, width * 0.8, depth * 0.7, baseHeight * 1.2, rng);
+    } else if (archetype === 9) {
+      this.addVolume(group, 0, 0, width, depth, baseHeight * 0.75, this.materials.parking, true);
+      for (let level = 1; level < 5; level += 1) {
+        const band = box(width * 1.01, 0.55, depth * 1.01, this.materials.darkBand);
+        band.position.y = (baseHeight * 0.75 * level) / 5;
+        group.add(band);
+      }
+    } else if (archetype === 10) {
+      this.addVolume(group, 0, 0, width, depth, 9 + rng() * 8, this.materials.retail, true);
+      const awning = box(width * 0.82, 0.45, 2.2, this.materials.awning);
+      awning.position.set(0, 4.1, depth / 2 + 1);
+      group.add(awning);
+    } else {
+      this.addVolume(group, -width * 0.18, 0, width * 0.64, depth, baseHeight * 0.78, this.materials.academic, true);
+      this.addVolume(group, width * 0.3, -depth * 0.17, width * 0.38, depth * 0.66, baseHeight, this.materials.academic, true);
+      this.addRoofDetails(group, width * 0.65, depth * 0.7, baseHeight, rng);
+    }
+    this.scene.add(group);
+  }
+
+  private addVolume(
+    group: THREE.Group,
+    x: number,
+    z: number,
+    width: number,
+    depth: number,
+    height: number,
+    material: THREE.Material,
+    shadows: boolean,
+  ): THREE.Mesh {
+    const volume = box(width, height, depth, material);
+    volume.position.set(x, height / 2, z);
+    volume.castShadow = shadows;
+    volume.receiveShadow = true;
+    volume.userData.collidable = true;
+    group.add(volume);
+    return volume;
+  }
+
+  private addPitchedRoof(
+    group: THREE.Group,
+    x: number,
+    y: number,
+    z: number,
+    width: number,
+    depth: number,
+    color: string,
+  ): void {
+    const roof = new THREE.Mesh(
+      new THREE.CylinderGeometry(Math.min(width, depth) * 0.55, Math.min(width, depth) * 0.55, 5, 4),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.9 }),
+    );
+    roof.scale.set(width / Math.max(depth, 1), 1, 1);
+    roof.rotation.y = Math.PI / 4;
+    roof.position.set(x, y + 2.5, z);
+    roof.castShadow = true;
+    roof.userData.collidable = true;
+    group.add(roof);
+  }
+
+  private addRoofDetails(
+    group: THREE.Group,
+    width: number,
+    depth: number,
+    height: number,
+    rng: () => number,
+  ): void {
+    const unitCount = 1 + Math.floor(rng() * 3);
+    for (let index = 0; index < unitCount; index += 1) {
+      const unit = box(
+        4 + rng() * 5,
+        2.4 + rng() * 2,
+        4 + rng() * 5,
+        this.materials.rooftop,
+      );
+      unit.position.set(
+        (rng() - 0.5) * width * 0.55,
+        height + unit.geometry.parameters.height / 2,
+        (rng() - 0.5) * depth * 0.55,
+      );
+      unit.castShadow = true;
+      group.add(unit);
+    }
+  }
+
+  private buildLandmarks(): void {
+    for (const landmark of PENN_LANDMARKS) {
+      const position = geoToWorld(landmark);
+      const group = new THREE.Group();
+      group.position.set(position.x, 0.3, position.z);
+      group.userData.landmark = landmark.name;
+      if (landmark.kind === "college-hall") this.buildCollegeHall(group);
+      else if (landmark.kind === "fisher") this.buildFisher(group);
+      else if (landmark.kind === "huntsman") this.buildHuntsman(group);
+      else if (landmark.kind === "van-pelt") this.buildVanPelt(group);
+      else if (landmark.kind === "museum") this.buildMuseum(group);
+      else if (landmark.kind === "franklin-field") this.buildFranklinField(group);
+      else if (landmark.kind === "gutmann") this.buildGutmann(group);
+      else if (landmark.kind === "houston") this.buildHouston(group);
+      else if (landmark.kind === "engineering") this.buildEngineering(group);
+      else this.buildMedicine(group);
+      this.scene.add(group);
+    }
+  }
+
+  private buildCollegeHall(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 92, 34, 31, this.materials.landmarkStone, true);
+    this.addVolume(group, 0, -2, 22, 26, 52, this.materials.landmarkStone, true);
+    this.addVolume(group, -37, 0, 15, 26, 39, this.materials.darkStone, true);
+    this.addVolume(group, 37, 0, 15, 26, 39, this.materials.darkStone, true);
+    this.addPitchedRoof(group, 0, 31, 0, 88, 30, "#4e3d3a");
+    for (const x of [-37, 0, 37]) {
+      const spire = new THREE.Mesh(
+        new THREE.ConeGeometry(5.5, 13, 6),
+        this.materials.roofCopper,
+      );
+      spire.position.set(x, x === 0 ? 58 : 46, -2);
+      spire.castShadow = true;
+      group.add(spire);
+    }
+  }
+
+  private buildFisher(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 62, 48, 28, this.materials.fisherBrick, true);
+    this.addVolume(group, -24, -12, 18, 18, 49, this.materials.fisherBrick, true);
+    this.addVolume(group, 20, 11, 22, 20, 37, this.materials.fisherBrick, true);
+    for (const [x, z, height] of [[-24, -12, 56], [20, 11, 44]] as const) {
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(7, 12, 4), this.materials.darkRoof);
+      cap.position.set(x, height, z);
+      cap.rotation.y = Math.PI / 4;
+      group.add(cap);
+    }
+  }
+
+  private buildHuntsman(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 88, 56, 27, this.materials.huntsmanStone, true);
+    this.addVolume(group, -31, 0, 25, 48, 42, this.materials.huntsmanStone, true);
+    this.addVolume(group, 31, 0, 25, 48, 42, this.materials.huntsmanStone, true);
+    const rotunda = new THREE.Mesh(
+      new THREE.CylinderGeometry(13, 13, 35, 24),
+      this.materials.glass,
+    );
+    rotunda.position.set(0, 18, 27);
+    rotunda.castShadow = true;
+    group.add(rotunda);
+  }
+
+  private buildVanPelt(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 96, 62, 19, this.materials.limestone, true);
+    this.addVolume(group, 0, -2, 78, 48, 32, this.materials.vanPelt, true);
+    this.addVolume(group, 0, -3, 58, 35, 39, this.materials.limestone, true);
+  }
+
+  private buildMuseum(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 86, 57, 24, this.materials.museumBrick, true);
+    this.addVolume(group, -28, -12, 31, 32, 32, this.materials.museumBrick, true);
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(15, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      this.materials.roofCopper,
+    );
+    dome.position.set(-28, 32, -12);
+    dome.castShadow = true;
+    group.add(dome);
+  }
+
+  private buildFranklinField(group: THREE.Group): void {
+    const field = new THREE.Mesh(new THREE.PlaneGeometry(145, 72), this.materials.field);
+    field.rotation.x = -Math.PI / 2;
+    field.position.y = 0.3;
+    field.userData.walkable = true;
+    group.add(field);
+    const stadium = new THREE.Mesh(
+      new THREE.TorusGeometry(51, 12, 10, 64),
+      this.materials.stadiumConcrete,
+    );
+    stadium.rotation.x = Math.PI / 2;
+    stadium.scale.x = 1.55;
+    stadium.position.y = 8;
+    stadium.castShadow = true;
+    group.add(stadium);
+  }
+
+  private buildGutmann(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 66, 46, 16, this.materials.concrete, true);
+    this.addVolume(group, 6, -2, 45, 36, 58, this.materials.glass, true);
+    const crown = box(49, 4, 40, this.materials.silver);
+    crown.position.set(6, 60, -2);
+    group.add(crown);
+  }
+
+  private buildHouston(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 60, 45, 28, this.materials.historicBrick, true);
+    this.addVolume(group, 0, -9, 18, 22, 43, this.materials.historicBrick, true);
+    this.addPitchedRoof(group, 0, 28, 0, 56, 41, "#51403c");
+  }
+
+  private buildEngineering(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 82, 48, 22, this.materials.academic, true);
+    this.addVolume(group, -19, 0, 34, 38, 42, this.materials.glass, true);
+    this.addVolume(group, 26, 0, 25, 42, 34, this.materials.silver, true);
+  }
+
+  private buildMedicine(group: THREE.Group): void {
+    this.addVolume(group, 0, 0, 112, 68, 24, this.materials.hospital, true);
+    this.addVolume(group, -32, 0, 38, 52, 82, this.materials.hospital, true);
+    this.addVolume(group, 18, -6, 45, 46, 66, this.materials.glass, true);
+    this.addVolume(group, 43, 6, 24, 38, 48, this.materials.hospital, true);
+  }
+
+  private buildTreesAndStreetFurniture(): void {
+    const rng = seededRandom(4438);
+    const treePositions: Array<{ x: number; z: number; scale: number; type: number }> = [];
+    for (const feature of this.features.filter(
+      (candidate) => candidate.kind === "street",
+    )) {
+      const [start, end] = feature.path.map(geoToWorld);
+      const direction = end.clone().sub(start);
+      const length = direction.length();
+      const steps = Math.max(1, Math.floor(length / 42));
+      const normal = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+      const width = roadWidth(feature);
+      for (let index = 1; index < steps; index += 1) {
+        if (rng() < 0.34) continue;
+        const base = start.clone().lerp(end, index / steps);
+        const side = index % 2 === 0 ? 1 : -1;
+        base.addScaledVector(normal, side * (width / 2 + SIDEWALK_WIDTH + 2.8));
+        if (this.nearLandmark(base.x, base.z, 24)) continue;
+        treePositions.push({
+          x: base.x + (rng() - 0.5) * 3,
+          z: base.z + (rng() - 0.5) * 3,
+          scale: 0.75 + rng() * 0.7,
+          type: Math.floor(rng() * 3),
+        });
+      }
+    }
+    this.addInstancedTrees(treePositions);
+    this.addStreetlights();
+    this.addCampusProps();
+  }
+
+  private addInstancedTrees(
+    positions: Array<{ x: number; z: number; scale: number; type: number }>,
+  ): void {
+    const trunkGeometry = new THREE.CylinderGeometry(0.38, 0.52, 5.5, 7);
+    const trunkMesh = new THREE.InstancedMesh(
+      trunkGeometry,
+      this.materials.trunk,
+      positions.length,
+    );
+    const crownMeshes = [
+      new THREE.InstancedMesh(
+        new THREE.IcosahedronGeometry(3.5, 1),
+        this.materials.leavesA,
+        positions.length,
+      ),
+      new THREE.InstancedMesh(
+        new THREE.SphereGeometry(3.8, 9, 7),
+        this.materials.leavesB,
+        positions.length,
+      ),
+      new THREE.InstancedMesh(
+        new THREE.ConeGeometry(3.4, 7.5, 9),
+        this.materials.leavesC,
+        positions.length,
+      ),
+    ];
+    const counts = [0, 0, 0];
+    const matrix = new THREE.Matrix4();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const position = new THREE.Vector3();
+    positions.forEach((tree, index) => {
+      position.set(tree.x, 2.8 * tree.scale, tree.z);
+      scale.set(tree.scale, tree.scale, tree.scale);
+      quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), index * 1.71);
+      matrix.compose(position, quaternion, scale);
+      trunkMesh.setMatrixAt(index, matrix);
+
+      const crown = crownMeshes[tree.type];
+      const crownIndex = counts[tree.type];
+      position.y = tree.type === 2 ? 7.2 * tree.scale : 6.3 * tree.scale;
+      matrix.compose(position, quaternion, scale);
+      crown.setMatrixAt(crownIndex, matrix);
+      counts[tree.type] += 1;
+    });
+    trunkMesh.castShadow = true;
+    for (const [index, crown] of crownMeshes.entries()) {
+      crown.count = counts[index];
+      crown.castShadow = true;
+      crown.instanceMatrix.needsUpdate = true;
+      this.scene.add(crown);
+    }
+    trunkMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(trunkMesh);
+  }
+
+  private addStreetlights(): void {
+    const coreFeatures = this.features.filter((feature) => {
+      if (feature.kind !== "street") return false;
+      const center = segmentCenter(feature);
+      return Math.hypot(center.x, center.z) < 880;
+    });
+    const positions: THREE.Vector3[] = [];
+    for (const feature of coreFeatures) {
+      const [start, end] = feature.path.map(geoToWorld);
+      const direction = end.clone().sub(start);
+      const normal = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+      const steps = Math.max(1, Math.floor(direction.length() / 75));
+      for (let index = 1; index < steps; index += 1) {
+        const position = start.clone().lerp(end, index / steps);
+        position.addScaledVector(normal, roadWidth(feature) / 2 + 3.6);
+        positions.push(position);
+      }
+    }
+    const poles = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 7.5, 8),
+      this.materials.streetMetal,
+      positions.length,
+    );
+    const lamps = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.42, 8, 6),
+      this.materials.lamp,
+      positions.length,
+    );
+    const matrix = new THREE.Matrix4();
+    positions.forEach((position, index) => {
+      matrix.makeTranslation(position.x, 3.9, position.z);
+      poles.setMatrixAt(index, matrix);
+      matrix.makeTranslation(position.x, 7.7, position.z);
+      lamps.setMatrixAt(index, matrix);
+    });
+    this.scene.add(poles, lamps);
+  }
+
+  private addCampusProps(): void {
+    const rng = seededRandom(90210);
+    for (let index = 0; index < 45; index += 1) {
+      const angle = rng() * Math.PI * 2;
+      const radius = 120 + rng() * 560;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      if (index % 3 === 0) {
+        const bench = new THREE.Group();
+        const seat = box(3.1, 0.25, 0.75, this.materials.wood);
+        seat.position.y = 0.85;
+        const back = box(3.1, 0.9, 0.18, this.materials.wood);
+        back.position.set(0, 1.35, 0.32);
+        bench.add(seat, back);
+        bench.position.set(x, 0.25, z);
+        bench.rotation.y = angle;
+        this.scene.add(bench);
+      } else {
+        const planter = new THREE.Mesh(
+          new THREE.CylinderGeometry(1.1, 1.25, 1.1, 12),
+          this.materials.planter,
+        );
+        planter.position.set(x, 0.72, z);
+        this.scene.add(planter);
+      }
+    }
+  }
+
+  private buildParkedCars(): void {
+    const rng = seededRandom(7781);
+    const parked: Array<{ position: THREE.Vector3; rotation: number; color: THREE.Color }> = [];
+    for (const feature of this.features.filter(
+      (candidate) => candidate.kind === "street",
+    )) {
+      const [start, end] = feature.path.map(geoToWorld);
+      const direction = end.clone().sub(start);
+      const length = direction.length();
+      const normal = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+      const steps = Math.floor(length / 24);
+      for (let index = 1; index < steps; index += 1) {
+        if (rng() < 0.45) continue;
+        const position = start.clone().lerp(end, index / steps);
+        position.addScaledVector(normal, (index % 2 ? 1 : -1) * (roadWidth(feature) / 2 - 2.2));
+        parked.push({
+          position,
+          rotation: Math.atan2(direction.x, direction.z),
+          color: new THREE.Color(
+            ["#344a5e", "#bf4d42", "#d5d7d2", "#24282c", "#b28d48"][index % 5],
+          ),
+        });
+      }
+    }
+    const body = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1.9, 0.72, 4.3),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        roughness: 0.38,
+        metalness: 0.08,
+        vertexColors: true,
+      }),
+      parked.length,
+    );
+    const cabin = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1.65, 0.6, 2.1),
+      this.materials.carGlass,
+      parked.length,
+    );
+    const matrix = new THREE.Matrix4();
+    const quaternion = new THREE.Quaternion();
+    parked.forEach((car, index) => {
+      quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), car.rotation);
+      matrix.compose(
+        new THREE.Vector3(car.position.x, 0.58, car.position.z),
+        quaternion,
+        new THREE.Vector3(1, 1, 1),
+      );
+      body.setMatrixAt(index, matrix);
+      body.setColorAt(index, car.color);
+      matrix.compose(
+        new THREE.Vector3(car.position.x, 1.18, car.position.z),
+        quaternion,
+        new THREE.Vector3(1, 1, 1),
+      );
+      cabin.setMatrixAt(index, matrix);
+    });
+    body.castShadow = true;
+    cabin.castShadow = true;
+    this.scene.add(body, cabin);
+  }
+
+  private buildSignals(): void {
+    for (const feature of this.features.filter(
+      (candidate) => candidate.kind === "intersection",
+    )) {
+      const position = geoToWorld(feature.path[0]);
+      const major =
+        feature.name.startsWith("38th") ||
+        feature.name.startsWith("40th") ||
+        feature.name.includes("Market") ||
+        feature.name.includes("South");
+      for (const [axis, sign] of [
+        ["x", 1],
+        ["x", -1],
+        ["z", 1],
+        ["z", -1],
+      ] as const) {
+        const group = this.createSignalAssembly(
+          feature.id,
+          axis,
+          sign,
+          major,
+        );
+        const corner = signalCorner(axis, sign);
+        group.position.set(
+          position.x + corner.x * 11.2,
+          RENDER_HEIGHTS.sidewalkSurface,
+          position.z + corner.z * 11.2,
+        );
+        group.rotation.y = signalFacingRotation(axis, sign);
+        this.scene.add(group);
+      }
+    }
+  }
+
+  private createSignalAssembly(
+    intersectionId: string,
+    axis: DistrictFeature["axis"],
+    _sign: 1 | -1,
+    mastArm: boolean,
+  ): THREE.Group {
+    const group = new THREE.Group();
+    const poleHeight = 7.2;
+    const armLength = mastArm ? 8.2 : 5.8;
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.24, poleHeight, 10),
+      this.materials.streetMetal,
+    );
+    pole.position.y = poleHeight / 2;
+    const arm = box(
+      armLength,
+      0.25,
+      0.25,
+      this.materials.streetMetal,
+    );
+    arm.position.set(-armLength / 2 + 0.1, poleHeight - 0.35, 0);
+    const bracket = box(0.3, 0.85, 0.3, this.materials.streetMetal);
+    bracket.position.set(-armLength + 0.45, poleHeight - 0.75, 0);
+    const backing = box(1.45, 3.15, 0.18, this.materials.signalHousing);
+    backing.position.set(-armLength + 0.45, poleHeight - 2.15, -0.34);
+    const housing = box(1.2, 2.85, 0.78, this.materials.signalHousing);
+    housing.position.set(-armLength + 0.45, poleHeight - 2.15, 0);
+    const red = createSignalLensMaterial("#d84137");
+    const yellow = createSignalLensMaterial("#e7b73f");
+    const green = createSignalLensMaterial("#3cbd6d");
+    for (const [offset, material] of [
+      [0.86, red],
+      [0, yellow],
+      [-0.86, green],
+    ] as const) {
+      const lens = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.34, 0.34, 0.13, 18),
+        material,
+      );
+      lens.rotation.x = Math.PI / 2;
+      lens.position.set(
+        -armLength + 0.45,
+        poleHeight - 2.15 + offset,
+        0.47,
+      );
+      group.add(lens);
+    }
+    const pedestrianHousing = box(
+      1.15,
+      1.4,
+      0.62,
+      this.materials.signalHousing,
+    );
+    pedestrianHousing.position.set(0, 3.15, 0.08);
+    const walk = createSignalLensMaterial("#eef7ed");
+    const dontWalk = createSignalLensMaterial("#df653f");
+    const walkHead = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 10, 8),
+      walk,
+    );
+    walkHead.position.set(-0.22, 3.42, 0.43);
+    const walkBody = box(0.16, 0.48, 0.08, walk);
+    walkBody.position.set(-0.22, 3.03, 0.43);
+    const hand = new THREE.Group();
+    for (let finger = 0; finger < 4; finger += 1) {
+      const digit = box(0.07, 0.36, 0.08, dontWalk);
+      digit.position.set(0.08 + finger * 0.09, 3.34, 0.44);
+      hand.add(digit);
+    }
+    const palm = box(0.38, 0.34, 0.08, dontWalk);
+    palm.position.set(0.22, 3.02, 0.44);
+    hand.add(palm);
+    group.add(
+      pole,
+      arm,
+      bracket,
+      backing,
+      housing,
+      pedestrianHousing,
+      walkHead,
+      walkBody,
+      hand,
+    );
+    group.traverse((child) => {
+      if (child instanceof THREE.Mesh) child.castShadow = true;
+    });
+    this.signalAssemblies.push({
+      intersectionId,
+      axis,
+      red,
+      yellow,
+      green,
+      walk,
+      dontWalk,
+    });
+    return group;
+  }
+
+  private createPlacedBuilding(building: PlacedBuilding): THREE.Group {
+    const group = new THREE.Group();
+    group.position.set(building.x, 0, building.z);
+    group.rotation.y = building.rotation;
+    group.userData.placedBuildingId = building.id;
+
+    const floors = THREE.MathUtils.clamp(Math.round(building.floors), 1, 20);
+    const industrial = building.kind === "industrial";
+    const commercial = building.kind === "commercial";
+    const civic = building.kind === "civic";
+    const width = industrial ? 24 : civic ? 18 : commercial ? 17 : 15;
+    const depth = industrial ? 19 : civic ? 17 : commercial ? 15 : 14;
+    const floorHeight = industrial ? 2.6 : 3.2;
+    const height = Math.max(6, floors * floorHeight);
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: building.color,
+      roughness: 0.76,
+      metalness: commercial ? 0.15 : 0.04,
+    });
+    const roofMaterial = new THREE.MeshStandardMaterial({
+      color: commercial ? "#a9cbd2" : "#344148",
+      roughness: 0.72,
+    });
+    const windowMaterial = new THREE.MeshStandardMaterial({
+      color: commercial ? "#9edbea" : "#f4d78d",
+      emissive: commercial ? "#2f6976" : "#70571d",
+      emissiveIntensity: 0.28,
+      roughness: 0.3,
+    });
+
+    const foundation = box(
+      width + 4,
+      0.45,
+      depth + 4,
+      new THREE.MeshStandardMaterial({ color: "#c5c0b3", roughness: 0.95 }),
+    );
+    foundation.position.y = 0.24;
+    foundation.receiveShadow = true;
+    const body = box(width, height, depth, bodyMaterial);
+    body.position.y = 0.5 + height / 2;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    const roof = box(width + 0.8, civic ? 1.2 : 0.65, depth + 0.8, roofMaterial);
+    roof.position.y = 0.58 + height;
+    roof.castShadow = true;
+    group.add(foundation, body, roof);
+
+    const visibleFloorStep = Math.max(1, Math.ceil(floors / 8));
+    for (let floor = 0; floor < floors; floor += visibleFloorStep) {
+      const y = 1.9 + floor * floorHeight;
+      for (const x of [-width * 0.27, width * 0.27]) {
+        const window = box(2.4, 1.25, 0.16, windowMaterial);
+        window.position.set(x, y, depth / 2 + 0.1);
+        group.add(window);
+      }
+    }
+
+    const door = box(2.5, 3.2, 0.2, this.materials.streetMetal);
+    door.position.set(0, 2.05, depth / 2 + 0.14);
+    group.add(door);
+
+    const selectionRing = new THREE.Mesh(
+      new THREE.RingGeometry(Math.max(width, depth) * 0.68, Math.max(width, depth) * 0.82, 40),
+      new THREE.MeshBasicMaterial({
+        color: "#73f0cb",
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    selectionRing.name = "building-selection-ring";
+    selectionRing.rotation.x = -Math.PI / 2;
+    selectionRing.position.y = 0.38;
+    selectionRing.visible = false;
+    group.add(selectionRing);
+    return group;
+  }
+
+  private updatePlacedBuildingSelection(): void {
+    for (const [id, group] of this.placedBuildingMeshes) {
+      const ring = group.getObjectByName("building-selection-ring");
+      if (ring) ring.visible = id === this.selectedPlacedBuildingId;
+    }
+  }
+
+  private updatePointerRay(event: PointerEvent): void {
     const bounds = this.canvas.getBoundingClientRect();
     this.pointer.set(
       ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
       -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const pickable = [...this.buildings.values(), ...this.pedestrians.values()]
-      .filter((object) => object.visible);
-    const hit = this.raycaster.intersectObjects(pickable, true)[0];
-    const selection = selectionFromObject(hit?.object);
-    this.setSelection(selection);
-    this.onSelection(selection);
-  };
-
-  private buildLighting(): void {
-    this.scene.add(this.skyLight);
-    this.sun.position.set(32, 55, 26);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
-    this.sun.shadow.camera.left = -105;
-    this.sun.shadow.camera.right = 105;
-    this.sun.shadow.camera.top = 105;
-    this.sun.shadow.camera.bottom = -105;
-    this.scene.add(this.sun);
-    this.renderer.shadowMap.needsUpdate = true;
   }
 
-  private buildStreet(): void {
-    const ground = mesh(
-      new THREE.PlaneGeometry(190, 165),
-      new THREE.MeshStandardMaterial({ color: "#789872", roughness: 1 }),
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    const roadLength = 178;
-    const roadWidth = 8.7;
-    this.addBox(0, 0.13, 0, roadLength, 0.16, roadWidth, "#30383a", true, this.streetElements);
-    this.addBox(0, 0.14, 0, roadWidth, 0.18, 154, "#30383a", true, this.streetElements);
-
-    const sidewalkOffset = 5.9;
-    for (const offset of [-sidewalkOffset, sidewalkOffset]) {
-      this.addBox(0, 0.2, offset, roadLength, 0.2, 1.15, "#b6bab5", true, this.streetElements);
-      this.addBox(offset, 0.21, 0, 1.15, 0.22, 154, "#b6bab5", true, this.streetElements);
-    }
-
-    for (let position = -82; position <= 82; position += 6) {
-      if (Math.abs(position) < 7) continue;
-      this.addBox(position, 0.24, 0, 2.7, 0.03, 0.12, "#e7d86b", false, this.streetElements);
-    }
-    for (let position = -70; position <= 70; position += 6) {
-      if (Math.abs(position) < 7) continue;
-      this.addBox(0, 0.25, position, 0.12, 0.03, 2.7, "#e7d86b", false, this.streetElements);
-    }
-    this.addCrosswalk(0, -6.2, true);
-    this.addCrosswalk(0, 6.2, true);
-    this.addCrosswalk(-6.2, 0, false);
-    this.addCrosswalk(6.2, 0, false);
-  }
-
-  private addCrosswalk(x: number, z: number, horizontal: boolean): void {
-    for (let stripe = -2; stripe <= 2; stripe += 1) {
-      const offset = stripe * 0.8;
-      this.addBox(
-        x + (horizontal ? offset : 0),
-        0.27,
-        z + (horizontal ? 0 : offset),
-        horizontal ? 0.42 : 3.6,
-        0.03,
-        horizontal ? 3.6 : 0.42,
-        "#ecebe1",
-        false,
-        this.streetElements,
-      );
-    }
-  }
-
-  private syncCityLinks(
-    links: readonly CityLinkDefinition[],
-    districts: readonly CityDistrictState[],
-  ): void {
-    for (const linkMesh of this.cityLinkMeshes.values()) {
-      linkMesh.visible = this.detailMode === "city";
-    }
-    if (this.cityLinkMeshes.size === links.length) return;
-    const districtById = new Map(districts.map((district) => [district.id, district]));
-    for (const link of links) {
-      if (this.cityLinkMeshes.has(link.id)) continue;
-      const start = districtById.get(link.fromDistrictId);
-      const end = districtById.get(link.toDistrictId);
-      if (!start || !end) continue;
-      const startX = start.x * WORLD_SCALE;
-      const startZ = start.z * WORLD_SCALE;
-      const endX = end.x * WORLD_SCALE;
-      const endZ = end.z * WORLD_SCALE;
-      const length = Math.hypot(endX - startX, endZ - startZ);
-      const linkMesh = mesh(
-        new THREE.BoxGeometry(length, 0.06, 0.32),
-        new THREE.MeshStandardMaterial({ color: "#6f8785", roughness: 0.9 }),
-      );
-      linkMesh.position.set((startX + endX) / 2, 0.08, (startZ + endZ) / 2);
-      linkMesh.rotation.y = -Math.atan2(endZ - startZ, endX - startX);
-      linkMesh.visible = this.detailMode === "city";
-      this.scene.add(linkMesh);
-      this.cityLinkMeshes.set(link.id, linkMesh);
-    }
-  }
-
-  private syncCityDistricts(
-    districts: readonly CityDistrictState[],
-    visualMetrics: ReadonlyMap<string, VisualLayerMetrics>,
-  ): void {
-    const activeIds = new Set<string>();
-    for (const district of districts) {
-      activeIds.add(district.id);
-      let districtMesh = this.districtMeshes.get(district.id);
-      if (!districtMesh) {
-        districtMesh = mesh(
-          new THREE.BoxGeometry(district.width * WORLD_SCALE * 0.82, 0.1, district.depth * WORLD_SCALE * 0.82),
-          new THREE.MeshStandardMaterial({ color: ZONE_COLORS[district.primaryZone], roughness: 0.96 }),
-        );
-        districtMesh.receiveShadow = true;
-        this.scene.add(districtMesh);
-        this.districtMeshes.set(district.id, districtMesh);
+  private placedBuildingIdFromObject(object: THREE.Object3D | undefined): string | null {
+    let current = object;
+    while (current) {
+      if (typeof current.userData.placedBuildingId === "string") {
+        return current.userData.placedBuildingId;
       }
-      districtMesh.position.set(district.x * WORLD_SCALE, 0.08, district.z * WORLD_SCALE);
-      districtMesh.visible = this.detailMode === "city";
-      const metrics = visualMetrics.get(district.id);
-      districtMesh.material.color.set(
-        this.visualLayer === "none" || metrics === undefined
-          ? ZONE_COLORS[district.primaryZone]
-          : colorForVisualLayer(this.visualLayer, valueForVisualLayer(this.visualLayer, metrics)),
-      );
+      current = current.parent ?? undefined;
     }
-    this.removeMissingMeshes(this.districtMeshes, activeIds);
+    return null;
   }
 
-  private syncBuildings(
-    states: readonly Building[],
-    visualMetrics: ReadonlyMap<string, VisualLayerMetrics>,
-  ): void {
-    const activeIds = new Set<string>();
-    for (const state of states) {
-      activeIds.add(state.id);
-      const group = this.buildings.get(state.id) ?? this.addBuilding(state);
-      group.position.set(state.x * WORLD_SCALE, 0.18, state.z * WORLD_SCALE);
-      group.visible = this.detailMode !== "city";
-      const body = group.getObjectByName("building-body") as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
-      const roof = group.getObjectByName("building-roof") as THREE.Mesh;
-      const height = 1.25 + state.floors * 0.72;
-      body.scale.y = height;
-      body.position.y = height / 2;
-      roof.position.y = height + 0.13;
-      const metrics = visualMetrics.get(state.id);
-      body.material.color.set(
-        this.visualLayer === "none" || metrics === undefined
-          ? ZONE_COLORS[state.zone]
-          : colorForVisualLayer(this.visualLayer, valueForVisualLayer(this.visualLayer, metrics)),
-      );
-      const selected = this.selection?.kind === "building" && this.selection.id === state.id;
-      body.material.emissive.set(selected ? "#f6c85f" : "#000000");
-      body.material.emissiveIntensity = selected ? 0.65 : 0;
-    }
-    this.removeMissing(this.buildings, activeIds);
-  }
-
-  private addBuilding(state: Building): THREE.Group {
-    const group = new THREE.Group();
-    group.userData.selection = { kind: "building", id: state.id } satisfies Exclude<SceneSelection, null>;
-    const body = mesh(
-      new THREE.BoxGeometry(5.2, 1, 4.1),
-      new THREE.MeshStandardMaterial({ color: ZONE_COLORS[state.zone], roughness: 0.68 }),
-    );
-    body.name = "building-body";
-    body.castShadow = true;
-    body.receiveShadow = true;
-    const roof = mesh(
-      new THREE.BoxGeometry(5.45, 0.24, 4.35),
-      new THREE.MeshStandardMaterial({ color: "#d9ded7", roughness: 0.82 }),
-    );
-    roof.name = "building-roof";
-    roof.castShadow = true;
-    group.add(body, roof);
-    this.scene.add(group);
-    this.buildings.set(state.id, group);
-    return group;
-  }
-
-  private syncTransitStops(
-    stops: readonly TransitStop[],
-    nodes: ReadonlyArray<{ id: string; x: number; z: number }>,
-  ): void {
-    for (const group of this.transitStopGroups.values()) {
-      group.visible = this.detailMode !== "city";
-    }
-    if (this.transitStopGroups.size === stops.length) return;
-    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-    for (const stop of stops) {
-      if (this.transitStopGroups.has(stop.id)) continue;
-      const node = nodeMap.get(stop.nodeId);
-      if (!node) continue;
-      const group = new THREE.Group();
-      const pole = mesh(
-        new THREE.CylinderGeometry(0.06, 0.08, 1.8, 10),
-        new THREE.MeshStandardMaterial({ color: "#263238" }),
-      );
-      pole.position.y = 0.9;
-      const sign = mesh(
-        new THREE.BoxGeometry(0.65, 0.5, 0.1),
-        new THREE.MeshStandardMaterial({ color: "#4f9fc6", emissive: "#153b4d" }),
-      );
-      sign.position.y = 1.65;
-      group.add(pole, sign);
-      group.position.set(node.x * WORLD_SCALE, 0.42, node.z * WORLD_SCALE);
-      group.visible = this.detailMode !== "city";
-      this.scene.add(group);
-      this.transitStopGroups.set(stop.id, group);
-    }
-  }
-
-  private syncVehicles(vehicleStates: readonly Vehicle[]): void {
-    const activeIds = new Set<string>();
-    for (const state of vehicleStates) {
-      if (state.completed || !isVisibleVehicleSegment(state.position.segmentId)) {
-        this.removeGroup(this.vehicles, state.id);
-        continue;
-      }
-      activeIds.add(state.id);
-      const existing = this.vehicles.get(state.id);
-      if (this.detailMode === "city" && existing === undefined) continue;
-      const group = existing ?? this.addVehicle(state);
-      group.visible = this.detailMode !== "city";
-      this.placeAgent(group, state.position, 0.2);
-    }
-    this.removeMissing(this.vehicles, activeIds);
-  }
-
-  private addVehicle(state: Vehicle): THREE.Group {
-    const group = new THREE.Group();
-    const color = state.vehicleType === "bus"
-      ? "#e6c54f"
-      : state.vehicleType === "truck"
-        ? "#6587a6"
-        : VEHICLE_COLORS[paletteIndex(state.id, VEHICLE_COLORS.length)];
-    const dimensions = state.vehicleType === "bus"
-      ? [3.8, 1.05, 1.35]
-      : state.vehicleType === "truck"
-        ? [3.3, 1.15, 1.35]
-        : [2.35, 0.72, 1.2];
-    const body = mesh(
-      new THREE.BoxGeometry(dimensions[0], dimensions[1], dimensions[2]),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.38, metalness: 0.06 }),
-    );
-    body.position.y = 0.45 + dimensions[1] / 2;
-    group.add(body);
-
-    const wheelMaterial = new THREE.MeshStandardMaterial({ color: "#151a1c", roughness: 0.85 });
-    for (const x of [-dimensions[0] * 0.31, dimensions[0] * 0.31]) {
-      for (const z of [-dimensions[2] * 0.53, dimensions[2] * 0.53]) {
-        const wheel = mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.16, 14), wheelMaterial);
-        wheel.rotation.x = Math.PI / 2;
-        wheel.position.set(x, 0.34, z);
-        group.add(wheel);
-      }
-    }
-    this.scene.add(group);
-    this.vehicles.set(state.id, group);
-    return group;
-  }
-
-  private syncPedestrians(states: readonly Pedestrian[]): void {
-    const activeIds = new Set<string>();
-    for (const state of states) {
-      if (state.completed || !isVisiblePedestrianSegment(state.position.segmentId)) {
-        this.removeGroup(this.pedestrians, state.id);
-        continue;
-      }
-      activeIds.add(state.id);
-      const existing = this.pedestrians.get(state.id);
-      if (this.detailMode === "city" && existing === undefined) continue;
-      const group = existing ?? this.addPedestrian(state);
-      group.visible = this.detailMode !== "city";
-      group.userData.selection = state.personId === undefined
-        ? undefined
-        : { kind: "person", id: state.personId } satisfies Exclude<SceneSelection, null>;
-      this.placeAgent(group, state.position, 0.22, pedestrianLaneOffset(state.position.segmentId));
-      const body = group.getObjectByName("person-body") as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
-      const selected = this.selection?.kind === "person" && this.selection.id === state.personId;
-      body.material.emissive.set(selected ? "#fff4a3" : "#000000");
-      body.material.emissiveIntensity = selected ? 1 : 0;
-      group.scale.setScalar(selected ? 1.75 : 1.35);
-    }
-    this.removeMissing(this.pedestrians, activeIds);
-  }
-
-  private addPedestrian(state: Pedestrian): THREE.Group {
-    const group = new THREE.Group();
-    const clothingColors = ["#156f73", "#9b4f59", "#6d5b9a", "#49734f"];
-    const body = mesh(
-      new THREE.CapsuleGeometry(0.25, state.ageGroup === "child" ? 0.46 : 0.68, 4, 8),
-      new THREE.MeshStandardMaterial({ color: clothingColors[paletteIndex(state.id, 4)] }),
-    );
-    body.name = "person-body";
-    body.position.y = state.ageGroup === "child" ? 0.85 : 1.05;
-    const head = mesh(
-      new THREE.SphereGeometry(0.24, 14, 10),
-      new THREE.MeshStandardMaterial({ color: "#d7a27c" }),
-    );
-    head.position.y = state.ageGroup === "child" ? 1.38 : 1.72;
-    const pickTarget = mesh(
-      new THREE.SphereGeometry(0.62, 10, 8),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
-    );
-    pickTarget.position.y = 1;
-    group.add(body, head, pickTarget);
-    this.scene.add(group);
-    this.pedestrians.set(state.id, group);
-    return group;
-  }
-
-  private syncSelection(state: Readonly<SimulationState>): void {
-    this.connectionLines.visible = this.detailMode === "entity";
-    const flowSignature = [...this.visibleFlows].sort().join(",");
-    if (this.selection?.kind === "building") {
-      const connections = state.buildingConnections.filter((connection) =>
-        this.visibleFlows.has(flowForConnection(connection.kind))
-        && (connection.fromBuildingId === this.selection?.id
-          || connection.toBuildingId === this.selection?.id)
-      );
-      const signature = `building:${this.selection.id}:${flowSignature}:${connections.map((connection) =>
-        `${connection.kind}:${connection.fromBuildingId}:${connection.toBuildingId}:${connection.volume}`
-      ).join("|")}`;
-      if (signature === this.connectionRenderSignature) return;
-      this.connectionRenderSignature = signature;
-      this.clearConnectionLines();
-      for (const connection of connections) {
-        const from = this.pointForBuilding(connection.fromBuildingId, state);
-        const to = this.pointForBuilding(connection.toBuildingId, state);
-        if (from !== undefined && to !== undefined) {
-          this.addConnectionLine(from, to, CONNECTION_COLORS[connection.kind]);
+  private bindInput(): void {
+    this.canvas.addEventListener("pointerdown", (event) => {
+      this.pointerDown.set(event.clientX, event.clientY);
+      if (this.buildMode && this.cameraMode === "orbit") {
+        this.updatePointerRay(event);
+        const hit = this.raycaster.intersectObjects(
+          [...this.placedBuildingMeshes.values()],
+          true,
+        )[0];
+        const buildingId = this.placedBuildingIdFromObject(hit?.object);
+        if (buildingId) {
+          const group = this.placedBuildingMeshes.get(buildingId);
+          if (group && this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
+            this.draggingBuildingId = buildingId;
+            this.dragOffset.copy(group.position).sub(this.placementPoint);
+            this.controls.enabled = false;
+            this.canvas.setPointerCapture(event.pointerId);
+            this.setSelectedPlacedBuilding(buildingId);
+            this.buildingInteractionHandlers?.onSelect(buildingId);
+            event.preventDefault();
+            return;
+          }
         }
       }
-      return;
-    }
-    if (this.selection?.kind === "person") {
-      const person = state.people.find((candidate) => candidate.id === this.selection?.id);
-      const signature = person === undefined || !this.visibleFlows.has("daily-route")
-        ? `person:${this.selection.id}:${flowSignature}:hidden`
-        : `person:${person.id}:${flowSignature}:${person.schedule.map((activity) =>
-          `${activity.activity}:${activity.startMinute}:${activity.endMinute}:${activity.buildingId}`
-        ).join("|")}`;
-      if (signature === this.connectionRenderSignature) return;
-      this.connectionRenderSignature = signature;
-      this.clearConnectionLines();
-      if (person === undefined || !this.visibleFlows.has("daily-route")) return;
-      const itinerary = person.schedule
-        .map((activity) => this.pointForBuilding(activity.buildingId, state))
-        .filter((point): point is THREE.Vector3 => point !== undefined)
-        .filter((point, index, points) => index === 0 || !point.equals(points[index - 1]!));
-      for (let index = 1; index < itinerary.length; index += 1) {
-        this.addConnectionLine(itinerary[index - 1]!, itinerary[index]!, "#f0dd70");
+      if (this.cameraMode === "walk") {
+        if (document.pointerLockElement !== this.canvas) void this.canvas.requestPointerLock();
+        return;
       }
-      return;
-    }
-    if (this.connectionRenderSignature === "none") return;
-    this.connectionRenderSignature = "none";
-    this.clearConnectionLines();
+      if (this.cameraMode !== "fly") return;
+      this.looking = true;
+      this.lastPointer.set(event.clientX, event.clientY);
+      this.canvas.setPointerCapture(event.pointerId);
+    });
+    this.canvas.addEventListener("pointermove", (event) => {
+      if (this.draggingBuildingId) {
+        this.updatePointerRay(event);
+        const group = this.placedBuildingMeshes.get(this.draggingBuildingId);
+        if (group && this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
+          group.position.copy(this.placementPoint).add(this.dragOffset);
+          group.position.x = THREE.MathUtils.clamp(group.position.x, -1_150, 1_150);
+          group.position.z = THREE.MathUtils.clamp(group.position.z, -1_150, 1_150);
+          this.buildingInteractionHandlers?.onMove(
+            this.draggingBuildingId,
+            group.position.x,
+            group.position.z,
+          );
+        }
+        return;
+      }
+      if (this.cameraMode !== "fly" || !this.looking) return;
+      const deltaX = event.clientX - this.lastPointer.x;
+      const deltaY = event.clientY - this.lastPointer.y;
+      this.flyYaw -= deltaX * 0.003;
+      this.flyPitch = THREE.MathUtils.clamp(
+        this.flyPitch - deltaY * 0.003,
+        -Math.PI / 2 + 0.04,
+        Math.PI / 2 - 0.04,
+      );
+      this.lastPointer.set(event.clientX, event.clientY);
+      this.applyFlyRotation();
+    });
+    this.canvas.addEventListener("pointerup", (event) => {
+      if (this.draggingBuildingId) {
+        this.draggingBuildingId = null;
+        this.controls.enabled = true;
+        if (this.canvas.hasPointerCapture(event.pointerId)) {
+          this.canvas.releasePointerCapture(event.pointerId);
+        }
+        return;
+      }
+      if (this.cameraMode === "fly") {
+        this.looking = false;
+        this.canvas.releasePointerCapture(event.pointerId);
+        return;
+      }
+      if (this.cameraMode === "walk") return;
+      if (Math.hypot(event.clientX - this.pointerDown.x, event.clientY - this.pointerDown.y) < 5) {
+        this.pickFeature(event);
+      }
+    });
+    this.canvas.addEventListener(
+      "wheel",
+      (event) => {
+        if (this.cameraMode !== "fly") return;
+        event.preventDefault();
+        this.flySpeedScale = THREE.MathUtils.clamp(
+          this.flySpeedScale * (event.deltaY > 0 ? 0.84 : 1.18),
+          0.2,
+          2.5,
+        );
+      },
+      { passive: false },
+    );
+    window.addEventListener("keydown", (event) => {
+      if (
+        (this.cameraMode !== "fly" && this.cameraMode !== "walk") ||
+        isTypingTarget(event.target)
+      ) {
+        return;
+      }
+      if (isMovementKey(event.code)) {
+        event.preventDefault();
+        this.flyKeys.add(event.code);
+        if (this.cameraMode === "walk" && event.code === "Space" && this.grounded) {
+          this.walkVerticalVelocity = 5.6;
+          this.grounded = false;
+        }
+      }
+    });
+    window.addEventListener("keyup", (event) => this.flyKeys.delete(event.code));
+    window.addEventListener("blur", () => this.flyKeys.clear());
+    document.addEventListener("mousemove", (event) => {
+      if (
+        this.cameraMode !== "walk" ||
+        document.pointerLockElement !== this.canvas
+      ) {
+        return;
+      }
+      this.flyYaw -= event.movementX * 0.0022;
+      this.flyPitch = THREE.MathUtils.clamp(
+        this.flyPitch - event.movementY * 0.0022,
+        -Math.PI / 2 + 0.08,
+        Math.PI / 2 - 0.08,
+      );
+      this.applyFlyRotation();
+    });
+    document.addEventListener("pointerlockchange", () => {
+      if (this.cameraMode !== "walk") return;
+      this.canvas.style.cursor =
+        document.pointerLockElement === this.canvas ? "none" : "crosshair";
+    });
   }
 
-  private syncSelectionDimming(state: Readonly<SimulationState>): void {
-    if (this.selection === null) {
-      for (const group of this.buildings.values()) setGroupDimmed(group, false);
-      for (const group of this.vehicles.values()) setGroupDimmed(group, false);
-      for (const group of this.pedestrians.values()) setGroupDimmed(group, false);
+  private pickFeature(event: PointerEvent): void {
+    if (!this.buildMode || this.cameraMode !== "orbit") return;
+    this.updatePointerRay(event);
+    const buildingHit = this.raycaster.intersectObjects(
+      [...this.placedBuildingMeshes.values()],
+      true,
+    )[0];
+    const buildingId = this.placedBuildingIdFromObject(buildingHit?.object);
+    if (buildingId) {
+      this.setSelectedPlacedBuilding(buildingId);
+      this.buildingInteractionHandlers?.onSelect(buildingId);
       return;
     }
+    if (
+      this.buildingPlacementEnabled &&
+      this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)
+    ) {
+      this.buildingInteractionHandlers?.onPlace(
+        THREE.MathUtils.clamp(this.placementPoint.x, -1_150, 1_150),
+        THREE.MathUtils.clamp(this.placementPoint.z, -1_150, 1_150),
+      );
+      return;
+    }
+    const hit = this.raycaster.intersectObjects(this.selectableRoads, false)[0];
+    const featureId = hit?.object.userData.featureId as string | undefined;
+    if (!featureId) return;
+    const feature = this.features.find((candidate) => candidate.id === featureId);
+    if (feature) this.selectionHandler?.(feature);
+  }
 
-    const relatedBuildingIds = new Set<string>();
-    const relatedPersonIds = new Set<string>();
-    if (this.selection.kind === "building") {
-      relatedBuildingIds.add(this.selection.id);
-      for (const connection of state.buildingConnections) {
-        if (!this.visibleFlows.has(flowForConnection(connection.kind))) continue;
-        if (connection.fromBuildingId !== this.selection.id && connection.toBuildingId !== this.selection.id) continue;
-        relatedBuildingIds.add(connection.fromBuildingId);
-        relatedBuildingIds.add(connection.toBuildingId);
-        connection.personIds.forEach((id) => relatedPersonIds.add(id));
+  private updateFlyCamera(deltaSeconds: number): void {
+    const movementDelta = Math.min(deltaSeconds, 0.025);
+    const altitude = Math.max(2, this.camera.position.y);
+    const baseSpeed =
+      altitude < 12 ? 7 : altitude < 120 ? 7 + altitude * 0.3 : Math.min(520, 38 + altitude * 0.42);
+    const boost = this.flyKeys.has("ShiftLeft") || this.flyKeys.has("ShiftRight") ? 4 : 1;
+    const distance = baseSpeed * this.flySpeedScale * boost * movementDelta;
+    const forward = new THREE.Vector3();
+    this.camera.getWorldDirection(forward);
+    const right = new THREE.Vector3().crossVectors(forward, this.camera.up).normalize();
+    const displacement = new THREE.Vector3();
+    if (this.flyKeys.has("KeyW")) displacement.addScaledVector(forward, distance);
+    if (this.flyKeys.has("KeyS")) displacement.addScaledVector(forward, -distance);
+    if (this.flyKeys.has("KeyA")) displacement.addScaledVector(right, -distance);
+    if (this.flyKeys.has("KeyD")) displacement.addScaledVector(right, distance);
+    if (this.flyKeys.has("KeyE")) displacement.y += distance;
+    if (this.flyKeys.has("KeyQ")) displacement.y -= distance;
+    this.movePlayerWithCollision(displacement, "fly");
+  }
+
+  private updateWalkCamera(deltaSeconds: number): void {
+    const forward = new THREE.Vector3(-Math.sin(this.flyYaw), 0, -Math.cos(this.flyYaw));
+    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const walking = new THREE.Vector3();
+    if (this.flyKeys.has("KeyW")) walking.add(forward);
+    if (this.flyKeys.has("KeyS")) walking.sub(forward);
+    if (this.flyKeys.has("KeyA")) walking.sub(right);
+    if (this.flyKeys.has("KeyD")) walking.add(right);
+    if (walking.lengthSq() > 0) {
+      const running =
+        this.flyKeys.has("ShiftLeft") || this.flyKeys.has("ShiftRight");
+      walking.normalize().multiplyScalar((running ? 6.2 : 3.4) * deltaSeconds);
+      this.movePlayerWithCollision(walking, "walk");
+    }
+
+    const groundHeight = this.getWalkableHeight(
+      this.camera.position.x,
+      this.camera.position.z,
+    );
+    const targetEyeHeight = groundHeight + WALK_EYE_HEIGHT;
+    if (this.grounded && this.walkVerticalVelocity <= 0) {
+      const step = targetEyeHeight - this.camera.position.y;
+      if (Math.abs(step) <= 0.36) {
+        this.camera.position.y = targetEyeHeight;
+        this.walkVerticalVelocity = 0;
+      } else {
+        this.grounded = false;
       }
-      for (const person of state.people) {
+    }
+
+    if (!this.grounded) {
+      this.walkVerticalVelocity -= WALK_GRAVITY * deltaSeconds;
+      const beforeY = this.camera.position.y;
+      this.movePlayerWithCollision(
+        new THREE.Vector3(0, this.walkVerticalVelocity * deltaSeconds, 0),
+        "walk",
+      );
+      if (this.walkVerticalVelocity > 0 && this.camera.position.y === beforeY) {
+        this.walkVerticalVelocity = 0;
+      }
+      if (
+        this.walkVerticalVelocity <= 0 &&
+        this.camera.position.y <= targetEyeHeight + 0.04
+      ) {
+        this.camera.position.y = targetEyeHeight;
+        this.walkVerticalVelocity = 0;
+        this.grounded = true;
+      }
+    }
+  }
+
+  private movePlayerWithCollision(
+    displacement: THREE.Vector3,
+    mode: "fly" | "walk",
+  ): void {
+    this.camera.position.copy(
+      resolveSubsteppedMovement(
+        this.camera.position,
+        displacement,
+        (candidate) => this.canOccupy(candidate, mode),
+        MAX_COLLISION_STEP,
+      ),
+    );
+  }
+
+  private canOccupy(position: THREE.Vector3, mode: "fly" | "walk"): boolean {
+    const radius = mode === "fly" ? FLY_COLLIDER_RADIUS : WALK_COLLIDER_RADIUS;
+    const groundHeight = this.getWalkableHeight(position.x, position.z);
+    if (
+      (mode === "fly" && position.y - radius < groundHeight) ||
+      (mode === "walk" && position.y - WALK_EYE_HEIGHT < groundHeight - 0.05)
+    ) {
+      return false;
+    }
+
+    const volumes = this.collisionIndex.query(
+      position.x - radius,
+      position.x + radius,
+      position.z - radius,
+      position.z + radius,
+    );
+    if (mode === "fly") {
+      for (const volume of volumes) {
+        volume.box.clampPoint(position, this.collisionClosest);
         if (
-          person.homeBuildingId === this.selection.id
-          || person.workBuildingId === this.selection.id
-          || person.currentBuildingId === this.selection.id
-          || person.destinationBuildingId === this.selection.id
+          this.collisionClosest.distanceToSquared(position) <
+          radius * radius
         ) {
-          relatedPersonIds.add(person.id);
+          return false;
         }
       }
-    } else {
-      relatedPersonIds.add(this.selection.id);
-      const person = state.people.find((candidate) => candidate.id === this.selection?.id);
-      if (person !== undefined) {
-        relatedBuildingIds.add(person.homeBuildingId);
-        relatedBuildingIds.add(person.currentBuildingId);
-        if (person.workBuildingId !== undefined) relatedBuildingIds.add(person.workBuildingId);
-        if (person.schoolBuildingId !== undefined) relatedBuildingIds.add(person.schoolBuildingId);
-        if (person.destinationBuildingId !== undefined) relatedBuildingIds.add(person.destinationBuildingId);
-        if (this.visibleFlows.has("daily-route")) {
-          person.schedule.forEach((activity) => relatedBuildingIds.add(activity.buildingId));
-        }
+      return true;
+    }
+
+    const bottom = position.y - WALK_EYE_HEIGHT;
+    const top = bottom + WALK_PLAYER_HEIGHT;
+    for (const volume of volumes) {
+      const box = volume.box;
+      if (top <= box.min.y || bottom >= box.max.y) continue;
+      if (
+        position.x > box.min.x - radius &&
+        position.x < box.max.x + radius &&
+        position.z > box.min.z - radius &&
+        position.z < box.max.z + radius
+      ) {
+        return false;
       }
     }
-
-    for (const [id, group] of this.buildings) {
-      setGroupDimmed(group, !relatedBuildingIds.has(id));
-    }
-    for (const [id, group] of this.vehicles) {
-      const vehicle = state.vehicles.find((candidate) => candidate.id === id);
-      const related = vehicle !== undefined && (
-        (vehicle.ownerPersonId !== undefined && relatedPersonIds.has(vehicle.ownerPersonId))
-        || (vehicle.destinationBuildingId !== undefined && relatedBuildingIds.has(vehicle.destinationBuildingId))
-      );
-      setGroupDimmed(group, !related);
-    }
-    for (const [id, group] of this.pedestrians) {
-      const pedestrian = state.pedestrians.find((candidate) => candidate.id === id);
-      const related = pedestrian !== undefined && (
-        (pedestrian.personId !== undefined && relatedPersonIds.has(pedestrian.personId))
-        || (pedestrian.destinationBuildingId !== undefined && relatedBuildingIds.has(pedestrian.destinationBuildingId))
-      );
-      setGroupDimmed(group, !related);
-    }
+    return true;
   }
 
-  private getVisualMetrics(state: Readonly<SimulationState>): SceneVisualMetrics {
-    if (this.visualLayer === "none") return EMPTY_SCENE_VISUAL_METRICS;
-    const cache = this.visualMetricsCache;
-    if (
-      cache !== null
-      && cache.elapsedSeconds === state.elapsedSeconds
-      && cache.layer === this.visualLayer
-      && cache.buildings === state.buildings
-      && cache.districts === state.city.districts
-      && cache.vehicles === state.vehicles
-      && cache.pedestrians === state.pedestrians
-    ) {
-      return cache.metrics;
-    }
-    const metrics = createSceneVisualMetrics(state);
-    this.visualMetricsCache = {
-      elapsedSeconds: state.elapsedSeconds,
-      layer: this.visualLayer,
-      buildings: state.buildings,
-      districts: state.city.districts,
-      vehicles: state.vehicles,
-      pedestrians: state.pedestrians,
-      metrics,
-    };
-    return metrics;
-  }
-
-  private pointForBuilding(id: string, state: Readonly<SimulationState>): THREE.Vector3 | undefined {
-    const building = state.buildings.find((candidate) => candidate.id === id);
-    if (building !== undefined) return new THREE.Vector3(building.x * WORLD_SCALE, 1.6, building.z * WORLD_SCALE);
-    const externalNode = state.network.nodes.find((node) => node.buildingId === id);
-    return externalNode === undefined
-      ? undefined
-      : new THREE.Vector3(externalNode.x * WORLD_SCALE, 1.6, externalNode.z * WORLD_SCALE);
-  }
-
-  private addConnectionLine(from: THREE.Vector3, to: THREE.Vector3, color: string): void {
-    const middle = from.clone().lerp(to, 0.5);
-    middle.y = Math.max(3.2, from.distanceTo(to) * 0.08);
-    const curve = new THREE.QuadraticBezierCurve3(from, middle, to);
-    const group = new THREE.Group();
-    const outline = mesh(
-      new THREE.TubeGeometry(curve, 32, 0.24, 7, false),
-      new THREE.MeshBasicMaterial({ color: "#111816", transparent: true, opacity: 0.62, depthTest: false, depthWrite: false }),
+  private enterWalkMode(): void {
+    const safe = this.findSafeWalkPosition(
+      this.camera.position.x,
+      this.camera.position.z,
     );
-    const route = mesh(
-      new THREE.TubeGeometry(curve, 32, 0.13, 7, false),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.96, depthTest: false, depthWrite: false }),
-    );
-    const arrowProgress = 0.76;
-    const direction = curve.getTangent(arrowProgress).normalize();
-    const arrow = mesh(
-      new THREE.ConeGeometry(0.62, 1.45, 12),
-      new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }),
-    );
-    arrow.position.copy(curve.getPoint(arrowProgress));
-    arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
-    const origin = mesh(
-      new THREE.SphereGeometry(0.24, 10, 8),
-      new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false }),
-    );
-    origin.position.copy(from);
-    outline.renderOrder = 18;
-    route.renderOrder = 19;
-    arrow.renderOrder = 20;
-    origin.renderOrder = 20;
-    group.add(outline, route, arrow, origin);
-    this.connectionLines.add(group);
+    this.camera.position.set(safe.x, safe.height + WALK_EYE_HEIGHT, safe.z);
+    this.walkVerticalVelocity = 0;
+    this.grounded = true;
   }
 
-  private clearConnectionLines(): void {
-    for (const child of [...this.connectionLines.children]) {
-      this.connectionLines.remove(child);
-      disposeObject(child);
-    }
-  }
-
-  private placeAgent(
-    group: THREE.Group,
-    position: AgentPosition,
-    y: number,
-    lateralOffset = 0,
-  ): void {
-    const perpendicularX = Math.sin(position.headingRadians);
-    const perpendicularZ = Math.cos(position.headingRadians);
-    group.position.set(
-      position.x * WORLD_SCALE + perpendicularX * lateralOffset,
-      y,
-      position.z * WORLD_SCALE + perpendicularZ * lateralOffset,
-    );
-    group.rotation.y = position.headingRadians;
-  }
-
-  private removeMissing(objects: Map<string, THREE.Group>, activeIds: Set<string>): void {
-    for (const [id] of objects) {
-      if (activeIds.has(id)) continue;
-      this.removeGroup(objects, id);
-    }
-  }
-
-  private removeGroup(objects: Map<string, THREE.Group>, id: string): void {
-    const group = objects.get(id);
-    if (!group) return;
-    this.scene.remove(group);
-    disposeObject(group);
-    objects.delete(id);
-  }
-
-  private removeMissingMeshes(
-    objects: Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>>,
-    activeIds: Set<string>,
-  ): void {
-    for (const [id, object] of objects) {
-      if (activeIds.has(id)) continue;
-      this.scene.remove(object);
-      object.geometry.dispose();
-      object.material.dispose();
-      objects.delete(id);
-    }
-  }
-
-  private updateDaylight(timeMinutes: number, calendarMonth: number): void {
-    const daylightState = calculateDaylight(timeMinutes, calendarMonth);
-    const daylight = daylightState.daylight;
-    const sunArc = daylightState.sunProgress * Math.PI;
-    const sunHeight = Math.sin(sunArc);
-    this.sun.intensity = 0.4 + daylight * 4;
-    this.skyLight.intensity = 0.35 + daylight * 2;
-    const now = performance.now();
-    if (now - this.lastShadowUpdateMs >= 250) {
-      this.lastShadowUpdateMs = now;
-      this.sun.position.set(Math.cos(sunArc) * 52, 5 + sunHeight * 52, Math.sin(sunArc) * 30);
-      this.renderer.shadowMap.needsUpdate = true;
-    }
-    const nightSky = new THREE.Color("#192838");
-    const daySky = new THREE.Color("#b9d4df");
-    const sky = nightSky.clone().lerp(daySky, daylight);
-    (this.scene.background as THREE.Color).copy(sky);
-    (this.scene.fog as THREE.Fog).color.copy(sky);
-    this.renderer.toneMappingExposure = 0.65 + daylight * 0.45;
-  }
-
-  private buildGridCell(cell: GridCellDesign): void {
-    const { x, z } = this.getBuildCellPosition(cell.row, cell.column);
-    const tileSize = BUILD_CELL_SIZE - 0.18;
-
-    if (cell.element === "lane" || cell.element === "white-lane") {
-      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#29343a", false, this.buildGridGroup);
-      const horizontal = cell.rotation % 2 === 1;
-      this.addBox(
-        x,
-        0.61,
-        z,
-        horizontal ? tileSize - 0.3 : 0.12,
-        0.035,
-        horizontal ? 0.12 : tileSize - 0.3,
-        cell.element === "lane" ? "#f6ca55" : "#f4f5f2",
-        false,
-        this.buildGridGroup,
-      );
-      return;
-    }
-
-    if (cell.element === "asphalt") {
-      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#20292d", false, this.buildGridGroup);
-      return;
-    }
-
-    if (cell.element === "sidewalk") {
-      this.addBox(x, 0.57, z, tileSize, 0.3, tileSize, "#c7c8be", true, this.buildGridGroup);
-      this.addBox(
-        x,
-        0.75,
-        z,
-        tileSize - 0.45,
-        0.06,
-        tileSize - 0.45,
-        "#93af82",
-        false,
-        this.buildGridGroup,
-      );
-      return;
-    }
-
-    if (cell.element === "crosswalk") {
-      this.addBox(x, 0.5, z, tileSize, 0.16, tileSize, "#29343a", false, this.buildGridGroup);
-      for (let stripe = -2; stripe <= 2; stripe += 1) {
-        const horizontal = cell.rotation % 2 === 1;
-        this.addBox(
-          x + (horizontal ? 0 : stripe * 0.65),
-          0.6,
-          z + (horizontal ? stripe * 0.65 : 0),
-          horizontal ? tileSize - 0.55 : 0.38,
-          0.04,
-          horizontal ? 0.38 : tileSize - 0.55,
-          "#f2efe6",
-          false,
-          this.buildGridGroup,
-        );
-      }
-      return;
-    }
-
-    if (isBuildingDesign(cell.element)) {
-      this.buildGridBuilding(cell);
-      return;
-    }
-
-    this.buildGridSignal(cell);
-  }
-
-  private buildGridBuilding(cell: GridCellDesign): void {
-    if (!isBuildingDesign(cell.element)) return;
-    const { x, z } = this.getBuildCellPosition(cell.row, cell.column);
-    const group = new THREE.Group();
-    group.position.set(x, 0, z);
-    group.rotation.y = cell.rotation * (Math.PI / 2);
-    this.buildGridGroup.add(group);
-
-    const floors = Math.max(1, Math.min(12, Math.round(cell.floors ?? 4)));
-    const color = cell.color ?? defaultGridBuildingColor(cell.element);
-    const industrial = cell.element === "industrial-building";
-    const civic = cell.element === "civic-building";
-    const commercial = cell.element === "commercial-building";
-    const width = industrial ? 3.25 : commercial ? 2.9 : civic ? 3 : 2.55;
-    const depth = industrial ? 3.1 : civic ? 2.75 : 2.35;
-    const floorHeight = industrial ? 0.46 : 0.64;
-    const height = Math.max(1.5, floors * floorHeight);
-
-    this.addBox(0, 0.5, 0, BUILD_CELL_SIZE - 0.22, 0.15, BUILD_CELL_SIZE - 0.22, "#819576", false, group);
-    this.addBox(0, 0.62 + height / 2, 0, width, height, depth, color, true, group);
-    this.addBox(
-      0,
-      0.67 + height,
-      0,
-      width + (civic ? 0.25 : 0.08),
-      civic ? 0.28 : 0.18,
-      depth + (civic ? 0.25 : 0.08),
-      commercial ? "#b9d8e3" : "#3e4b4e",
-      true,
-      group,
-    );
-
-    const windowColor = commercial ? "#9dd8e6" : "#f3d993";
-    const windowStep = Math.max(1, Math.ceil(floors / 6));
-    for (let floor = 0; floor < floors; floor += windowStep) {
-      const y = 0.88 + floor * floorHeight;
-      for (const offset of [-0.68, 0.68]) {
-        this.addBox(offset, y, depth / 2 + 0.025, 0.38, 0.26, 0.04, windowColor, false, group);
+  private findSafeWalkPosition(
+    startX: number,
+    startZ: number,
+  ): { x: number; z: number; height: number } {
+    const candidates: Array<{ x: number; z: number }> = [{ x: startX, z: startZ }];
+    for (let radius = 3; radius <= 72; radius += 3) {
+      for (let index = 0; index < 16; index += 1) {
+        const angle = (index / 16) * Math.PI * 2;
+        candidates.push({
+          x: startX + Math.cos(angle) * radius,
+          z: startZ + Math.sin(angle) * radius,
+        });
       }
     }
-    this.addBox(0, 0.98, depth / 2 + 0.04, 0.5, 0.78, 0.08, "#27363a", false, group);
-  }
-
-  private buildGridSignal(signal: GridSignalDesign): void {
-    const { x, z } = this.getBuildCellPosition(signal.row, signal.column);
-    const pole = mesh(
-      new THREE.CylinderGeometry(0.12, 0.16, 3, 12),
-      new THREE.MeshStandardMaterial({ color: "#263238", metalness: 0.35 }),
-    );
-    pole.position.set(x, 2, z);
-    pole.castShadow = true;
-    this.buildGridGroup.add(pole);
-
-    const housing = this.addBox(
-      x,
-      3.35,
-      z,
-      0.72,
-      1.05,
-      0.5,
-      "#162126",
-      true,
-      this.buildGridGroup,
-    );
-    housing.rotation.y = signal.rotation * (Math.PI / 2);
-    const lampOffsets = [
-      [0, 0.28],
-      [0.28, 0],
-      [0, -0.28],
-      [-0.28, 0],
-    ] as const;
-    const [lampX, lampZ] = lampOffsets[signal.rotation % 4] ?? lampOffsets[0];
-    for (const [index, color] of ["#ff5e57", "#f6ca55", "#55df88"].entries()) {
-      const lamp = mesh(
-        new THREE.SphereGeometry(0.15, 12, 10),
-        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 }),
-      );
-      lamp.position.set(x + lampX, 3.68 - index * 0.32, z + lampZ);
-      this.buildGridGroup.add(lamp);
+    for (const candidate of candidates) {
+      const height = this.getWalkableHeight(candidate.x, candidate.z);
+      const eye = new THREE.Vector3(candidate.x, height + WALK_EYE_HEIGHT, candidate.z);
+      if (this.canOccupy(eye, "walk")) return { ...candidate, height };
     }
-  }
 
-  private addAutomaticStopLines(cells: readonly GridCellDesign[]): void {
-    const cellMap = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]));
-    const tileSize = BUILD_CELL_SIZE - 0.18;
-    const approaches = [
-      { row: -1, column: 0, edgeX: 0, edgeZ: 1 },
-      { row: 1, column: 0, edgeX: 0, edgeZ: -1 },
-      { row: 0, column: -1, edgeX: 1, edgeZ: 0 },
-      { row: 0, column: 1, edgeX: -1, edgeZ: 0 },
-    ] as const;
-
-    for (const intersection of cells) {
-      if (intersection.element !== "asphalt") continue;
-      for (const approach of approaches) {
-        const row = intersection.row + approach.row;
-        const column = intersection.column + approach.column;
-        const road = cellMap.get(`${row}:${column}`);
-        if (!road || (road.element !== "lane" && road.element !== "white-lane")) continue;
-        const { x, z } = this.getBuildCellPosition(row, column);
-        const lineRunsEastWest = approach.row !== 0;
-        this.addBox(
-          x + approach.edgeX * (tileSize / 2 - 0.32),
-          0.65,
-          z + approach.edgeZ * (tileSize / 2 - 0.32),
-          lineRunsEastWest ? tileSize - 0.45 : 0.18,
-          0.045,
-          lineRunsEastWest ? 0.18 : tileSize - 0.45,
-          "#ffffff",
-          false,
-          this.buildGridGroup,
-        );
-      }
-    }
-  }
-
-  private getBuildCellPosition(row: number, column: number): { x: number; z: number } {
-    const offset = (BUILD_GRID_SIZE - 1) / 2;
+    const safeStreet =
+      this.features.find((feature) => feature.id === "walnut-34-36") ??
+      this.features.find((feature) => feature.kind === "street");
+    const safePoint = safeStreet ? segmentCenter(safeStreet) : new THREE.Vector3();
     return {
-      x: (column - offset) * BUILD_CELL_SIZE,
-      z: (row - offset) * BUILD_CELL_SIZE,
+      x: safePoint.x,
+      z: safePoint.z,
+      height: this.getWalkableHeight(safePoint.x, safePoint.z),
     };
   }
 
-  private clearBuildGrid(): void {
-    for (const child of [...this.buildGridGroup.children]) {
-      this.buildGridGroup.remove(child);
-      disposeObject(child);
+  private getWalkableHeight(x: number, z: number): number {
+    let height: number = RENDER_HEIGHTS.ground;
+    for (const surface of this.walkableIndex.query(x, x, z, z)) {
+      if (
+        x >= surface.minX &&
+        x <= surface.maxX &&
+        z >= surface.minZ &&
+        z <= surface.maxZ
+      ) {
+        height = Math.max(height, surface.height);
+      }
+    }
+    return height;
+  }
+
+  private applyFlyRotation(): void {
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.set(this.flyPitch, this.flyYaw, 0);
+  }
+
+  private updateFeatureHighlights(): void {
+    for (const [featureId, road] of this.featureMeshes) {
+      const material = road.material as THREE.MeshStandardMaterial;
+      const selected = featureId === this.selectedFeatureId;
+      material.color.set(selected ? "#3d625f" : "#2c3337");
+      material.emissive.set(selected ? "#1f6a5b" : "#000000");
+      material.emissiveIntensity = selected ? 0.6 : 0;
+      material.roughness = 0.9;
     }
   }
 
-  private addBox(
-    x: number,
-    y: number,
-    z: number,
-    width: number,
-    height: number,
-    depth: number,
-    color: string,
-    shadows = true,
-    parent: THREE.Object3D = this.scene,
-  ): THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial> {
-    const object = mesh(
-      new THREE.BoxGeometry(width, height, depth),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.82 }),
-    );
-    object.position.set(x, y, z);
-    object.castShadow = shadows;
-    object.receiveShadow = shadows;
-    parent.add(object);
-    return object;
-  }
-}
-
-type GridBuildingDesign =
-  | "residential-building"
-  | "commercial-building"
-  | "industrial-building"
-  | "civic-building";
-
-function isBuildingDesign(value: string): value is GridBuildingDesign {
-  return value === "residential-building"
-    || value === "commercial-building"
-    || value === "industrial-building"
-    || value === "civic-building";
-}
-
-function defaultGridBuildingColor(value: GridBuildingDesign): string {
-  if (value === "residential-building") return "#d47f6a";
-  if (value === "commercial-building") return "#6d9fc4";
-  if (value === "industrial-building") return "#b77b58";
-  return "#7f93c6";
-}
-
-const EMPTY_SCENE_VISUAL_METRICS: SceneVisualMetrics = {
-  districts: new Map(),
-  buildings: new Map(),
-};
-
-interface AgentDestinationMetrics {
-  vehiclePressure: number;
-  pedestrianWaitTotal: number;
-  pedestrianCount: number;
-  freight: number;
-}
-
-function createSceneVisualMetrics(state: Readonly<SimulationState>): SceneVisualMetrics {
-  const buildingDistrictIds = new Map<string, string>();
-  const districtsById = new Map(state.city.districts.map((district) => [district.id, district]));
-  for (const building of state.buildings) {
-    const district = districtForBuilding(building, state.city.districts);
-    if (district !== undefined) buildingDistrictIds.set(building.id, district.id);
-  }
-
-  const buildingDestinations = new Map<string, AgentDestinationMetrics>();
-  const districtDestinations = new Map<string, AgentDestinationMetrics>();
-  for (const vehicle of state.vehicles) {
-    if (vehicle.completed || vehicle.destinationBuildingId === undefined) continue;
-    const destination = destinationMetrics(buildingDestinations, vehicle.destinationBuildingId);
-    const vehiclePressure = 1
-      + Math.min(vehicle.waitingSeconds / 60, 2)
-      + Math.max(0, 1 - vehicle.currentSpeedMph / 30);
-    destination.vehiclePressure += vehiclePressure;
-    if (vehicle.vehicleType === "truck") destination.freight += 1 + vehicle.cargoUnits / 20;
-    const districtId = buildingDistrictIds.get(vehicle.destinationBuildingId);
-    if (districtId !== undefined) {
-      const districtDestination = destinationMetrics(districtDestinations, districtId);
-      districtDestination.vehiclePressure += vehiclePressure;
-      if (vehicle.vehicleType === "truck") districtDestination.freight += 1 + vehicle.cargoUnits / 20;
-    }
-  }
-  for (const pedestrian of state.pedestrians) {
-    if (pedestrian.completed || pedestrian.destinationBuildingId === undefined) continue;
-    const destination = destinationMetrics(buildingDestinations, pedestrian.destinationBuildingId);
-    destination.pedestrianWaitTotal += pedestrian.waitSeconds;
-    destination.pedestrianCount += 1;
-    const districtId = buildingDistrictIds.get(pedestrian.destinationBuildingId);
-    if (districtId !== undefined) {
-      const districtDestination = destinationMetrics(districtDestinations, districtId);
-      districtDestination.pedestrianWaitTotal += pedestrian.waitSeconds;
-      districtDestination.pedestrianCount += 1;
-    }
-  }
-
-  const buildingLandValues = state.buildings.map((building) => building.landValue);
-  const districtLandValues = state.city.districts.map((district) => district.landValue);
-  const maxBuildingJobs = Math.max(0, ...state.buildings.map((building) => building.jobCapacity));
-  const maxDistrictJobs = Math.max(0, ...state.city.districts.map((district) => district.jobs));
-  const maxBuildingPressure = Math.max(0, ...state.buildings.map((building) =>
-    buildingDestinations.get(building.id)?.vehiclePressure ?? 0
-  ));
-  const maxDistrictPressure = Math.max(0, ...state.city.districts.map((district) =>
-    districtDestinations.get(district.id)?.vehiclePressure ?? 0
-  ));
-  const maxMigration = Math.max(0, ...state.city.districts.map((district) => Math.abs(district.annualizedMigration)));
-  const buildingFreight = new Map(state.buildings.map((building) => [
-    building.id,
-    (buildingDestinations.get(building.id)?.freight ?? 0)
-      + (building.accounting?.goodsReceived ?? 0) / 50
-      + (building.accounting?.importedSupplies ?? 0) / 50,
-  ]));
-  const maxBuildingFreight = Math.max(0, ...buildingFreight.values());
-  const districtFreight = new Map(state.city.districts.map((district) => [
-    district.id,
-    district.freightTripsDaily + (districtDestinations.get(district.id)?.freight ?? 0),
-  ]));
-  const maxDistrictFreight = Math.max(0, ...districtFreight.values());
-
-  const buildingMetrics = new Map<string, VisualLayerMetrics>();
-  for (const building of state.buildings) {
-    const destination = buildingDestinations.get(building.id);
-    const district = districtsById.get(buildingDistrictIds.get(building.id) ?? "");
-    const requiredGoods = Math.max(building.customerDemand, building.productionRate);
-    const operatingBase = Math.max(
-      1,
-      building.accounting?.revenue ?? 0,
-      building.accounting?.operatingCost ?? 0,
-      Math.abs(building.accounting?.profit ?? 0),
-    );
-    buildingMetrics.set(building.id, {
-      congestion: normalizeToMaximum(destination?.vehiclePressure ?? 0, maxBuildingPressure),
-      pedestrianWait: clamp01(
-        (destination?.pedestrianWaitTotal ?? 0) / Math.max(1, destination?.pedestrianCount ?? 0) / 120,
-      ),
-      landValue: normalizeRange(building.landValue, buildingLandValues),
-      utilities: clamp01(average(Object.values(building.utilityService))),
-      jobs: normalizeToMaximum(building.jobCapacity, maxBuildingJobs),
-      shortages: requiredGoods <= 0
-        ? 0
-        : clamp01((requiredGoods - building.goodsInventory) / requiredGoods),
-      migration: normalizeSigned(district?.annualizedMigration ?? 0, maxMigration),
-      freight: normalizeToMaximum(buildingFreight.get(building.id) ?? 0, maxBuildingFreight),
-      profit: normalizeSigned(building.accounting?.profit ?? 0, operatingBase),
-    });
-  }
-
-  const districtMetrics = new Map<string, VisualLayerMetrics>();
-  for (const district of state.city.districts) {
-    const destination = districtDestinations.get(district.id);
-    const goodsDemand = sumRecord(district.goodsDemandByType);
-    const goodsAvailable = sumRecord(district.goodsInventory);
-    const businessBase = Math.max(
-      1,
-      district.businessRevenueDaily,
-      district.businessCostsDaily,
-      Math.abs(district.businessProfitDaily),
-    );
-    const activeCongestion = normalizeToMaximum(destination?.vehiclePressure ?? 0, maxDistrictPressure);
-    districtMetrics.set(district.id, {
-      congestion: clamp01(district.congestionPercent / 100 * 0.8 + activeCongestion * 0.2),
-      pedestrianWait: clamp01(
-        (destination?.pedestrianWaitTotal ?? 0) / Math.max(1, destination?.pedestrianCount ?? 0) / 120,
-      ),
-      landValue: normalizeRange(district.landValue, districtLandValues),
-      utilities: clamp01(average(Object.values(district.utilityCoverage))),
-      jobs: normalizeToMaximum(district.jobs, maxDistrictJobs),
-      shortages: goodsDemand <= 0 ? 0 : clamp01((goodsDemand - goodsAvailable) / goodsDemand),
-      migration: normalizeSigned(district.annualizedMigration, maxMigration),
-      freight: normalizeToMaximum(districtFreight.get(district.id) ?? 0, maxDistrictFreight),
-      profit: normalizeSigned(district.businessProfitDaily, businessBase),
-    });
-  }
-
-  return { districts: districtMetrics, buildings: buildingMetrics };
-}
-
-function destinationMetrics(
-  destinations: Map<string, AgentDestinationMetrics>,
-  id: string,
-): AgentDestinationMetrics {
-  const existing = destinations.get(id);
-  if (existing !== undefined) return existing;
-  const created = { vehiclePressure: 0, pedestrianWaitTotal: 0, pedestrianCount: 0, freight: 0 };
-  destinations.set(id, created);
-  return created;
-}
-
-function districtForBuilding(
-  building: Building,
-  districts: readonly CityDistrictState[],
-): CityDistrictState | undefined {
-  const containingDistrict = districts.find((district) =>
-    Math.abs(building.x - district.x) <= district.width / 2
-    && Math.abs(building.z - district.z) <= district.depth / 2
-  );
-  if (containingDistrict !== undefined) return containingDistrict;
-  let nearest: CityDistrictState | undefined;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-  for (const district of districts) {
-    const distance = Math.hypot(building.x - district.x, building.z - district.z);
+  private addStreetDesign(feature: DistrictFeature, design: FeatureDesign): void {
     if (
-      distance < nearestDistance
-      || (distance === nearestDistance && district.id.localeCompare(nearest?.id ?? "") < 0)
+      design.laneDelta !== 0 ||
+      design.bikeLane ||
+      design.widenedSidewalk ||
+      design.laneDirection !== "two-way"
     ) {
-      nearest = district;
-      nearestDistance = distance;
+      const overlay = createSegmentMesh(
+        feature,
+        roadWidth(feature) + design.laneDelta * 3.2,
+        0.04,
+        this.materials.editedAsphalt,
+      );
+      overlay.position.y = RENDER_HEIGHTS.roadSurface + 0.025;
+      this.designGroup.add(overlay);
+      const line = createSegmentMesh(feature, 0.22, 0.03, this.materials.yellowLine);
+      line.position.y = RENDER_HEIGHTS.selectionSurface + 0.01;
+      this.designGroup.add(line);
+    }
+    if (design.bikeLane) {
+      for (const side of [-1, 1]) {
+        const lane = createOffsetSegmentMesh(
+          feature,
+          side * (roadWidth(feature) / 2 - 2),
+          2.1,
+          0.04,
+          this.materials.bikeLane,
+        );
+        lane.position.y = RENDER_HEIGHTS.selectionSurface + 0.015;
+        this.designGroup.add(lane);
+      }
+    }
+    if (design.widenedSidewalk) {
+      for (const side of [-1, 1]) {
+        const walk = createOffsetSegmentMesh(
+          feature,
+          side * (roadWidth(feature) / 2 + 4.8),
+          8.5,
+          0.32,
+          this.materials.sidewalk,
+        );
+        walk.position.y = RENDER_HEIGHTS.sidewalkCenter + 0.03;
+        this.designGroup.add(walk);
+      }
     }
   }
-  return nearest;
-}
 
-function setGroupDimmed(group: THREE.Group, dimmed: boolean): void {
-  if (group.userData.dimmed === dimmed) return;
-  group.userData.dimmed = dimmed;
-  const materials = new Set<THREE.Material>();
-  group.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
-    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
-    objectMaterials.forEach((material) => materials.add(material));
-  });
-  for (const material of materials) {
-    if (material.transparent && material.opacity === 0) continue;
-    const transparent = dimmed;
-    material.opacity = dimmed ? 0.2 : 1;
-    material.depthWrite = !dimmed;
-    if (material.transparent !== transparent) {
-      material.transparent = transparent;
-      material.needsUpdate = true;
+  private addIntersectionDesign(feature: DistrictFeature, design: FeatureDesign): void {
+    const position = geoToWorld(feature.path[0]);
+    if (design.crosswalk) this.addCrosswalkToGroup(position.x, position.z, this.designGroup);
+    if (design.pedestrianIsland) {
+      const island = new THREE.Mesh(
+        new THREE.CapsuleGeometry(1.5, 5.5, 4, 10),
+        this.materials.sidewalk,
+      );
+      island.rotation.z = Math.PI / 2;
+      island.position.set(position.x, 0.7, position.z);
+      this.designGroup.add(island);
+    }
+  }
+
+  private addCrosswalkToGroup(x: number, z: number, group: THREE.Group): void {
+    for (let index = -3; index <= 3; index += 1) {
+      const stripe = box(1.35, 0.03, 8, this.materials.whiteLine);
+      stripe.position.set(
+        x + index * 2.25,
+        RENDER_HEIGHTS.selectionSurface + 0.025,
+        z,
+      );
+      group.add(stripe);
+    }
+  }
+
+  private syncVehicles(vehicles: readonly VehicleSnapshot[]): void {
+    while (this.vehiclePool.length < vehicles.length) {
+      const object = createCar("#ffffff", "sedan");
+      this.vehiclePool.push(object);
+      this.trafficGroup.add(object);
+    }
+    for (let index = 0; index < this.vehiclePool.length; index += 1) {
+      const object = this.vehiclePool[index];
+      const vehicle = vehicles[index];
+      object.visible = vehicle !== undefined;
+      if (!vehicle) continue;
+      object.position.set(vehicle.x, 0.25, vehicle.z);
+      object.rotation.y = vehicle.heading;
+      updateCarAppearance(object, vehicle.color, vehicle.kind);
+    }
+  }
+
+  private syncPedestrians(
+    pedestrians: readonly PedestrianSnapshot[],
+  ): void {
+    while (this.pedestrianPool.length < pedestrians.length) {
+      const object = createPerson("#ffffff", 0);
+      this.pedestrianPool.push(object);
+      this.pedestrianGroup.add(object);
+    }
+    for (let index = 0; index < this.pedestrianPool.length; index += 1) {
+      const object = this.pedestrianPool[index];
+      const pedestrian = pedestrians[index];
+      object.visible = pedestrian !== undefined;
+      if (!pedestrian) continue;
+      object.position.set(pedestrian.x, 0.28, pedestrian.z);
+      object.rotation.y = pedestrian.heading;
+      updatePersonAppearance(object, pedestrian.color, pedestrian.variant);
+    }
+  }
+
+  private updateSignals(signals: readonly SignalSnapshot[]): void {
+    const byIntersection = new Map(
+      signals.map((signal) => [signal.intersectionId, signal]),
+    );
+    for (const assembly of this.signalAssemblies) {
+      const signal = byIntersection.get(assembly.intersectionId);
+      const phase = signal?.phase ?? "all-red";
+      const axisGreen =
+        (assembly.axis === "x" && phase === "ew-green") ||
+        (assembly.axis === "z" && phase === "ns-green");
+      const axisYellow =
+        (assembly.axis === "x" && phase === "ew-yellow") ||
+        (assembly.axis === "z" && phase === "ns-yellow");
+      setSignalLens(assembly.red, !axisGreen && !axisYellow);
+      setSignalLens(assembly.yellow, axisYellow);
+      setSignalLens(assembly.green, axisGreen);
+      setSignalLens(assembly.walk, phase === "pedestrian-walk");
+      setSignalLens(assembly.dontWalk, phase !== "pedestrian-walk");
+    }
+  }
+
+  private buildCollisionIndexes(): void {
+    this.scene.updateMatrixWorld(true);
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      if (object.userData.collidable === true) {
+        const collisionBox = new THREE.Box3().setFromObject(object);
+        if (!collisionBox.isEmpty()) {
+          this.collisionIndex.insert({
+            box: collisionBox,
+            minX: collisionBox.min.x,
+            maxX: collisionBox.max.x,
+            minZ: collisionBox.min.z,
+            maxZ: collisionBox.max.z,
+          });
+        }
+      }
+      if (object.userData.walkable === true) {
+        const surfaceBox = new THREE.Box3().setFromObject(object);
+        if (!surfaceBox.isEmpty()) {
+          this.walkableIndex.insert({
+            minX: surfaceBox.min.x,
+            maxX: surfaceBox.max.x,
+            minZ: surfaceBox.min.z,
+            maxZ: surfaceBox.max.z,
+            height: surfaceBox.max.y,
+          });
+        }
+      }
+    });
+  }
+
+  private buildCollisionDebug(): void {
+    if (!this.collisionDebugEnabled) return;
+    let helperCount = 0;
+    for (const volume of this.collisionIndex.getAll()) {
+      if (helperCount >= 260) break;
+      const center = volume.box.getCenter(new THREE.Vector3());
+      if (Math.hypot(center.x, center.z) > 1_150) continue;
+      this.collisionDebugGroup.add(
+        new THREE.Box3Helper(volume.box, new THREE.Color("#ff704d")),
+      );
+      helperCount += 1;
+    }
+
+    this.collisionDebugPlayer = new THREE.Mesh(
+      new THREE.CapsuleGeometry(WALK_COLLIDER_RADIUS, 1.02, 6, 10),
+      new THREE.MeshBasicMaterial({
+        color: "#54e8bd",
+        wireframe: true,
+        depthTest: false,
+      }),
+    );
+    this.collisionDebugPlayer.renderOrder = 50;
+    this.collisionDebugGroup.add(this.collisionDebugPlayer);
+
+    this.collisionDebugRay = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(),
+        new THREE.Vector3(0, -2, 0),
+      ]),
+      new THREE.LineBasicMaterial({
+        color: "#f6d260",
+        depthTest: false,
+      }),
+    );
+    this.collisionDebugRay.renderOrder = 50;
+    this.collisionDebugGroup.add(this.collisionDebugRay);
+    this.scene.add(this.collisionDebugGroup);
+
+    this.collisionDebugStatus = document.createElement("output");
+    this.collisionDebugStatus.className = "collision-debug-status";
+    document.body.append(this.collisionDebugStatus);
+  }
+
+  private updateCollisionDebug(): void {
+    if (!this.collisionDebugEnabled || !this.collisionDebugPlayer) return;
+    const mode = this.cameraMode;
+    const centerY =
+      mode === "walk"
+        ? this.camera.position.y - WALK_EYE_HEIGHT + WALK_PLAYER_HEIGHT / 2
+        : this.camera.position.y;
+    this.collisionDebugPlayer.position.set(
+      this.camera.position.x,
+      centerY,
+      this.camera.position.z,
+    );
+    this.collisionDebugPlayer.scale.setScalar(
+      mode === "fly" ? FLY_COLLIDER_RADIUS / WALK_COLLIDER_RADIUS : 1,
+    );
+    const playerMaterial = this.collisionDebugPlayer
+      .material as THREE.MeshBasicMaterial;
+    playerMaterial.color.set(
+      mode === "walk" && this.grounded ? "#54e8bd" : "#66b8ff",
+    );
+
+    if (this.collisionDebugRay) {
+      this.collisionDebugRay.geometry.setFromPoints([
+        this.camera.position.clone(),
+        new THREE.Vector3(
+          this.camera.position.x,
+          this.getWalkableHeight(
+            this.camera.position.x,
+            this.camera.position.z,
+          ),
+          this.camera.position.z,
+        ),
+      ]);
+    }
+    if (this.collisionDebugStatus) {
+      this.collisionDebugStatus.value = [
+        `mode: ${mode}`,
+        `grounded: ${this.grounded}`,
+        `height: ${this.camera.position.y.toFixed(2)} m`,
+        `collision boxes: ${this.collisionIndex.size}`,
+      ].join(" · ");
+    }
+  }
+
+  private nearLandmark(x: number, z: number, radius: number): boolean {
+    return PENN_LANDMARKS.some((landmark) => {
+      const position = geoToWorld(landmark);
+      return Math.hypot(position.x - x, position.z - z) < radius;
+    });
+  }
+
+  private addDistantSkyline(rng: () => number): void {
+    for (let index = 0; index < 170; index += 1) {
+      const angle = rng() * Math.PI * 2;
+      const radius = 1_250 + rng() * 1_150;
+      const width = 24 + rng() * 55;
+      const depth = 24 + rng() * 55;
+      const height = 28 + rng() * (radius < 1_650 ? 150 : 85);
+      const building = box(
+        width,
+        height,
+        depth,
+        rng() > 0.45 ? this.materials.distant : this.materials.distantGlass,
+      );
+      building.position.set(
+        Math.cos(angle) * radius,
+        height / 2,
+        Math.sin(angle) * radius,
+      );
+      building.rotation.y = rng() * Math.PI;
+      building.userData.collidable = true;
+      this.scene.add(building);
     }
   }
 }
 
-function selectionFromObject(object: THREE.Object3D | undefined): SceneSelection {
-  let current = object;
-  while (current !== undefined) {
-    const selection = current.userData.selection as SceneSelection | undefined;
-    if (selection !== undefined) return selection;
-    current = current.parent ?? undefined;
+function createWorldMaterials() {
+  const brickTexture = createFacadeTexture("#8f5142", "#d69a78", "brick");
+  const redBrickTexture = createFacadeTexture("#a45d4c", "#e2b58b", "brick");
+  const stoneTexture = createFacadeTexture("#8c7469", "#d5c1a7", "arched");
+  const glassTexture = createFacadeTexture("#466a77", "#a9d2d4", "glass");
+  const limestoneTexture = createFacadeTexture("#b2aa90", "#eee2c1", "regular");
+  const concreteTexture = createFacadeTexture("#8f9894", "#cad4cf", "regular");
+  const darkTexture = createFacadeTexture("#555e5c", "#9fb4b4", "glass");
+  const material = (texture: THREE.Texture, color = "#ffffff") =>
+    new THREE.MeshStandardMaterial({
+      map: texture,
+      color,
+      roughness: 0.72,
+      metalness: texture === glassTexture ? 0.2 : 0.03,
+    });
+  return {
+    ground: new THREE.MeshStandardMaterial({ color: "#71866d", roughness: 1 }),
+    lawn: new THREE.MeshStandardMaterial({ color: "#76976c", roughness: 1 }),
+    campusGrass: new THREE.MeshStandardMaterial({ color: "#87a978", roughness: 1 }),
+    blockPaving: new THREE.MeshStandardMaterial({ color: "#b7b3a3", roughness: 0.96 }),
+    asphalt: new THREE.MeshStandardMaterial({ color: "#2c3337", roughness: 0.92 }),
+    editedAsphalt: new THREE.MeshStandardMaterial({ color: "#242b2e", roughness: 0.88 }),
+    sidewalk: new THREE.MeshStandardMaterial({ color: "#c7c5ba", roughness: 0.94 }),
+    yellowLine: new THREE.MeshStandardMaterial({ color: "#f1ca56", roughness: 0.75 }),
+    whiteLine: new THREE.MeshStandardMaterial({ color: "#f1efe8", roughness: 0.8 }),
+    bikeLane: new THREE.MeshStandardMaterial({ color: "#2ca79f", roughness: 0.84 }),
+    historicBrick: material(brickTexture),
+    redBrick: material(redBrickTexture),
+    rowhouseRed: material(redBrickTexture, "#c9826f"),
+    rowhouseTan: material(brickTexture, "#d3a37d"),
+    landmarkStone: material(stoneTexture, "#9e6757"),
+    darkStone: material(stoneTexture, "#6d5149"),
+    fisherBrick: material(redBrickTexture, "#8e3f36"),
+    huntsmanStone: material(limestoneTexture, "#c7b88e"),
+    vanPelt: material(stoneTexture, "#8d8171"),
+    limestone: material(limestoneTexture),
+    museumBrick: material(brickTexture, "#b36f5c"),
+    glass: material(glassTexture),
+    office: material(darkTexture),
+    concrete: material(concreteTexture),
+    silver: material(concreteTexture, "#bac5c3"),
+    dorm: material(brickTexture, "#9c6f5d"),
+    hospital: material(concreteTexture, "#e0e2dd"),
+    parking: material(concreteTexture, "#a6aaa3"),
+    retail: material(redBrickTexture, "#bc8064"),
+    academic: material(stoneTexture, "#a88975"),
+    darkBand: new THREE.MeshStandardMaterial({ color: "#465056", roughness: 0.7 }),
+    awning: new THREE.MeshStandardMaterial({ color: "#7d2c35", roughness: 0.8 }),
+    rooftop: new THREE.MeshStandardMaterial({ color: "#697277", roughness: 0.88 }),
+    roofCopper: new THREE.MeshStandardMaterial({ color: "#557a6b", roughness: 0.86 }),
+    darkRoof: new THREE.MeshStandardMaterial({ color: "#3f4547", roughness: 0.9 }),
+    field: new THREE.MeshStandardMaterial({ color: "#4f8b5c", roughness: 1 }),
+    stadiumConcrete: new THREE.MeshStandardMaterial({ color: "#928d83", roughness: 0.95 }),
+    distant: new THREE.MeshStandardMaterial({ color: "#7d8a88", roughness: 0.9 }),
+    distantGlass: new THREE.MeshStandardMaterial({ color: "#688493", roughness: 0.55, metalness: 0.1 }),
+    trunk: new THREE.MeshStandardMaterial({ color: "#694c36", roughness: 1 }),
+    leavesA: new THREE.MeshStandardMaterial({ color: "#3e7950", roughness: 1 }),
+    leavesB: new THREE.MeshStandardMaterial({ color: "#527f48", roughness: 1 }),
+    leavesC: new THREE.MeshStandardMaterial({ color: "#386b48", roughness: 1 }),
+    streetMetal: new THREE.MeshStandardMaterial({ color: "#303a3e", roughness: 0.5, metalness: 0.35 }),
+    lamp: new THREE.MeshStandardMaterial({ color: "#f5e3a6", emissive: "#d9aa58", emissiveIntensity: 0.8 }),
+    wood: new THREE.MeshStandardMaterial({ color: "#806248", roughness: 0.9 }),
+    planter: new THREE.MeshStandardMaterial({ color: "#5d6660", roughness: 0.85 }),
+    carGlass: new THREE.MeshStandardMaterial({ color: "#a8c4cc", roughness: 0.25, metalness: 0.08 }),
+    signalHousing: new THREE.MeshStandardMaterial({ color: "#172126", roughness: 0.72 }),
+  };
+}
+
+function createFacadeTexture(
+  base: string,
+  windowColor: string,
+  style: "brick" | "arched" | "glass" | "regular",
+): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas textures are unavailable.");
+  context.fillStyle = base;
+  context.fillRect(0, 0, 128, 128);
+  if (style === "brick") {
+    context.strokeStyle = "rgba(35,22,18,0.16)";
+    context.lineWidth = 1;
+    for (let y = 0; y < 128; y += 8) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(128, y);
+      context.stroke();
+    }
   }
-  return null;
+  const columns = style === "glass" ? 6 : 5;
+  const rows = style === "arched" ? 4 : 5;
+  const marginX = 9;
+  const marginY = 9;
+  const cellWidth = (128 - marginX * 2) / columns;
+  const cellHeight = (128 - marginY * 2) / rows;
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const x = marginX + column * cellWidth + 2;
+      const y = marginY + row * cellHeight + 3;
+      context.fillStyle = windowColor;
+      if (style === "arched") {
+        context.beginPath();
+        context.roundRect(x, y, cellWidth - 5, cellHeight - 6, [7, 7, 1, 1]);
+        context.fill();
+      } else {
+        context.fillRect(x, y, cellWidth - 5, cellHeight - 6);
+      }
+      context.fillStyle = "rgba(255,255,255,0.2)";
+      context.fillRect(x + 1, y + 1, 1.5, cellHeight - 8);
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(style === "glass" ? 2 : 1.5, style === "arched" ? 1.4 : 2.2);
+  texture.anisotropy = 4;
+  return texture;
 }
 
-function pedestrianLaneOffset(segmentId: string): number {
-  return segmentId.endsWith("-back") ? -0.46 : 0.46;
+function roadWidth(feature: DistrictFeature): number {
+  return feature.name === "Market Street" ||
+    feature.name === "South Street" ||
+    feature.name === "38th Street" ||
+    feature.name === "40th Street"
+    ? MAJOR_ROAD_WIDTH
+    : ROAD_WIDTH;
 }
 
-function disposeObject(root: THREE.Object3D): void {
-  const materials = new Set<THREE.Material>();
-  root.traverse((object) => {
-    if (!(object instanceof THREE.Mesh || object instanceof THREE.Line)) return;
-    object.geometry.dispose();
-    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
-    objectMaterials.forEach((material) => materials.add(material));
+function geoToWorld(point: Pick<GeoPoint, "longitude" | "latitude">): THREE.Vector3 {
+  return new THREE.Vector3(
+    (point.longitude - PENN_CENTER.longitude) * METERS_PER_DEGREE_LONGITUDE,
+    0,
+    -(point.latitude - PENN_CENTER.latitude) * METERS_PER_DEGREE_LATITUDE,
+  );
+}
+
+function worldToGeo(x: number, z: number): GeoPoint {
+  return {
+    longitude: PENN_CENTER.longitude + x / METERS_PER_DEGREE_LONGITUDE,
+    latitude: PENN_CENTER.latitude - z / METERS_PER_DEGREE_LATITUDE,
+  };
+}
+
+function createSegmentMesh(
+  feature: DistrictFeature,
+  width: number,
+  height: number,
+  material: THREE.Material,
+): THREE.Mesh {
+  const [start, end] = feature.path.map(geoToWorld);
+  const direction = end.clone().sub(start);
+  const object = box(direction.length(), height, width, material);
+  object.position.copy(start).add(end).multiplyScalar(0.5);
+  object.position.y = height / 2;
+  object.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI / 2;
+  return object;
+}
+
+function createOffsetSegmentMesh(
+  feature: DistrictFeature,
+  offset: number,
+  width: number,
+  height: number,
+  material: THREE.Material,
+): THREE.Mesh {
+  const object = createSegmentMesh(feature, width, height, material);
+  const [start, end] = feature.path.map(geoToWorld);
+  const direction = end.clone().sub(start).normalize();
+  const normal = new THREE.Vector3(-direction.z, 0, direction.x);
+  object.position.addScaledVector(normal, offset);
+  return object;
+}
+
+function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
+  const [start, end = start] = feature.path.map(geoToWorld);
+  return start.clone().add(end).multiplyScalar(0.5);
+}
+
+function createCar(color: string, kind: VehicleKind): THREE.Group {
+  const group = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.34, metalness: 0.08 });
+  const glass = new THREE.MeshStandardMaterial({ color: "#aec8ce", roughness: 0.2, metalness: 0.12 });
+  const rubber = new THREE.MeshStandardMaterial({ color: "#171b1d", roughness: 0.94 });
+  const body = box(1.9, 0.72, 4.2, paint);
+  body.position.y = 0.72;
+  const hood = box(1.86, 0.32, 1.25, paint);
+  hood.position.set(0, 1.05, 1.35);
+  const cabin = box(1.66, 0.68, 1.9, glass);
+  cabin.position.set(0, 1.26, -0.2);
+  group.add(body, hood, cabin);
+  for (const x of [-1.02, 1.02]) {
+    for (const z of [-1.25, 1.25]) {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.22, 12), rubber);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(x, 0.55, z);
+      group.add(wheel);
+    }
+  }
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) child.castShadow = true;
   });
-  materials.forEach((material) => material.dispose());
+  group.userData.paint = paint;
+  updateCarAppearance(group, color, kind);
+  return group;
 }
 
-function mesh<TGeometry extends THREE.BufferGeometry, TMaterial extends THREE.Material>(
-  geometry: TGeometry,
-  material: TMaterial,
-): THREE.Mesh<TGeometry, TMaterial> {
-  return new THREE.Mesh(geometry, material);
+function createPerson(color: string, variant: number): THREE.Group {
+  const group = new THREE.Group();
+  const clothing = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+  const skin = new THREE.MeshStandardMaterial({
+    color: ["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant],
+    roughness: 0.9,
+  });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.72, 4, 8), clothing);
+  body.position.y = 1.25;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25, 10, 8), skin);
+  head.position.y = 2.1;
+  group.add(body, head);
+  group.userData.clothing = clothing;
+  group.userData.skin = skin;
+  return group;
 }
 
-function paletteIndex(id: string, length: number): number {
-  let hash = 0;
-  for (let index = 0; index < id.length; index += 1) {
-    hash = (hash * 31 + id.charCodeAt(index)) >>> 0;
+function updateCarAppearance(
+  object: THREE.Group,
+  color: string,
+  kind: VehicleKind,
+): void {
+  const paint = object.userData.paint as THREE.MeshStandardMaterial | undefined;
+  paint?.color.set(color);
+  const scale =
+    kind === "compact"
+      ? [0.92, 0.9, 0.86]
+      : kind === "suv"
+        ? [1.06, 1.2, 1.12]
+        : kind === "van"
+          ? [1.08, 1.28, 1.28]
+          : kind === "bus"
+            ? [1.15, 1.35, 2.2]
+            : [1, 1, 1];
+  object.scale.set(scale[0], scale[1], scale[2]);
+}
+
+function updatePersonAppearance(
+  object: THREE.Group,
+  color: string,
+  variant: number,
+): void {
+  const clothing = object.userData.clothing as
+    | THREE.MeshStandardMaterial
+    | undefined;
+  const skin = object.userData.skin as THREE.MeshStandardMaterial | undefined;
+  clothing?.color.set(color);
+  skin?.color.set(["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant % 4]);
+}
+
+function createSignalLensMaterial(color: string): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color).multiplyScalar(0.18),
+    emissive: color,
+    emissiveIntensity: 0.04,
+    roughness: 0.36,
+  });
+}
+
+function setSignalLens(
+  material: THREE.MeshStandardMaterial,
+  active: boolean,
+): void {
+  material.color.copy(material.emissive).multiplyScalar(active ? 0.8 : 0.14);
+  material.emissiveIntensity = active ? 3.4 : 0.035;
+}
+
+function signalCorner(
+  axis: DistrictFeature["axis"],
+  sign: 1 | -1,
+): { x: number; z: number } {
+  if (axis === "x") return { x: sign, z: sign };
+  return { x: -sign, z: sign };
+}
+
+function signalFacingRotation(
+  axis: DistrictFeature["axis"],
+  sign: 1 | -1,
+): number {
+  if (axis === "x") return sign > 0 ? -Math.PI / 2 : Math.PI / 2;
+  return sign > 0 ? Math.PI : 0;
+}
+
+function box(
+  width: number,
+  height: number,
+  depth: number,
+  material: THREE.Material,
+): THREE.Mesh<THREE.BoxGeometry, THREE.Material> {
+  return new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+}
+
+function clearGroup(group: THREE.Group): void {
+  for (const child of [...group.children]) {
+    group.remove(child);
+    if (child instanceof THREE.Mesh) child.geometry.dispose();
   }
-  return hash % length;
 }
 
-function setsEqual<T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean {
-  if (left.size !== right.size) return false;
-  for (const value of left) {
-    if (!right.has(value)) return false;
+function seededRandom(seed: number): () => number {
+  let value = seed >>> 0;
+  return () => {
+    value = (value * 1_664_525 + 1_013_904_223) >>> 0;
+    return value / 4_294_967_296;
+  };
+}
+
+class SpatialHash<T extends SpatialBounds> {
+  private readonly cells = new Map<string, Set<T>>();
+  private readonly items = new Set<T>();
+
+  constructor(private readonly cellSize: number) {}
+
+  get size(): number {
+    return this.items.size;
   }
-  return true;
+
+  insert(item: T): void {
+    this.items.add(item);
+    for (const key of this.keysForBounds(
+      item.minX,
+      item.maxX,
+      item.minZ,
+      item.maxZ,
+    )) {
+      const cell = this.cells.get(key) ?? new Set<T>();
+      cell.add(item);
+      this.cells.set(key, cell);
+    }
+  }
+
+  query(minX: number, maxX: number, minZ: number, maxZ: number): Set<T> {
+    const results = new Set<T>();
+    for (const key of this.keysForBounds(minX, maxX, minZ, maxZ)) {
+      for (const item of this.cells.get(key) ?? []) results.add(item);
+    }
+    return results;
+  }
+
+  getAll(): ReadonlySet<T> {
+    return this.items;
+  }
+
+  private keysForBounds(
+    minX: number,
+    maxX: number,
+    minZ: number,
+    maxZ: number,
+  ): string[] {
+    const keys: string[] = [];
+    const startX = Math.floor(minX / this.cellSize);
+    const endX = Math.floor(maxX / this.cellSize);
+    const startZ = Math.floor(minZ / this.cellSize);
+    const endZ = Math.floor(maxZ / this.cellSize);
+    for (let x = startX; x <= endX; x += 1) {
+      for (let z = startZ; z <= endZ; z += 1) keys.push(`${x}:${z}`);
+    }
+    return keys;
+  }
 }
 
-function average(values: readonly number[]): number {
-  return values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
+function isMovementKey(code: string): boolean {
+  return [
+    "KeyW",
+    "KeyA",
+    "KeyS",
+    "KeyD",
+    "KeyE",
+    "KeyQ",
+    "ShiftLeft",
+    "ShiftRight",
+    "Space",
+  ].includes(code);
 }
 
-function sumRecord(values: Readonly<Record<string, number>>): number {
-  return Object.values(values).reduce((total, value) => total + value, 0);
-}
-
-function clamp01(value: number): number {
-  return THREE.MathUtils.clamp(Number.isFinite(value) ? value : 0, 0, 1);
-}
-
-function normalizeRange(value: number, values: readonly number[]): number {
-  if (values.length === 0) return 0.5;
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  return maximum === minimum ? 0.5 : clamp01((value - minimum) / (maximum - minimum));
-}
-
-function normalizeToMaximum(value: number, maximum: number): number {
-  return maximum <= 0 ? 0 : clamp01(value / maximum);
-}
-
-function normalizeSigned(value: number, maximumMagnitude: number): number {
-  return maximumMagnitude <= 0 ? 0.5 : clamp01(0.5 + value / maximumMagnitude / 2);
-}
-
-function colorRamp(value: number, low: number, middle: number, high: number): number {
-  return value <= 0.5
-    ? interpolateColor(low, middle, value * 2)
-    : interpolateColor(middle, high, (value - 0.5) * 2);
-}
-
-function interpolateColor(from: number, to: number, amount: number): number {
-  const fromRed = (from >> 16) & 0xff;
-  const fromGreen = (from >> 8) & 0xff;
-  const fromBlue = from & 0xff;
-  const toRed = (to >> 16) & 0xff;
-  const toGreen = (to >> 8) & 0xff;
-  const toBlue = to & 0xff;
-  const red = Math.round(fromRed + (toRed - fromRed) * amount);
-  const green = Math.round(fromGreen + (toGreen - fromGreen) * amount);
-  const blue = Math.round(fromBlue + (toBlue - fromBlue) * amount);
-  return (red << 16) | (green << 8) | blue;
+function isTypingTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    target.closest(
+      "input, textarea, select, button, a, [contenteditable='true']",
+    ) !== null
+  );
 }

@@ -5,405 +5,428 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Model mobility, people, land use, economy, and infrastructure on one city street."
+      content="Edit and simulate a living 3D street network around Penn and University City."
     />
-    <title>Street Systems Simulator</title>
+    <title>Penn Campus Street Lab</title>
   </head>
-  <body>
+  <body data-app-mode="build">
     <div id="app">
-      <main class="simulation-viewport" aria-label="Interactive 3D street simulation">
-        <canvas id="simulation-canvas" aria-label="Street systems simulation"></canvas>
-        <div class="scene-label" aria-hidden="true">
-          <span id="active-layer-label">City systems overview</span>
-          <strong id="city-name-output">Market-River City Section</strong>
-          <small id="detail-mode-output">Street detail</small>
+      <main class="simulation-viewport" aria-labelledby="simulation-title">
+        <canvas
+          id="simulation-canvas"
+          aria-label="Interactive 3D Penn campus district simulation"
+        ></canvas>
+        <div class="scene-title">
+          <p class="panel-kicker">Live campus district</p>
+          <h2 id="simulation-title">Penn · University City</h2>
+          <p id="scene-subtitle">Walnut to Spruce · 34th to 38th</p>
+          <form id="location-search" class="location-search" role="search">
+            <label class="sr-only" for="location-search-input">Find a Penn landmark or street</label>
+            <input
+              id="location-search-input"
+              list="location-options"
+              placeholder="Fly to a landmark or street"
+              autocomplete="off"
+            />
+            <datalist id="location-options"></datalist>
+            <button type="submit">Go</button>
+          </form>
         </div>
+        <p class="camera-hint orbit-hint">
+          Drag to orbit · Scroll to zoom · Click a highlighted street
+        </p>
+        <p class="camera-hint fly-hint">
+          Drag to look · W A S D move · E/Q altitude · Shift boost
+        </p>
+        <p class="camera-hint walk-hint">
+          Click scene for mouse look · W A S D walk · Shift run · ESC release
+        </p>
       </main>
 
       <header class="topbar hud-panel">
-        <div class="brand-block">
-          <p class="eyebrow">Urban Systems Lab</p>
-          <h1>Street Systems Simulator</h1>
+        <div class="brand">
+          <p class="eyebrow">Penn Urban Systems Lab</p>
+          <h1>Campus Street Simulator</h1>
         </div>
-        <div class="clock-block" aria-label="Simulation time">
-          <div>
-            <span id="day-output">Day 1 · Day horizon</span>
-            <strong id="time-output">Jan 1, 2026</strong>
+        <div class="topbar-actions">
+          <div class="environment-status" aria-live="polite">
+            <span>3D world</span>
+            <strong id="environment-mode">Loading</strong>
           </div>
-          <time id="hour-output" datetime="07:00">07:00</time>
-        </div>
-        <div class="simulation-actions" aria-label="Simulation controls">
+          <div class="camera-switch" aria-label="Camera mode">
+            <span>Camera</span>
+            <button id="orbit-camera-button" type="button" aria-pressed="true">Orbit</button>
+            <button id="fly-camera-button" type="button" aria-pressed="false">Fly</button>
+            <button id="walk-camera-button" type="button" aria-pressed="false">Walk</button>
+          </div>
           <div class="mode-switch" aria-label="Application mode">
             <button id="build-mode-button" type="button" aria-pressed="true">Build</button>
             <button id="simulate-mode-button" type="button" aria-pressed="false">Simulate</button>
           </div>
-          <span id="status-pill" class="status-pill" data-status="ready">Ready</span>
-          <button id="mobile-panel-button" class="mobile-panel-button" type="button" aria-label="Show inspector" aria-pressed="false" title="Show inspector">i</button>
-          <button id="run-button" class="primary-button" type="button">Run</button>
-          <button id="pause-button" type="button">Pause</button>
-          <button id="reset-button" type="button">Reset</button>
-          <button id="settings-button" type="button" aria-expanded="false" aria-controls="settings-drawer">Settings</button>
+          <div class="simulation-actions" aria-label="Simulation controls">
+            <button id="run-button" class="primary-button" type="button">Run</button>
+            <button id="pause-button" type="button">Pause</button>
+            <button id="reset-button" type="button">Reset</button>
+          </div>
         </div>
       </header>
 
-      <nav class="map-mode-bar hud-panel" aria-label="Map modes">
-        <span class="map-mode-label">Map mode</span>
-        <div class="map-mode-buttons">
-          <button type="button" data-visual-layer="none" data-layer="overview" aria-pressed="true">Standard</button>
-          <button type="button" data-visual-layer="congestion" data-layer="infrastructure" aria-pressed="false">Traffic</button>
-          <button type="button" data-visual-layer="pedestrian-wait" data-layer="infrastructure" aria-pressed="false">Walking</button>
-          <button type="button" data-visual-layer="land-value" data-layer="land-use" aria-pressed="false">Land value</button>
-          <button type="button" data-visual-layer="utilities" data-layer="infrastructure" aria-pressed="false">Utilities</button>
-          <button type="button" data-visual-layer="jobs" data-layer="people" aria-pressed="false">Jobs</button>
-          <button type="button" data-visual-layer="shortages" data-layer="economy" aria-pressed="false">Shortages</button>
-          <button type="button" data-visual-layer="migration" data-layer="people" aria-pressed="false">Migration</button>
-          <button type="button" data-visual-layer="freight" data-layer="economy" aria-pressed="false">Freight</button>
-          <button type="button" data-visual-layer="profit" data-layer="economy" aria-pressed="false">Profit</button>
-        </div>
-        <div class="heat-legend map-mode-legend" aria-label="Current map scale">
-          <span id="heat-low-label">Base</span><i></i><span id="heat-high-label">Color</span>
-        </div>
-      </nav>
-
-      <aside id="build-tools-panel" class="build-tools-panel hud-panel" aria-labelledby="build-tools-title">
-        <div class="build-panel-heading">
+      <aside class="panel tools-panel hud-panel" aria-labelledby="tools-title">
+        <div class="panel-heading">
           <div>
             <p class="panel-kicker">Build mode</p>
-            <h2 id="build-tools-title">Street designer</h2>
+            <h2 id="tools-title">Campus builder</h2>
           </div>
-          <span class="build-live-badge">Live</span>
+          <span class="live-badge">Live</span>
         </div>
-        <p class="build-help">Choose a preset or paint streets directly onto the city grid.</p>
-        <div class="layout-picker" aria-label="Intersection shape">
-          <button type="button" data-intersection-layout="four-way" aria-pressed="true">4-way</button>
-          <button type="button" data-intersection-layout="t-junction" aria-pressed="false">T-junction</button>
-          <button type="button" data-intersection-layout="straight" aria-pressed="false">Straight</button>
-        </div>
-        <button id="rotate-layout-button" class="rotate-layout-button" type="button">↻ Rotate city layout</button>
-        <p class="build-section-label">Street elements</p>
-        <div class="build-tool-list" aria-label="Street design tools">
-          <button type="button" data-design-tool="lane" aria-pressed="true">
-            <span class="build-tool-swatch yellow-lane-swatch"></span>
-            <span>Yellow lane</span><small data-tool-status>Selected</small>
-          </button>
-          <button type="button" data-design-tool="white-lane" aria-pressed="false">
-            <span class="build-tool-swatch white-lane-swatch"></span>
-            <span>White lane</span><small data-tool-status>Place</small>
-          </button>
-          <button type="button" data-design-tool="asphalt" aria-pressed="false">
-            <span class="build-tool-swatch asphalt-swatch"></span>
-            <span>Intersection</span><small data-tool-status>Place</small>
-          </button>
-          <button type="button" data-design-tool="sidewalk" aria-pressed="false">
-            <span class="build-tool-swatch sidewalk-swatch"></span>
-            <span>Sidewalk</span><small data-tool-status>Place</small>
-          </button>
-          <button type="button" data-design-tool="crosswalk" aria-pressed="false">
-            <span class="build-tool-swatch crosswalk-swatch"></span>
-            <span>Crosswalk</span><small data-tool-status>Place</small>
-          </button>
-          <button type="button" data-design-tool="signal" aria-pressed="false">
-            <span class="build-tool-swatch signal-swatch"></span>
-            <span>Traffic signal</span><small data-tool-status>Place</small>
-          </button>
-          <button type="button" data-build-tool="erase" aria-pressed="false">
-            <span class="build-tool-swatch erase-swatch"></span>
-            <span>Bulldoze</span><small>Erase</small>
-          </button>
-        </div>
-        <p class="build-section-label">Buildings</p>
-        <div class="building-tool-grid" aria-label="Building design tools">
-          <button type="button" data-design-tool="residential-building" aria-pressed="false">
-            <span class="building-swatch residential-building-swatch"></span>
+        <p class="panel-help">
+          Place buildings anywhere in the district, then drag them into position.
+        </p>
+        <p class="tool-section-label">Buildings</p>
+        <div class="building-tool-grid" aria-label="Building placement tools">
+          <button class="building-tool-button" type="button" data-building-tool="residential" aria-pressed="true">
+            <span class="building-swatch residential-swatch"></span>
             <span>Residential</span>
           </button>
-          <button type="button" data-design-tool="commercial-building" aria-pressed="false">
-            <span class="building-swatch commercial-building-swatch"></span>
+          <button class="building-tool-button" type="button" data-building-tool="commercial" aria-pressed="false">
+            <span class="building-swatch commercial-swatch"></span>
             <span>Commercial</span>
           </button>
-          <button type="button" data-design-tool="industrial-building" aria-pressed="false">
-            <span class="building-swatch industrial-building-swatch"></span>
+          <button class="building-tool-button" type="button" data-building-tool="industrial" aria-pressed="false">
+            <span class="building-swatch industrial-swatch"></span>
             <span>Industrial</span>
           </button>
-          <button type="button" data-design-tool="civic-building" aria-pressed="false">
-            <span class="building-swatch civic-building-swatch"></span>
+          <button class="building-tool-button" type="button" data-building-tool="civic" aria-pressed="false">
+            <span class="building-swatch civic-swatch"></span>
             <span>Civic</span>
           </button>
         </div>
-        <div class="building-customization" aria-label="Building customization">
+        <div class="building-placement-settings">
           <label for="building-floors-control">
             <span>Floors</span>
-            <input id="building-floors-control" type="number" min="1" max="12" step="1" value="4" />
+            <input id="building-floors-control" type="number" min="1" max="20" value="5" />
           </label>
           <label for="building-color-control">
             <span>Color</span>
-            <input id="building-color-control" type="color" value="#d47f6a" />
+            <input id="building-color-control" type="color" value="#bf765f" />
           </label>
-          <small>Change these controls before placing, or select an existing building and edit it live.</small>
         </div>
-        <button id="reset-design-button" class="reset-design-button" type="button">Clear build grid</button>
+        <p class="placement-help">Click the ground to place · Drag a building to move · Press <kbd>R</kbd> to rotate.</p>
+        <p class="tool-section-label">Street tools</p>
+        <div class="tool-list" aria-label="Street design tools">
+          <button class="tool-button" type="button" data-build-tool="add-lane" data-target="street">
+            <span class="tool-icon add-lane-icon"></span>
+            <span>Add vehicle lane</span>
+            <small>Apply</small>
+          </button>
+          <button
+            class="tool-button"
+            type="button"
+            data-build-tool="remove-lane"
+            data-target="street"
+          >
+            <span class="tool-icon remove-lane-icon"></span>
+            <span>Remove vehicle lane</span>
+            <small>Apply</small>
+          </button>
+          <button class="tool-button" type="button" data-build-tool="bike-lane" data-target="street">
+            <span class="tool-icon bike-icon"></span>
+            <span>Protected bike lane</span>
+            <small>Toggle</small>
+          </button>
+          <button class="tool-button" type="button" data-build-tool="sidewalk" data-target="street">
+            <span class="tool-icon sidewalk-icon"></span>
+            <span>Widen sidewalk</span>
+            <small>Toggle</small>
+          </button>
+          <button class="tool-button" type="button" data-build-tool="direction" data-target="street">
+            <span class="tool-icon direction-icon"></span>
+            <span>Lane direction</span>
+            <small>Cycle</small>
+          </button>
+        </div>
+        <p class="tool-section-label">Intersection tools</p>
+        <div class="tool-list compact-tool-list" aria-label="Intersection design tools">
+          <button
+            class="tool-button"
+            type="button"
+            data-build-tool="crosswalk"
+            data-target="intersection"
+          >
+            <span class="tool-icon crossing-icon"></span>
+            <span>High-vis crosswalk</span>
+            <small>Toggle</small>
+          </button>
+          <button
+            class="tool-button"
+            type="button"
+            data-build-tool="island"
+            data-target="intersection"
+          >
+            <span class="tool-icon island-icon"></span>
+            <span>Pedestrian island</span>
+            <small>Toggle</small>
+          </button>
+        </div>
+        <button id="reset-design-button" class="reset-design-button" type="button">
+          Reset build
+        </button>
       </aside>
 
-      <aside id="build-grid-panel" class="build-grid-panel hud-panel" aria-labelledby="build-grid-title">
-        <div class="build-panel-heading">
-          <div>
-            <p class="panel-kicker">Editable city</p>
-            <h2 id="build-grid-title">12 × 12 city grid</h2>
-          </div>
-          <span>Selected: <strong id="selected-build-tool">Yellow lane</strong></span>
-        </div>
-        <div id="build-grid" class="build-grid" aria-label="Street construction grid"></div>
-        <p class="build-grid-hint">Drag to paint · Hover a tile and press <kbd>R</kbd> to rotate · Stop lines are automatic.</p>
-      </aside>
-
-      <aside id="inspector-panel" class="inspector-panel hud-panel" aria-labelledby="inspector-title">
-        <div id="dashboard-panel" class="dashboard-panel">
-          <section class="inspector-content">
-            <p class="panel-kicker">Selected map mode</p>
-            <h2 id="inspector-title">Street health</h2>
-            <p id="inspector-summary" class="inspector-summary">All systems are initializing.</p>
-            <dl class="snapshot-list">
-              <div><dt id="inspector-label-1">Population</dt><dd id="inspector-value-1">0</dd></div>
-              <div><dt id="inspector-label-2">Active trips</dt><dd id="inspector-value-2">0</dd></div>
-              <div><dt id="inspector-label-3">Jobs filled</dt><dd id="inspector-value-3">0%</dd></div>
-              <div><dt id="inspector-label-4">Utility coverage</dt><dd id="inspector-value-4">0%</dd></div>
-            </dl>
-          </section>
-
-          <section class="representation-section" aria-labelledby="representation-title">
-            <div class="section-heading compact-heading">
-              <p class="panel-kicker">Model scale</p>
-              <h2 id="representation-title">Representation</h2>
-            </div>
-            <dl class="representation-grid">
-              <div><dt>Representative person</dt><dd id="representation-person">1 : 0</dd></div>
-              <div><dt>Detailed buildings</dt><dd id="representation-buildings">0 of 0 districts</dd></div>
-            </dl>
-            <p id="representation-activity" class="representation-note">Waiting for sampled activity.</p>
-          </section>
-
-          <section class="cause-section" aria-labelledby="cause-title">
-            <div class="section-heading compact-heading">
-              <p class="panel-kicker">Why?</p>
-              <h2 id="cause-title">Current causes</h2>
-            </div>
-            <dl id="cause-list" class="cause-list"></dl>
-          </section>
-
-          <details class="baseline-section disclosure-section">
-            <summary>Baseline comparison</summary>
-            <div id="baseline-list" class="baseline-list"></div>
-            <ol id="timeline-markers" class="timeline-markers"></ol>
-          </details>
-
-          <section class="event-section" aria-labelledby="event-title">
-            <div class="section-heading">
-              <p class="panel-kicker">Grouped by system</p>
-              <h2 id="event-title">Alerts and updates</h2>
-            </div>
-            <div id="event-list" class="event-list" aria-live="polite">
-              <p>No alerts yet</p>
-            </div>
-          </section>
-        </div>
-
-        <section id="selection-panel" class="selection-panel" aria-labelledby="selection-title" hidden>
-          <header class="selection-heading">
-            <div>
-              <p id="selection-kicker" class="panel-kicker">Selected entity</p>
-              <h2 id="selection-title">Details</h2>
-            </div>
-            <button id="selection-close" class="icon-button" type="button" aria-label="Close details" title="Close details">&times;</button>
-          </header>
-          <p id="selection-summary" class="selection-summary"></p>
-          <div class="inspection-motion-row">
-            <span id="inspection-motion-status">Paused for inspection</span>
-            <label><input id="inspection-run-toggle" type="checkbox" /> Run while open</label>
-          </div>
-          <dl id="selection-stats" class="selection-stats"></dl>
-          <p id="selection-diagnosis" class="selection-diagnosis"></p>
-          <section id="selection-timeline-section" class="selection-timeline-section" aria-labelledby="selection-timeline-title" hidden>
-            <p id="selection-timeline-title" class="panel-kicker">Daily timeline</p>
-            <ol id="selection-timeline" class="entity-timeline"></ol>
-          </section>
-          <section class="selection-connections" aria-labelledby="selection-connections-title">
-            <p id="selection-connections-title" class="panel-kicker">Connection totals</p>
-            <div id="selection-connections" class="connection-groups"></div>
-          </section>
-        </section>
-      </aside>
-
-      <button id="settings-scrim" class="settings-scrim" type="button" aria-label="Close settings" aria-hidden="true" tabindex="-1"></button>
-      <aside id="settings-drawer" class="settings-drawer hud-panel" aria-labelledby="scenario-title" aria-hidden="true" inert>
+      <aside class="selection-panel hud-panel" aria-labelledby="selection-title">
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Model settings</p>
-            <h2 id="scenario-title">Scenario controls</h2>
+            <p class="panel-kicker">Selected object</p>
+            <h2 id="selection-title">Walnut Street</h2>
           </div>
-          <div class="drawer-heading-actions">
-            <div class="signal-state" aria-label="Current signal state">
-              <span id="signal-phase">Vehicles</span>
-              <strong><span id="signal-time-remaining">6.0</span>s</strong>
-            </div>
-            <button id="settings-close" class="icon-button" type="button" aria-label="Close settings" title="Close settings">&times;</button>
+          <span id="feature-kind" class="feature-kind">Street</span>
+        </div>
+        <p id="selection-description" class="selection-description">
+          Between 34th and 36th Streets
+        </p>
+        <div id="design-summary" class="design-summary" aria-label="Current design"></div>
+        <div id="building-editor" class="building-editor" hidden>
+          <div class="building-editor-heading">
+            <strong>Building controls</strong>
+            <span id="building-position-output">X 0 · Z 0</span>
+          </div>
+          <div class="building-editor-grid">
+            <label for="selected-building-floors">
+              <span>Floors</span>
+              <input id="selected-building-floors" type="number" min="1" max="20" value="5" />
+            </label>
+            <label for="selected-building-color">
+              <span>Color</span>
+              <input id="selected-building-color" type="color" value="#bf765f" />
+            </label>
+          </div>
+          <div class="building-editor-actions">
+            <button id="rotate-building-button" type="button">Rotate 90°</button>
+            <button id="delete-building-button" class="danger-button" type="button">Bulldoze</button>
           </div>
         </div>
-
-        <div class="control-group inspection-controls">
-          <p>Map overlays</p>
-          <fieldset class="flow-toggles">
-            <legend>Visible flows</legend>
-            <label><input type="checkbox" value="commute" checked /> Commutes</label>
-            <label><input type="checkbox" value="customer" checked /> Customers &amp; visits</label>
-            <label><input type="checkbox" value="supply" checked /> Supplies</label>
-            <label><input type="checkbox" value="daily-route" checked /> Daily routes</label>
-          </fieldset>
-          <div class="flow-legend" aria-label="Flow color legend">
-            <span><i style="--legend-color: #49a7e8"></i>Commute</span>
-            <span><i style="--legend-color: #e0a83d"></i>Visitor / customer</span>
-            <span><i style="--legend-color: #db735d"></i>Supply</span>
-            <span><i style="--legend-color: #f0dd70"></i>Daily route</span>
+        <div id="signal-editor" class="signal-editor" hidden>
+          <div class="signal-editor-heading">
+            <strong>Signal control</strong>
+            <label for="signal-mode-control">
+              <span>Mode</span>
+              <select id="signal-mode-control">
+                <option value="automatic">Automatic</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+          </div>
+          <div class="signal-timing-grid">
+            <label for="signal-ns-green">
+              <span>N/S green</span>
+              <span class="number-input-wrap">
+                <input id="signal-ns-green" type="number" min="10" max="120" value="30" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-ew-green">
+              <span>E/W green</span>
+              <span class="number-input-wrap">
+                <input id="signal-ew-green" type="number" min="10" max="120" value="30" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-yellow">
+              <span>Yellow</span>
+              <span class="number-input-wrap">
+                <input id="signal-yellow" type="number" min="2" max="8" step="0.5" value="3" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-all-red">
+              <span>All red</span>
+              <span class="number-input-wrap">
+                <input id="signal-all-red" type="number" min="0.5" max="5" step="0.5" value="1" />
+                <span>sec</span>
+              </span>
+            </label>
+            <label for="signal-pedestrian">
+              <span>Pedestrian</span>
+              <span class="number-input-wrap">
+                <input id="signal-pedestrian" type="number" min="5" max="60" value="15" />
+                <span>sec</span>
+              </span>
+            </label>
+          </div>
+          <div class="signal-live-status" aria-live="polite">
+            <span>Current <strong id="signal-current-phase">N/S green</strong></span>
+            <span>Next <strong id="signal-next-phase">N/S yellow</strong></span>
+            <span>Remaining <strong id="signal-time-remaining">30.0 sec</strong></span>
+          </div>
+          <div id="manual-signal-controls" class="manual-signal-controls" hidden>
+            <button id="manual-ns-button" type="button">N/S green</button>
+            <button id="manual-ew-button" type="button">E/W green</button>
+            <button id="manual-all-red-button" type="button">All red</button>
           </div>
         </div>
+        <p id="selection-status" class="selection-status" aria-live="polite">
+          Click a highlighted road or intersection to edit it in place.
+        </p>
+      </aside>
 
-        <div class="control-group">
-          <p>Simulation time</p>
-          <div class="horizon-control" role="group" aria-label="Simulation time horizon">
-            <button type="button" data-horizon="day" aria-pressed="true">Day</button>
-            <button type="button" data-horizon="week" aria-pressed="false">Week</button>
-            <button type="button" data-horizon="month" aria-pressed="false">Month</button>
-            <button type="button" data-horizon="year" aria-pressed="false">Year</button>
+      <aside class="panel controls-panel hud-panel" aria-labelledby="scenario-title">
+        <div class="panel-heading">
+          <div>
+            <p class="panel-kicker">Simulate mode</p>
+            <h2 id="scenario-title">District conditions</h2>
           </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="simulation-speed-control">Playback multiplier</label>
-              <output id="simulation-speed-output" for="simulation-speed-control">1.0x</output>
-            </div>
-            <input id="simulation-speed-control" type="range" min="0.5" max="4" step="0.5" value="1" />
-            <small id="simulation-speed-effect" class="control-effect"></small>
-          </div>
+          <span id="status-pill" class="status-pill" data-status="running">Running</span>
         </div>
 
-        <div class="control-group">
-          <p>Generated activity</p>
-          <dl class="generated-activity">
-            <div><dt>Commutes</dt><dd id="generated-commutes">0/day</dd></div>
-            <div><dt>Shopping</dt><dd id="generated-shopping">0/day</dd></div>
-            <div><dt>Pedestrians</dt><dd id="generated-pedestrians">0/day</dd></div>
-            <div><dt>Freight</dt><dd id="generated-freight">0/day</dd></div>
-          </dl>
-        </div>
+        <label class="control-row" for="speed-control">
+          <span>Simulation speed</span>
+          <output id="speed-output" for="speed-control">1.0×</output>
+        </label>
+        <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
 
-        <details class="process-panel control-group">
-          <summary>Today's simulation steps</summary>
-          <ol>
-            <li>Businesses request workers and supplies.</li>
-            <li>Residents work and receive wages.</li>
-            <li>Businesses produce goods.</li>
-            <li>Freight delivers local or imported supplies.</li>
-            <li>Households shop within their budgets.</li>
-            <li>Businesses calculate revenue and profit.</li>
-            <li>Prices, employment and land value adjust.</li>
-            <li>Households evaluate happiness and migration.</li>
-            <li>Resulting trips enter the street network.</li>
-          </ol>
-        </details>
-
-        <div class="control-group">
-          <p>Street operations</p>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="speed-limit-control">Speed limit</label>
-              <output id="speed-limit-output" for="speed-limit-control">25 mph</output>
-            </div>
-            <input id="speed-limit-control" class="number-control" type="number" min="5" max="120" step="1" value="25" />
-            <small id="speed-limit-effect" class="control-effect"></small>
+        <div class="scenario-control-list">
+          <div class="scenario-control">
+            <label for="vehicle-volume-control">
+              <span>Vehicle demand</span>
+              <output id="vehicle-volume-output" for="vehicle-volume-control">Medium</output>
+            </label>
+            <input id="vehicle-volume-control" type="range" min="1" max="3" step="1" value="2" />
           </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="signal-cycle-control">Signal cycle</label>
-              <output id="signal-cycle-output" for="signal-cycle-control">12s</output>
-            </div>
-            <input id="signal-cycle-control" class="number-control" type="number" min="2" max="300" step="1" value="12" />
-            <small id="signal-cycle-effect" class="control-effect"></small>
+          <div class="scenario-control">
+            <label for="pedestrian-volume-control">
+              <span>Pedestrian demand</span>
+              <output id="pedestrian-volume-output" for="pedestrian-volume-control">Medium</output>
+            </label>
+            <input
+              id="pedestrian-volume-control"
+              type="range"
+              min="1"
+              max="3"
+              step="1"
+              value="2"
+            />
           </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="transit-headway-control">Bus headway</label>
-              <output id="transit-headway-output" for="transit-headway-control">8 min</output>
-            </div>
-            <input id="transit-headway-control" type="range" min="3" max="20" step="1" value="8" />
-            <small id="transit-headway-effect" class="control-effect"></small>
+          <div class="scenario-control number-control">
+            <label for="speed-limit-control">
+              <span>District speed limit</span>
+              <span class="number-input-wrap">
+                <input id="speed-limit-control" type="number" min="10" max="45" value="25" />
+                <span>mph</span>
+              </span>
+            </label>
           </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="road-capacity-control">Road capacity</label>
-              <output id="road-capacity-output" for="road-capacity-control">20 vehicles</output>
-            </div>
-            <input id="road-capacity-control" type="range" min="8" max="40" step="2" value="20" />
-            <small id="road-capacity-effect" class="control-effect"></small>
+          <div class="scenario-control number-control">
+            <label for="signal-cycle-control">
+              <span>Signal cycle</span>
+              <span class="number-input-wrap">
+                <input id="signal-cycle-control" type="number" min="30" max="180" value="83" />
+                <span>sec</span>
+              </span>
+            </label>
           </div>
-        </div>
-
-        <div class="control-group">
-          <p>Development policy</p>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="utility-capacity-control">Utility capacity</label>
-              <output id="utility-capacity-output" for="utility-capacity-control">100%</output>
-            </div>
-            <input id="utility-capacity-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
-            <small id="utility-capacity-effect" class="control-effect"></small>
-          </div>
-          <div class="range-control">
-            <div class="control-row">
-              <label for="zoning-strictness-control">Zoning limits</label>
-              <output id="zoning-strictness-output" for="zoning-strictness-control">100%</output>
-            </div>
-            <input id="zoning-strictness-control" type="range" min="0.5" max="1.5" step="0.1" value="1" />
-            <small id="zoning-strictness-effect" class="control-effect"></small>
+          <div class="scenario-control number-control">
+            <label for="simulation-seed-control">
+              <span>Simulation seed</span>
+              <span class="number-input-wrap">
+                <input
+                  id="simulation-seed-control"
+                  type="number"
+                  min="1"
+                  max="2147483647"
+                  value="20260728"
+                />
+              </span>
+            </label>
           </div>
         </div>
+        <div class="signal-phase">
+          <span>Current phase</span>
+          <strong id="signal-phase">East–west traffic</strong>
+        </div>
+        <div class="scenario-presets" aria-label="Example campus scenarios">
+          <button id="rush-hour-button" type="button">PM rush</button>
+          <button id="class-change-button" type="button">Class change</button>
+        </div>
+        <label class="analysis-control" for="analysis-overlay">
+          <span>City overlay</span>
+          <select id="analysis-overlay">
+            <option value="none">None</option>
+            <option value="congestion">Traffic congestion</option>
+            <option value="pedestrians">Pedestrian density</option>
+            <option value="conflicts">Potential conflicts</option>
+          </select>
+        </label>
       </aside>
 
       <section class="metrics hud-panel" aria-labelledby="metrics-title">
         <div class="metrics-heading">
-          <p class="panel-kicker">Live results</p>
-          <h2 id="metrics-title">Systems overview</h2>
+          <div>
+            <p id="metrics-kicker" class="panel-kicker">Modified design</p>
+            <h2 id="metrics-title">Performance snapshot</h2>
+          </div>
+          <div class="comparison-switch" aria-label="Metric comparison">
+            <button id="baseline-metrics-button" type="button" aria-pressed="false">
+              Baseline
+            </button>
+            <button id="modified-metrics-button" type="button" aria-pressed="true">
+              Modified
+            </button>
+          </div>
         </div>
         <div class="metric-grid">
           <article class="metric-card">
-            <span id="metric-label-1">Congestion</span>
-            <strong id="metric-value-1">0%</strong>
-            <small id="metric-detail-1">Vehicles below target speed</small>
+            <span>Average vehicle trip</span>
+            <strong id="vehicle-time">0.0 s</strong>
+            <small>Across the campus district</small>
           </article>
           <article class="metric-card">
-            <span id="metric-label-2">Travel time</span>
-            <strong id="metric-value-2">0.0s</strong>
-            <small id="metric-detail-2">Average completed trip</small>
+            <span>Average speed</span>
+            <strong id="average-speed">0.0 mph</strong>
+            <small>Moving vehicles</small>
           </article>
           <article class="metric-card">
-            <span id="metric-label-3">Household happiness</span>
-            <strong id="metric-value-3">0%</strong>
-            <small id="metric-detail-3">Schedules, costs and services</small>
+            <span>Congestion</span>
+            <strong id="congestion">0</strong>
+            <small>Queued vehicles</small>
           </article>
           <article class="metric-card">
-            <span id="metric-label-4">Goods available</span>
-            <strong id="metric-value-4">0%</strong>
-            <small id="metric-detail-4">Retail demand supplied</small>
+            <span>Intersection delay</span>
+            <strong id="intersection-delay">0.0 s</strong>
+            <small>Average control delay</small>
           </article>
           <article class="metric-card">
-            <span id="metric-label-5">Land value</span>
-            <strong id="metric-value-5">$0</strong>
-            <small id="metric-detail-5">Average parcel value</small>
+            <span>Pedestrian wait</span>
+            <strong id="pedestrian-wait">0.0 s</strong>
+            <small>Average crossing delay</small>
           </article>
           <article class="metric-card">
-            <span id="metric-label-6">Utilities</span>
-            <strong id="metric-value-6">0%</strong>
-            <small id="metric-detail-6">Power, water and waste</small>
+            <span>Potential conflicts</span>
+            <strong id="conflicts">0</strong>
+            <small>Per simulation window</small>
+          </article>
+          <article class="metric-card">
+            <span>Throughput</span>
+            <strong id="throughput">0</strong>
+            <small>People per hour</small>
+          </article>
+          <article class="metric-card">
+            <span>Active vehicles</span>
+            <strong id="active-vehicles">0</strong>
+            <small>Live agents</small>
+          </article>
+          <article class="metric-card">
+            <span>Active pedestrians</span>
+            <strong id="active-pedestrians">0</strong>
+            <small>Live agents</small>
+          </article>
+          <article class="metric-card">
+            <span>Crossings complete</span>
+            <strong id="crossings-completed">0</strong>
+            <small>Since reset</small>
           </article>
         </div>
       </section>
+
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
