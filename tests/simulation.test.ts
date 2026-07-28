@@ -72,7 +72,7 @@ describe("Simulation", () => {
     });
   });
 
-  it("reflects street upgrades in live district metrics", () => {
+  it("does not fake lane performance while applying pedestrian upgrades", () => {
     const simulation = new Simulation();
     simulation.start();
     simulation.update(180);
@@ -87,8 +87,8 @@ describe("Simulation", () => {
     });
 
     const upgraded = simulation.getState().metrics;
-    expect(upgraded.congestion).toBeLessThanOrEqual(baseline.congestion);
-    expect(upgraded.averageSpeedMph).toBeGreaterThan(baseline.averageSpeedMph);
+    expect(upgraded.congestion).toBe(baseline.congestion);
+    expect(upgraded.averageSpeedMph).toBe(baseline.averageSpeedMph);
     expect(upgraded.pedestrianWaitSeconds).toBeLessThan(baseline.pedestrianWaitSeconds);
   });
 

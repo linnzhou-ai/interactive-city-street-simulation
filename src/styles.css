@@ -910,6 +910,28 @@ input[type="range"] {
   margin: 0.55rem 0 0;
 }
 
+.law-profile {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid rgb(131 220 192 / 24%);
+  border-radius: 0.8rem;
+  background: rgb(91 191 158 / 8%);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.law-profile strong {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.law-profile small {
+  color: #8ed3bd;
+}
+
 .environment-control {
   display: grid;
   gap: 0.5rem;

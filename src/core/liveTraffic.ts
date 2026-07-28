@@ -4,6 +4,7 @@ import {
   PENN_STREETS,
 } from "../data/pennRoadGraph";
 import type {
+  FeatureDesign,
   ManualSignalTarget,
   PedestrianSnapshot,
   PlacedBuilding,
@@ -54,7 +55,7 @@ export const DEFAULT_SIGNAL_TIMING: SignalTiming = {
   eastWestGreenSeconds: 30,
   yellowSeconds: 3,
   allRedSeconds: 1,
-  pedestrianSeconds: 15,
+  pedestrianSeconds: 21,
 };
 
 interface GridNode {
@@ -93,6 +94,7 @@ interface VehicleAgent {
   length: number;
   spawnedAt: number;
   delaySeconds: number;
+  lanePreference: 0 | 1;
 }
 
 interface PedestrianAgent {
@@ -262,6 +264,7 @@ export class LiveTrafficSystem {
   private crossingsCompleted = 0;
   private buildingArrivals = 0;
   private buildingNodes: BuildingNode[] = [];
+  private roadDesigns = new Map<string, FeatureDesign>();
 
   constructor(seed: number) {
     this.random = new RandomSource(seed);
@@ -335,6 +338,10 @@ export class LiveTrafficSystem {
     });
   }
 
+  setRoadDesigns(designs: ReadonlyMap<string, FeatureDesign>): void {
+    this.roadDesigns = new Map(designs);
+  }
+
   setAllSignalCycles(totalSeconds: number): void {
     const fixed =
       DEFAULT_SIGNAL_TIMING.yellowSeconds * 2 +
@@ -372,7 +379,7 @@ export class LiveTrafficSystem {
 
   getVehicles(): VehicleSnapshot[] {
     return this.vehicles.map((vehicle) => {
-      const position = positionVehicle(vehicle);
+      const position = positionVehicle(vehicle, this.roadDesigns);
       return {
         id: vehicle.id,
         ...position,
@@ -466,7 +473,8 @@ export class LiveTrafficSystem {
     const target = Math.round(interpolateDemand(VEHICLE_TARGETS, demand));
     while (this.nextVehicleSpawnSeconds <= 0 && this.vehicles.length < target) {
       const route = this.createVehicleRoute();
-      if (this.canSpawnVehicle(route.path)) {
+      const lanePreference = this.random.next() < 0.5 ? 0 : 1;
+      if (this.canSpawnVehicle(route.path, lanePreference)) {
         const kind = route.freight ? "truck" : this.random.pick(VEHICLE_KINDS);
         const desiredSpeed =
           speedLimitMph * 0.44704 * (0.82 + this.random.next() * 0.16);
@@ -483,6 +491,7 @@ export class LiveTrafficSystem {
           length: vehicleLength(kind),
           spawnedAt: this.elapsedSeconds,
           delaySeconds: 0,
+          lanePreference,
         });
         this.nextVehicleId += 1;
       }
@@ -541,9 +550,10 @@ export class LiveTrafficSystem {
   private updateVehicles(deltaSeconds: number): void {
     const buckets = new Map<string, VehicleAgent[]>();
     for (const vehicle of this.vehicles) {
-      const bucket = buckets.get(vehicleSegmentKey(vehicle)) ?? [];
+      const key = vehicleSegmentKey(vehicle, this.roadDesigns);
+      const bucket = buckets.get(key) ?? [];
       bucket.push(vehicle);
-      buckets.set(vehicleSegmentKey(vehicle), bucket);
+      buckets.set(key, bucket);
     }
     for (const bucket of buckets.values()) {
       bucket.sort((a, b) => b.distanceOnSegment - a.distanceOnSegment);
@@ -590,8 +600,9 @@ export class LiveTrafficSystem {
       const axis = Math.abs(end.x - start.x) > Math.abs(end.z - start.z) ? "x" : "z";
       const canProceed =
         signal !== undefined &&
-        vehicleMayProceed(signal.phase, axis, remaining, vehicle.speed);
-      const nextKey = nextVehicleSegmentKey(vehicle);
+        vehicleMayProceed(signal.phase, axis, remaining, vehicle.speed) &&
+        !this.intersectionHasCrossingPedestrian(end.id);
+      const nextKey = nextVehicleSegmentKey(vehicle, this.roadDesigns);
       const downstreamBlocked =
         nextKey !== null &&
         (buckets.get(nextKey) ?? []).some(
@@ -599,6 +610,11 @@ export class LiveTrafficSystem {
         );
       if (!canProceed || downstreamBlocked) {
         targetSpeed = Math.min(targetSpeed, Math.max(0, (remaining - 6) * 0.7));
+      } else {
+        targetSpeed = Math.min(
+          targetSpeed,
+          safeIntersectionApproachSpeed(targetSpeed, remaining),
+        );
       }
     }
     const acceleration = targetSpeed > vehicle.speed ? 2.2 : 4.8;
@@ -739,12 +755,7 @@ export class LiveTrafficSystem {
         manhattanDistance(origin, destination.node) >= 1
       ) {
         return {
-          path: createManhattanPath(
-            this.nodes,
-            origin,
-            destination.node,
-            this.random.next() < 0.5,
-          ),
+          path: this.createLegalVehiclePath(origin, destination.node),
           freight: destination.kind === "industrial",
         };
       }
@@ -757,22 +768,15 @@ export class LiveTrafficSystem {
         manhattanDistance(origin, destination) >= 5
       ) {
         return {
-          path: createManhattanPath(
-            this.nodes,
-            origin,
-            destination,
-            this.random.next() < 0.5,
-          ),
+          path: this.createLegalVehiclePath(origin, destination),
           freight: false,
         };
       }
     }
     return {
-      path: createManhattanPath(
-        this.nodes,
+      path: this.createLegalVehiclePath(
         this.nodes[0][0],
         this.nodes[this.nodes.length - 1][this.nodes[0].length - 1],
-        true,
       ),
       freight: false,
     };
@@ -893,12 +897,41 @@ export class LiveTrafficSystem {
     return candidates[candidates.length - 1];
   }
 
-  private canSpawnVehicle(route: readonly GridNode[]): boolean {
-    const key = `${route[0].id}>${route[1].id}`;
+  private canSpawnVehicle(
+    route: readonly GridNode[],
+    lanePreference: 0 | 1,
+  ): boolean {
+    const key = vehiclePathSegmentKey(
+      route,
+      0,
+      lanePreference,
+      this.roadDesigns,
+    );
     return !this.vehicles.some(
       (vehicle) =>
-        vehicleSegmentKey(vehicle) === key && vehicle.distanceOnSegment < 18,
+        vehicleSegmentKey(vehicle, this.roadDesigns) === key &&
+        vehicle.distanceOnSegment < 18,
     );
+  }
+
+  private intersectionHasCrossingPedestrian(intersectionId: string): boolean {
+    return this.pedestrians.some(
+      (pedestrian) => pedestrian.committedIntersectionId === intersectionId,
+    );
+  }
+
+  private createLegalVehiclePath(
+    origin: GridNode,
+    destination: GridNode,
+  ): GridNode[] {
+    const preferred = createManhattanPath(
+      this.nodes,
+      origin,
+      destination,
+      this.random.next() < 0.5,
+    );
+    if (pathObeysLaneDirections(preferred, this.roadDesigns)) return preferred;
+    return findLegalPath(this.nodes, origin, destination, this.roadDesigns) ?? preferred;
   }
 
   private canSpawnPedestrian(route: readonly GridNode[]): boolean {
@@ -978,7 +1011,7 @@ function sanitizeTiming(timing: Readonly<SignalTiming>): SignalTiming {
     eastWestGreenSeconds: clamp(timing.eastWestGreenSeconds, 10, 120),
     yellowSeconds: clamp(timing.yellowSeconds, 2, 8),
     allRedSeconds: clamp(timing.allRedSeconds, 0.5, 5),
-    pedestrianSeconds: clamp(timing.pedestrianSeconds, 5, 60),
+    pedestrianSeconds: clamp(timing.pedestrianSeconds, 21, 60),
   };
 }
 
@@ -1025,7 +1058,7 @@ function phaseDuration(
   return timing.allRedSeconds;
 }
 
-function vehicleMayProceed(
+export function vehicleMayProceed(
   phase: SignalPhase,
   axis: "x" | "z",
   distanceToStopLine: number,
@@ -1041,12 +1074,29 @@ function vehicleMayProceed(
   return distanceToStopLine <= comfortableStopDistance;
 }
 
-function positionVehicle(vehicle: VehicleAgent): PositionedAgent {
+export function safeIntersectionApproachSpeed(
+  desiredSpeed: number,
+  distanceToIntersection: number,
+): number {
+  if (distanceToIntersection >= 30) return desiredSpeed;
+  const urbanIntersectionCap = 20 * 0.44704;
+  const approachFactor = clamp((distanceToIntersection - 6) / 24, 0.35, 1);
+  return Math.min(desiredSpeed, urbanIntersectionCap * approachFactor);
+}
+
+function positionVehicle(
+  vehicle: VehicleAgent,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): PositionedAgent {
+  const lane = vehicleLane(vehicle, vehicle.segmentIndex, designs);
+  const lateralOffset = lane === 0 ? 5 : 1.8;
   return positionAlongPath(
     vehicle.path,
     vehicle.segmentIndex,
     vehicle.distanceOnSegment,
-    3.1,
+    roadLaneCount(vehicle.path, vehicle.segmentIndex, designs) > 1
+      ? lateralOffset
+      : 3.1,
   );
 }
 
@@ -1139,16 +1189,178 @@ function positionAlongPath(
   };
 }
 
-function vehicleSegmentKey(vehicle: VehicleAgent): string {
-  const start = vehicle.path[vehicle.segmentIndex];
-  const end = vehicle.path[vehicle.segmentIndex + 1];
-  return start && end ? `${start.id}>${end.id}` : `complete-${vehicle.id}`;
+function vehicleSegmentKey(
+  vehicle: VehicleAgent,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): string {
+  return vehiclePathSegmentKey(
+    vehicle.path,
+    vehicle.segmentIndex,
+    vehicle.lanePreference,
+    designs,
+    vehicle.id,
+  );
 }
 
-function nextVehicleSegmentKey(vehicle: VehicleAgent): string | null {
-  const start = vehicle.path[vehicle.segmentIndex + 1];
-  const end = vehicle.path[vehicle.segmentIndex + 2];
-  return start && end ? `${start.id}>${end.id}` : null;
+function nextVehicleSegmentKey(
+  vehicle: VehicleAgent,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): string | null {
+  const nextIndex = vehicle.segmentIndex + 1;
+  if (!vehicle.path[nextIndex + 1]) return null;
+  return vehiclePathSegmentKey(
+    vehicle.path,
+    nextIndex,
+    vehicle.lanePreference,
+    designs,
+    vehicle.id,
+  );
+}
+
+function vehiclePathSegmentKey(
+  path: readonly GridNode[],
+  segmentIndex: number,
+  lanePreference: 0 | 1,
+  designs: ReadonlyMap<string, FeatureDesign>,
+  vehicleId?: number,
+): string {
+  const start = path[segmentIndex];
+  const end = path[segmentIndex + 1];
+  if (!start || !end) return `complete-${vehicleId ?? "route"}`;
+  const lane = laneForPath(path, segmentIndex, lanePreference, designs);
+  return `${start.id}>${end.id}:lane-${lane}`;
+}
+
+function vehicleLane(
+  vehicle: VehicleAgent,
+  segmentIndex: number,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): 0 | 1 {
+  return laneForPath(
+    vehicle.path,
+    segmentIndex,
+    vehicle.lanePreference,
+    designs,
+  );
+}
+
+function laneForPath(
+  path: readonly GridNode[],
+  segmentIndex: number,
+  preference: 0 | 1,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): 0 | 1 {
+  if (roadLaneCount(path, segmentIndex, designs) === 1) return 0;
+  const start = path[segmentIndex];
+  const intersection = path[segmentIndex + 1];
+  const after = path[segmentIndex + 2];
+  if (!start || !intersection || !after) return preference;
+  const incomingX = intersection.x - start.x;
+  const incomingZ = intersection.z - start.z;
+  const outgoingX = after.x - intersection.x;
+  const outgoingZ = after.z - intersection.z;
+  const turn = incomingX * outgoingZ - incomingZ * outgoingX;
+  if (Math.abs(turn) < 0.001) return preference;
+  return turn > 0 ? 0 : 1;
+}
+
+function roadLaneCount(
+  path: readonly GridNode[],
+  segmentIndex: number,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): 1 | 2 {
+  const start = path[segmentIndex];
+  const end = path[segmentIndex + 1];
+  if (!start || !end) return 1;
+  return physicalLaneCount(
+    designs.get(roadFeatureId(start, end))?.laneDelta ?? 0,
+  );
+}
+
+export function physicalLaneCount(laneDelta: -1 | 0 | 1): 1 | 2 {
+  return laneDelta === 1 ? 2 : 1;
+}
+
+function roadFeatureId(start: GridNode, end: GridNode): string {
+  if (start.row === end.row) {
+    const street = PENN_STREETS[start.row];
+    const lower = Math.min(start.column, end.column);
+    const upper = Math.max(start.column, end.column);
+    return `${street.slug}-${PENN_AVENUES[lower].short}-${PENN_AVENUES[upper].short}`;
+  }
+  const avenue = PENN_AVENUES[start.column];
+  const lower = Math.min(start.row, end.row);
+  const upper = Math.max(start.row, end.row);
+  return `${avenue.short}-${PENN_STREETS[lower].slug}-${PENN_STREETS[upper].slug}`;
+}
+
+function pathObeysLaneDirections(
+  path: readonly GridNode[],
+  designs: ReadonlyMap<string, FeatureDesign>,
+): boolean {
+  for (let index = 0; index < path.length - 1; index += 1) {
+    if (!segmentDirectionAllowed(path[index], path[index + 1], designs)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function segmentDirectionAllowed(
+  start: GridNode,
+  end: GridNode,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): boolean {
+  const direction = designs.get(roadFeatureId(start, end))?.laneDirection ?? "two-way";
+  const forward = end.column > start.column || end.row > start.row;
+  return laneDirectionAllowsMovement(direction, forward);
+}
+
+export function laneDirectionAllowsMovement(
+  direction: FeatureDesign["laneDirection"],
+  forward: boolean,
+): boolean {
+  if (direction === "two-way") return true;
+  return direction === "forward" ? forward : !forward;
+}
+
+function findLegalPath(
+  nodes: readonly (readonly GridNode[])[],
+  origin: GridNode,
+  destination: GridNode,
+  designs: ReadonlyMap<string, FeatureDesign>,
+): GridNode[] | null {
+  const queue: GridNode[] = [origin];
+  const previous = new Map<string, GridNode | null>([[origin.id, null]]);
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) break;
+    if (current.id === destination.id) break;
+    const neighbors = [
+      nodes[current.column - 1]?.[current.row],
+      nodes[current.column + 1]?.[current.row],
+      nodes[current.column]?.[current.row - 1],
+      nodes[current.column]?.[current.row + 1],
+    ].filter((candidate): candidate is GridNode => candidate !== undefined);
+    for (const neighbor of neighbors) {
+      if (
+        previous.has(neighbor.id) ||
+        !segmentDirectionAllowed(current, neighbor, designs)
+      ) {
+        continue;
+      }
+      previous.set(neighbor.id, current);
+      queue.push(neighbor);
+    }
+  }
+  if (!previous.has(destination.id)) return null;
+  const path: GridNode[] = [];
+  let current: GridNode | null = destination;
+  while (current) {
+    path.push(current);
+    current = previous.get(current.id) ?? null;
+  }
+  return path.reverse();
 }
 
 function pedestrianSegmentKey(pedestrian: PedestrianAgent): string {

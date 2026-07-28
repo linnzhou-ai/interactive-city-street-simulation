@@ -55,7 +55,7 @@ describe("IntersectionSignalController", () => {
       eastWestGreenSeconds: 120,
       yellowSeconds: 2,
       allRedSeconds: 5,
-      pedestrianSeconds: 5,
+      pedestrianSeconds: 21,
     });
   });
 });

@@ -841,6 +841,7 @@ function applyBuildTool(tool: BuildTool): void {
 
 function syncDesign(): void {
   renderer.setDesigns(designs);
+  simulation.setRoadDesigns(designs);
   const impact: DesignImpact = {
     laneCapacityDelta: 0,
     bikeLanes: 0,
@@ -1182,7 +1183,7 @@ function formatVolume(volume: number): string {
 }
 
 function formatLaneChange(laneDelta: number): string {
-  if (laneDelta > 0) return "+1 vehicle lane";
+  if (laneDelta > 0) return "+1 through lane each direction";
   if (laneDelta < 0) return "−1 vehicle lane";
   return "Existing lane count";
 }

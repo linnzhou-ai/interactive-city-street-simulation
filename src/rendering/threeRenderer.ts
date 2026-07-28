@@ -1897,6 +1897,20 @@ export class ThreeRenderer {
       );
       line.position.y = RENDER_HEIGHTS.selectionSurface + 0.01;
       this.designGroup.add(line);
+      if (design.laneDelta === 1) {
+        for (const side of [-1, 1]) {
+          const laneDivider = createTrimmedOffsetSegmentMesh(
+            feature,
+            side * 3.25,
+            0.14,
+            0.025,
+            this.materials.whiteLine,
+            ROAD_MARKING_END_INSET,
+          );
+          laneDivider.position.y = RENDER_HEIGHTS.selectionSurface + 0.015;
+          this.designGroup.add(laneDivider);
+        }
+      }
     }
     if (design.bikeLane) {
       for (const side of [-1, 1]) {
@@ -2349,6 +2363,28 @@ function createTrimmedSegmentMesh(
   object.position.copy(trimmedStart).add(trimmedEnd).multiplyScalar(0.5);
   object.position.y = height / 2;
   object.rotation.y = Math.atan2(direction.x, direction.z) + Math.PI / 2;
+  return object;
+}
+
+function createTrimmedOffsetSegmentMesh(
+  feature: DistrictFeature,
+  offset: number,
+  width: number,
+  height: number,
+  material: THREE.Material,
+  endInset: number,
+): THREE.Mesh {
+  const object = createTrimmedSegmentMesh(
+    feature,
+    width,
+    height,
+    material,
+    endInset,
+  );
+  const [start, end] = feature.path.map(geoToWorld);
+  const direction = end.clone().sub(start).normalize();
+  const normal = new THREE.Vector3(-direction.z, 0, direction.x);
+  object.position.addScaledVector(normal, offset);
   return object;
 }
 

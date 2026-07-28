@@ -1,5 +1,6 @@
 import type {
   DesignImpact,
+  FeatureDesign,
   ManualSignalTarget,
   PlacedBuilding,
   ScenarioSettings,
@@ -192,6 +193,10 @@ export class Simulation {
     this.updateMetrics();
   }
 
+  setRoadDesigns(designs: ReadonlyMap<string, FeatureDesign>): void {
+    this.traffic.setRoadDesigns(designs);
+  }
+
   setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
     this.buildingActivity = summarizeBuildingActivity(buildings);
     this.traffic.setBuildingDestinations(buildings);
@@ -247,14 +252,6 @@ export class Simulation {
     const metrics = this.traffic.getMetrics();
     this.state.metrics = {
       ...metrics,
-      congestion: Math.max(
-        0,
-        metrics.congestion - this.designImpact.laneCapacityDelta * 2,
-      ),
-      averageSpeedMph: Math.max(
-        0,
-        metrics.averageSpeedMph + this.designImpact.laneCapacityDelta * 0.7,
-      ),
       pedestrianWaitSeconds: Math.max(
         0,
         metrics.pedestrianWaitSeconds -
