@@ -2128,9 +2128,9 @@ export class ThreeRenderer {
       if (this.cameraMode !== "fly" || !this.looking) return;
       const deltaX = event.clientX - this.lastPointer.x;
       const deltaY = event.clientY - this.lastPointer.y;
-      this.flyYaw -= deltaX * 0.003;
+      this.flyYaw += deltaX * 0.003;
       this.flyPitch = THREE.MathUtils.clamp(
-        this.flyPitch - deltaY * 0.003,
+        this.flyPitch + deltaY * 0.003,
         -Math.PI / 2 + 0.04,
         Math.PI / 2 - 0.04,
       );
@@ -2256,9 +2256,9 @@ export class ThreeRenderer {
       ) {
         return;
       }
-      this.flyYaw -= event.movementX * 0.0022;
+      this.flyYaw += event.movementX * 0.0022;
       this.flyPitch = THREE.MathUtils.clamp(
-        this.flyPitch - event.movementY * 0.0022,
+        this.flyPitch + event.movementY * 0.0022,
         -Math.PI / 2 + 0.08,
         Math.PI / 2 - 0.08,
       );
