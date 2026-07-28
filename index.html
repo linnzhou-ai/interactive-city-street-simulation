@@ -90,6 +90,22 @@
         </section>
       </aside>
 
+      <aside id="selection-panel" class="selection-panel hud-panel" aria-labelledby="selection-title" hidden>
+        <header class="selection-heading">
+          <div>
+            <p id="selection-kicker" class="panel-kicker">Selected entity</p>
+            <h2 id="selection-title">Details</h2>
+          </div>
+          <button id="selection-close" class="icon-button" type="button" aria-label="Close details" title="Close details">&times;</button>
+        </header>
+        <p id="selection-summary" class="selection-summary"></p>
+        <dl id="selection-stats" class="selection-stats"></dl>
+        <section class="selection-connections" aria-labelledby="selection-connections-title">
+          <p id="selection-connections-title" class="panel-kicker">Connections</p>
+          <ol id="selection-connections" class="connection-list"></ol>
+        </section>
+      </aside>
+
       <aside class="controls-panel hud-panel" aria-labelledby="scenario-title">
         <div class="panel-heading">
           <div>

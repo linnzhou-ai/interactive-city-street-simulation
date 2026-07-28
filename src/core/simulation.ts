@@ -9,6 +9,7 @@ import {
 import { createInitialLandUse, updateLandUse } from "./landUse";
 import { MobilitySystem, type MobilitySnapshot } from "./mobility";
 import { OUTSIDE_FREIGHT_BUILDING_ID } from "./network";
+import { deriveBuildingConnections } from "./observability";
 import { advancePopulation, createPopulation } from "./population";
 import { calendarFromElapsedDays, cityMinutesPerSecond } from "./timeScale";
 import type { CitySectionDefinition, CitySystemEvent, TimeHorizon } from "../models/cityTypes";
@@ -221,6 +222,7 @@ export class Simulation {
       people: economy.people,
       households: economy.households,
       buildings: infrastructure.buildings,
+      buildingConnections: deriveBuildingConnections(economy.people, economy.tripRequests),
       network: this.mobility.getNetwork(),
       economy: economy.economy,
       landUse: initialLand.landUse,
@@ -286,6 +288,7 @@ export class Simulation {
     this.state.households = economy.households;
     this.state.people = economy.people;
     this.state.buildings = economy.buildings;
+    this.state.buildingConnections = deriveBuildingConnections(economy.people, economy.tripRequests);
     this.state.economy = economy.economy;
     if (this.settings.timeHorizon === "day") this.mobility.consumeTrips(economy.tripRequests);
     this.refreshInfrastructure(1);
@@ -341,7 +344,7 @@ export class Simulation {
   private generateBackgroundTrips(step: number): void {
     const city = this.state.city.metrics;
     const vehicleRate = clamp(city.vehicleTripsDaily / 9_000, 0.4, 18);
-    const pedestrianRate = clamp(city.pedestrianTripsDaily / 7_000, 0.4, 16);
+    const pedestrianRate = clamp(city.pedestrianTripsDaily / 1_800, 0.8, 16);
     const freightRate = clamp(city.freightTripsDaily / 45, 0.1, 12);
     this.demandCredits.vehicle += (step * vehicleRate) / 60;
     this.demandCredits.pedestrian += (step * pedestrianRate) / 60;
@@ -362,15 +365,25 @@ export class Simulation {
   }
 
   private createLocalTrip(mode: "car" | "walk", purpose: ActivityType): TripRequest {
-    const buildings = this.state.buildings;
     const sequence = this.nextTripSequence++;
-    const origin = buildings[sequence % buildings.length]!;
-    let destination = buildings[(sequence * 3 + 1) % buildings.length]!;
-    if (destination.id === origin.id) destination = buildings[(sequence + 1) % buildings.length]!;
+    const eligiblePeople = mode === "car"
+      ? this.state.people.filter((person) => person.ageGroup === "adult")
+      : this.state.people;
+    const person = eligiblePeople[sequence % eligiblePeople.length]!;
+    const originBuildingId = person.currentBuildingId;
+    const scheduledDestination = person.schedule.find(
+      (activity) => activity.activity === purpose && activity.buildingId !== originBuildingId,
+    );
+    const fallbackDestination = person.schedule.find(
+      (activity) => activity.buildingId !== originBuildingId,
+    );
+    const destinationBuildingId = scheduledDestination?.buildingId ?? fallbackDestination?.buildingId ?? person.homeBuildingId;
     return {
       id: `ambient-${mode}-${sequence}`,
-      originBuildingId: origin.id,
-      destinationBuildingId: destination.id,
+      personId: person.id,
+      travelerAgeGroup: person.ageGroup,
+      originBuildingId,
+      destinationBuildingId,
       mode,
       purpose,
       createdMinute: Math.floor(this.cityMinute),

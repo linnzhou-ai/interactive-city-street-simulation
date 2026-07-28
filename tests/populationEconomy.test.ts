@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { advanceEconomy } from "../src/core/economy";
 import { advancePopulation, createPopulation } from "../src/core/population";
+import { deriveBuildingConnections } from "../src/core/observability";
 import type { Building } from "../src/models/types";
 
 describe("population", () => {
@@ -17,6 +18,8 @@ describe("population", () => {
     );
     expect(first.households.some((household) => household.familySize > 1)).toBe(true);
     expect(first.people.every((person) => person.homeBuildingId.startsWith("home-"))).toBe(true);
+    expect(first.people.every((person) => person.name.trim().split(" ").length === 2)).toBe(true);
+    expect(new Set(first.people.map((person) => person.name)).size).toBe(first.people.length);
     expect(first.people.filter((person) => person.ageGroup === "child").every((person) => person.schoolBuildingId === "school"))
       .toBe(true);
     expect(first.people.filter((person) => person.ageGroup === "adult").some((person) => person.workBuildingId !== undefined))
@@ -62,6 +65,7 @@ describe("population", () => {
 
     expect(driving.tripRequests).toHaveLength(1);
     expect(driving.tripRequests[0]?.mode).toBe("car");
+    expect(driving.tripRequests[0]?.travelerAgeGroup).toBe("adult");
     expect(transit.tripRequests[0]?.mode).toBe("bus");
     expect(advancePopulation(driving.people, 480, population.buildings, {
       busAvailable: false,
@@ -123,6 +127,23 @@ describe("economy", () => {
     expect(first).toEqual(second);
     expect(first.economy.goodsExported).toBeGreaterThan(0);
     expect(first.tripRequests.some((trip) => trip.destinationBuildingId === "regional-entry"))
+      .toBe(true);
+  });
+
+  it("groups schedules and freight orders into inspectable building relationships", () => {
+    const population = createPopulation(createBuildings());
+    const economy = advanceEconomy({
+      ...population,
+      cityMinute: 1440,
+      freightEntryBuildingId: "regional-entry",
+    });
+    const connections = deriveBuildingConnections(economy.people, economy.tripRequests);
+
+    expect(connections.some((connection) => connection.kind === "commute" && connection.personIds.length > 0))
+      .toBe(true);
+    expect(connections.some((connection) => connection.kind === "customer" && connection.personIds.length > 0))
+      .toBe(true);
+    expect(connections.some((connection) => connection.kind === "supply" && connection.volume > 0))
       .toBe(true);
   });
 

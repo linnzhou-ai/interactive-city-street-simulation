@@ -68,6 +68,8 @@ export function summarizeCitySection(
   const networkCapacity = sum(links.map((link) => link.roadCapacityDaily + link.transitCapacityDaily));
   const totalUtilityCapacity = sum(Object.values(utilityCapacity));
   const maintenanceCostDaily = developedFloorArea * 0.022 + networkCapacity * 0.011 + totalUtilityCapacity * 0.09;
+  const annualizedMigrationIn = sum(districts.map((district) => Math.max(0, district.annualizedMigration)));
+  const annualizedMigrationOut = sum(districts.map((district) => Math.max(0, -district.annualizedMigration)));
 
   return {
     population: round(population),
@@ -100,6 +102,9 @@ export function summarizeCitySection(
     pedestrianTripsDaily: round(sum(districts.map((district) => district.pedestrianTripsDaily))),
     freightTripsDaily: round(sum(districts.map((district) => district.freightTripsDaily))),
     externalCommutersDaily: round(sum(districts.map((district) => district.externalCommutersDaily))),
+    annualizedMigrationIn: round(annualizedMigrationIn),
+    annualizedMigrationOut: round(annualizedMigrationOut),
+    annualizedNetMigration: round(annualizedMigrationIn - annualizedMigrationOut),
     dailyTrips: round(sum(districts.map((district) => district.dailyTrips))),
     congestionPercent: round(weightedAverage(districts, "congestionPercent")),
     transitSharePercent: round(weightedAverage(districts, "transitSharePercent")),

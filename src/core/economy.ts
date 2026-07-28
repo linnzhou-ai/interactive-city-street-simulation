@@ -31,6 +31,10 @@ const DAILY_WAGE: Record<IncomeBand, number> = {
 const RETAIL_PRICE = 10;
 const EXPORT_PRICE = 6;
 
+export function dailyWageForIncome(incomeBand: IncomeBand): number {
+  return DAILY_WAGE[incomeBand];
+}
+
 export function advanceEconomy(input: EconomyStepInput): EconomyStepResult {
   const people = input.people.map(clonePerson).sort(compareIds);
   const households = input.households.map((household) => ({ ...household, memberIds: [...household.memberIds] }));

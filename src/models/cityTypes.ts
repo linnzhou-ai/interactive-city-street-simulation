@@ -156,6 +156,9 @@ export interface CityAggregateMetrics {
   pedestrianTripsDaily: number;
   freightTripsDaily: number;
   externalCommutersDaily: number;
+  annualizedMigrationIn: number;
+  annualizedMigrationOut: number;
+  annualizedNetMigration: number;
   dailyTrips: number;
   congestionPercent: number;
   transitSharePercent: number;

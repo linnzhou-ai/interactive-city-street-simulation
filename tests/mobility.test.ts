@@ -23,6 +23,7 @@ function trip(
   return {
     id,
     personId: `person-${id}`,
+    travelerAgeGroup: mode === "walk" ? "senior" : "adult",
     originBuildingId,
     destinationBuildingId,
     mode,
@@ -92,6 +93,13 @@ describe("street network routing", () => {
 });
 
 describe("MobilitySystem", () => {
+  it("preserves a walker's age group for movement and inspection", () => {
+    const mobility = new MobilitySystem(buildings);
+    expect(mobility.submitTrip(trip("senior-walker", "walk"))).toBe(true);
+
+    expect(mobility.getSnapshot().pedestrians[0]?.ageGroup).toBe("senior");
+  });
+
   it("applies live speed, bus-headway, and road-capacity controls without reset", () => {
     const mobility = new MobilitySystem(buildings, {
       busHeadwayMinutes: 10,

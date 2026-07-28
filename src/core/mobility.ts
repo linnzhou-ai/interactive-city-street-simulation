@@ -391,7 +391,7 @@ export class MobilitySystem {
       elapsedSeconds: 0,
       route: plan.points,
       waitSeconds: 0,
-      ageGroup: "adult",
+      ageGroup: request.travelerAgeGroup ?? "adult",
       activity: request.purpose === "delivery" || request.purpose === "service"
         ? "work"
         : request.purpose,

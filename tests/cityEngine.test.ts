@@ -91,6 +91,18 @@ describe("city section model", () => {
     expect(state.districts.every((district) => district.householdWealth >= 0)).toBe(true);
   });
 
+  it("reports migration in, migration out, and net migration separately", () => {
+    const state = advanceCitySection(createCitySectionState(createDemoCitySectionDefinition()), 30).state;
+
+    expect(state.metrics.annualizedMigrationIn).toBeGreaterThanOrEqual(0);
+    expect(state.metrics.annualizedMigrationOut).toBeGreaterThanOrEqual(0);
+    expect(state.metrics.annualizedNetMigration).toBeCloseTo(
+      state.metrics.annualizedMigrationIn - state.metrics.annualizedMigrationOut,
+      2,
+    );
+    expect(state.metrics.annualizedMigrationIn + state.metrics.annualizedMigrationOut).toBeGreaterThan(0);
+  });
+
   it("limits outside goods to each market's physical freight capacity", () => {
     const initial = createCitySectionState(createDemoCitySectionDefinition());
     for (const district of initial.districts) {

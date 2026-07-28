@@ -10,6 +10,7 @@ export type IncomeBand = "low" | "middle" | "high";
 export type ActivityType = "home" | "work" | "school" | "shopping" | "leisure";
 export type UtilityKind = "power" | "water" | "waste";
 export type NetworkKind = "road" | "sidewalk" | "crosswalk" | "bus-stop" | "access";
+export type BuildingConnectionKind = "commute" | "customer" | "supply";
 
 export interface RoutePoint {
   nodeId: string;
@@ -57,6 +58,7 @@ export interface ScheduledActivity {
 
 export interface Person {
   id: string;
+  name: string;
   householdId: string;
   age: number;
   ageGroup: AgeGroup;
@@ -122,6 +124,15 @@ export interface Building {
   efficiency: number;
   pollution: number;
   wasteStored: number;
+}
+
+export interface BuildingConnection {
+  id: string;
+  kind: BuildingConnectionKind;
+  fromBuildingId: string;
+  toBuildingId: string;
+  volume: number;
+  personIds: string[];
 }
 
 export interface ZoneParcel {
@@ -237,6 +248,7 @@ export interface SimulationEvent {
 export interface TripRequest {
   id: string;
   personId?: string;
+  travelerAgeGroup?: AgeGroup;
   originBuildingId: string;
   destinationBuildingId: string;
   mode: TravelMode;
@@ -300,6 +312,7 @@ export interface SimulationState {
   people: Person[];
   households: Household[];
   buildings: Building[];
+  buildingConnections: BuildingConnection[];
   network: StreetNetwork;
   economy: EconomyState;
   landUse: LandUseState;

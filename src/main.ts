@@ -1,9 +1,10 @@
 import "./styles.css";
+import { dailyWageForIncome } from "./core/economy";
 import { Simulation } from "./core/simulation";
 import { formatLongDate } from "./core/timeScale";
 import type { TimeHorizon } from "./models/cityTypes";
-import type { SimulationState } from "./models/types";
-import { ThreeRenderer } from "./rendering/threeRenderer";
+import type { Building, Person, SimulationState } from "./models/types";
+import { ThreeRenderer, type SceneSelection } from "./rendering/threeRenderer";
 
 type Layer = "overview" | "people" | "economy" | "infrastructure" | "land-use";
 
@@ -40,11 +41,23 @@ const generatedCommutes = requireElement<HTMLElement>("generated-commutes");
 const generatedShopping = requireElement<HTMLElement>("generated-shopping");
 const generatedPedestrians = requireElement<HTMLElement>("generated-pedestrians");
 const generatedFreight = requireElement<HTMLElement>("generated-freight");
+const selectionPanel = requireElement<HTMLElement>("selection-panel");
+const selectionKicker = requireElement<HTMLElement>("selection-kicker");
+const selectionTitle = requireElement<HTMLElement>("selection-title");
+const selectionSummary = requireElement<HTMLElement>("selection-summary");
+const selectionStats = requireElement<HTMLElement>("selection-stats");
+const selectionConnectionsTitle = requireElement<HTMLElement>("selection-connections-title");
+const selectionConnections = requireElement<HTMLOListElement>("selection-connections");
+const selectionClose = requireElement<HTMLButtonElement>("selection-close");
 const layerTabs = [...document.querySelectorAll<HTMLButtonElement>(".layer-tab")];
 const horizonButtons = [...document.querySelectorAll<HTMLButtonElement>(".horizon-control button")];
 
 const simulation = new Simulation();
-const renderer = new ThreeRenderer(canvas);
+let activeSelection: SceneSelection = null;
+const renderer = new ThreeRenderer(canvas, (selection) => {
+  activeSelection = selection;
+  updateInterface();
+});
 let previousTimestamp = performance.now();
 let activeLayer: Layer = "overview";
 
@@ -79,16 +92,16 @@ const views: Record<Layer, LayerView> = {
     inspector: [
       entry("Children", (state) => number(sumDistricts(state, (district) => district.children))),
       entry("Adults", (state) => number(sumDistricts(state, (district) => district.adults))),
-      entry("Seniors", (state) => number(sumDistricts(state, (district) => district.seniors))),
-      entry("Annual migration", (state) => signedNumber(sumDistricts(state, (district) => district.annualizedMigration))),
+      entry("Moving in / year", (state) => number(state.city.metrics.annualizedMigrationIn)),
+      entry("Moving out / year", (state) => number(state.city.metrics.annualizedMigrationOut)),
     ],
     metrics: [
       entry("Population", (state) => number(state.city.metrics.population), "District-level demographic totals"),
       entry("Households", (state) => number(state.city.metrics.households), "Average modeled household size"),
-      entry("Unemployment", (state) => percent(state.city.metrics.unemploymentPercent), "Labor force without matched jobs"),
-      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Population against housing capacity"),
+      entry("Moving in", (state) => number(state.city.metrics.annualizedMigrationIn), "Annualized arrivals under current conditions"),
+      entry("Moving out", (state) => number(state.city.metrics.annualizedMigrationOut), "Annualized departures under current conditions"),
+      entry("Net migration", (state) => signedNumber(state.city.metrics.annualizedNetMigration), "Arrivals less departures per year"),
       entry("Happiness", (state) => percent(state.city.metrics.happiness), "Jobs, goods, services, rent and travel"),
-      entry("Annual migration", (state) => signedNumber(sumDistricts(state, (district) => district.annualizedMigration)), "Current conditions annualized"),
     ],
   },
   economy: {
@@ -164,6 +177,14 @@ pauseButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   simulation.reset();
+  activeSelection = null;
+  renderer.setSelection(null);
+  updateInterface();
+});
+
+selectionClose.addEventListener("click", () => {
+  activeSelection = null;
+  renderer.setSelection(null);
   updateInterface();
 });
 
@@ -231,12 +252,122 @@ function updateInterface(): void {
     requireElement(`inspector-label-${index + 1}`).textContent = display.label;
     requireElement(`inspector-value-${index + 1}`).textContent = display.value(state);
   });
-  view.metrics.forEach((display, index) => {
+  view.metrics.slice(0, 6).forEach((display, index) => {
     requireElement(`metric-label-${index + 1}`).textContent = display.label;
     requireElement(`metric-value-${index + 1}`).textContent = display.value(state);
     requireElement(`metric-detail-${index + 1}`).textContent = display.detail ?? "";
   });
   renderEvents(state);
+  renderSelection(state);
+}
+
+function renderSelection(state: Readonly<SimulationState>): void {
+  selectionPanel.hidden = activeSelection === null;
+  if (activeSelection === null) return;
+
+  if (activeSelection.kind === "building") {
+    const building = state.buildings.find((candidate) => candidate.id === activeSelection?.id);
+    if (building === undefined) {
+      clearSelection();
+      return;
+    }
+    renderBuildingSelection(building, state);
+    return;
+  }
+
+  const person = state.people.find((candidate) => candidate.id === activeSelection?.id);
+  if (person === undefined) {
+    clearSelection();
+    return;
+  }
+  renderPersonSelection(person, state);
+}
+
+function renderBuildingSelection(building: Building, state: Readonly<SimulationState>): void {
+  selectionKicker.textContent = `${capitalize(building.zone)} building`;
+  selectionTitle.textContent = building.name;
+  selectionSummary.textContent = `${building.floors} floors operating at ${percent(building.efficiency * 100)} efficiency with ${percent(averageUtilityService(building) * 100)} utility service.`;
+  const dailyWages = building.employeeIds.reduce((total, personId) => {
+    const employee = state.people.find((person) => person.id === personId);
+    return total + (employee === undefined ? 0 : dailyWageForIncome(employee.incomeBand));
+  }, 0);
+  renderStatRows([
+    ["Residents", `${building.residentIds.length} / ${building.residentCapacity}`],
+    ["Workforce", `${building.employeeIds.length} / ${building.jobCapacity}`],
+    ["Daily wages", currency(dailyWages)],
+    ["Goods inventory", formatAmount(building.goodsInventory)],
+    ["Daily production", formatAmount(building.productionRate * building.efficiency)],
+    ["Customer demand", formatAmount(building.customerDemand)],
+    ["Land value", currency(building.landValue)],
+    ["Daily rent", currency(building.rent)],
+  ]);
+
+  selectionConnectionsTitle.textContent = "Connected activity";
+  const buildingById = new Map(state.buildings.map((candidate) => [candidate.id, candidate]));
+  const relationships = state.buildingConnections.filter(
+    (connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id,
+  );
+  renderConnectionRows(relationships.map((connection) => {
+    const outbound = connection.fromBuildingId === building.id;
+    const counterpartId = outbound ? connection.toBuildingId : connection.fromBuildingId;
+    const counterpart = buildingById.get(counterpartId)?.name ?? "Outside city market";
+    if (connection.kind === "commute") {
+      return `${number(connection.volume)} ${connection.volume === 1 ? "resident" : "residents"} ${outbound ? "commute to" : "arrive from"} ${counterpart}`;
+    }
+    if (connection.kind === "customer") {
+      return `${number(connection.volume)} ${connection.volume === 1 ? "customer" : "customers"} ${outbound ? "shop at" : "come from"} ${counterpart}`;
+    }
+    return `${formatAmount(connection.volume)} goods ${outbound ? "sent to" : "supplied by"} ${counterpart}`;
+  }));
+}
+
+function renderPersonSelection(person: Person, state: Readonly<SimulationState>): void {
+  const buildingById = new Map(state.buildings.map((building) => [building.id, building]));
+  const currentBuilding = buildingById.get(person.currentBuildingId)?.name ?? "In transit";
+  selectionKicker.textContent = "Representative resident";
+  selectionTitle.textContent = person.name;
+  selectionSummary.textContent = `${person.age}-year-old ${person.incomeBand}-income resident, currently ${person.currentActivity} at ${currentBuilding}.`;
+  renderStatRows([
+    ["Home", buildingById.get(person.homeBuildingId)?.name ?? "Unknown"],
+    ["Workplace", person.workBuildingId === undefined ? "Not employed" : buildingById.get(person.workBuildingId)?.name ?? "Outside city"],
+    ["Preferred travel", capitalize(person.preferredMode)],
+    ["Cash", currency(person.money)],
+    ["Happiness", percent(person.happiness)],
+    ["Trips completed", number(person.tripsCompleted)],
+  ]);
+
+  selectionConnectionsTitle.textContent = "Daily route";
+  renderConnectionRows(person.schedule.map((activity) => {
+    const destination = buildingById.get(activity.buildingId)?.name ?? "Outside city";
+    return `${formatClock(activity.startMinute)}-${formatClock(activity.endMinute)}  ${capitalize(activity.activity)} at ${destination}`;
+  }));
+}
+
+function renderStatRows(rows: ReadonlyArray<readonly [string, string]>): void {
+  selectionStats.replaceChildren(...rows.map(([label, value]) => {
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    const description = document.createElement("dd");
+    term.textContent = label;
+    description.textContent = value;
+    row.append(term, description);
+    return row;
+  }));
+}
+
+function renderConnectionRows(rows: readonly string[]): void {
+  const values = rows.length > 0 ? rows : ["No connected activity recorded today."];
+  selectionConnections.replaceChildren(...values.map((value) => {
+    const row = document.createElement("li");
+    row.textContent = value;
+    return row;
+  }));
+}
+
+function clearSelection(): void {
+  activeSelection = null;
+  renderer.setSelection(null);
+  selectionPanel.hidden = true;
 }
 
 function renderEvents(state: Readonly<SimulationState>): void {
@@ -321,6 +452,18 @@ function number(value: number): string {
 
 function signedNumber(value: number): string {
   return `${value >= 0 ? "+" : ""}${number(value)}`;
+}
+
+function averageUtilityService(building: Building): number {
+  return (building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3;
+}
+
+function formatClock(minute: number): string {
+  if (minute >= 1440) return "12:00a";
+  const hours = Math.floor(minute / 60);
+  const minutes = minute % 60;
+  const displayHour = hours % 12 || 12;
+  return `${displayHour}:${String(minutes).padStart(2, "0")}${hours < 12 ? "a" : "p"}`;
 }
 
 function area(value: number): string {

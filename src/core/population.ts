@@ -45,6 +45,9 @@ const STARTING_MONEY: Record<IncomeBand, number> = {
   high: 900,
 };
 
+const FIRST_NAMES = ["Avery", "Jordan", "Maya", "Theo", "Sofia", "Miles", "Nora", "Eli", "Zoe"];
+const LAST_NAMES = ["Chen", "Patel", "Rivera", "Kim", "Johnson", "Nguyen"];
+
 export function createPopulation(inputBuildings: readonly Building[]): PopulationState {
   const buildings = inputBuildings.map(cloneBuilding);
   const homes = buildings
@@ -120,6 +123,7 @@ export function advancePopulation(
       requests.set(id, {
         id,
         personId: person.id,
+        travelerAgeGroup: person.ageGroup,
         originBuildingId: origin.id,
         destinationBuildingId: destination.id,
         mode: chooseMode(person, origin, destination, conditions),
@@ -148,6 +152,7 @@ function createPerson(
   const ageGroup = getAgeGroup(age);
   return {
     id,
+    name: personName(id),
     householdId,
     age,
     ageGroup,
@@ -161,6 +166,11 @@ function createPerson(
     money: STARTING_MONEY[incomeBand],
     tripsCompleted: 0,
   };
+}
+
+function personName(id: string): string {
+  const index = Math.max(0, Number.parseInt(id.replace("person-", ""), 10) - 1);
+  return `${FIRST_NAMES[index % FIRST_NAMES.length]} ${LAST_NAMES[Math.floor(index / FIRST_NAMES.length) % LAST_NAMES.length]}`;
 }
 
 function assignDestinations(people: Person[], buildings: Building[]): void {
