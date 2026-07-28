@@ -35,15 +35,16 @@ const WORLD_SIZE = 5_200;
 const RENDER_HEIGHTS = {
   ground: -0.08,
   lawn: 0.02,
+  lawnPatch: 0.055,
   blockCenter: 0.15,
   roadCenter: 0.04,
   roadSurface: 0.08,
   intersectionSurface: 0.105,
   sidewalkCenter: 0.15,
   sidewalkSurface: 0.29,
-  roadMarking: 0.14,
-  crosswalk: 0.18,
-  selectionSurface: 0.155,
+  roadMarking: 0.16,
+  crosswalk: 0.2,
+  selectionSurface: 0.22,
 } as const;
 const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
 const FLY_COLLIDER_RADIUS = 0.45;
@@ -376,7 +377,8 @@ export class ThreeRenderer {
     sun.shadow.camera.bottom = -1_050;
     sun.shadow.camera.near = 100;
     sun.shadow.camera.far = 2_500;
-    sun.shadow.bias = -0.0002;
+    sun.shadow.bias = -0.00035;
+    sun.shadow.normalBias = 0.06;
     this.scene.add(sun);
 
     const fill = new THREE.DirectionalLight("#b6d4e2", 1.1);
@@ -416,7 +418,7 @@ export class ThreeRenderer {
         this.materials.lawn,
       );
       lawn.rotation.x = -Math.PI / 2;
-      lawn.position.set(x, RENDER_HEIGHTS.lawn, z);
+      lawn.position.set(x, RENDER_HEIGHTS.lawnPatch, z);
       lawn.userData.walkable = true;
       this.scene.add(lawn);
     }
@@ -483,11 +485,15 @@ export class ThreeRenderer {
       (candidate) => candidate.kind === "intersection",
     )) {
       const position = geoToWorld(feature.path[0]);
+      const intersectionMaterial = this.materials.asphalt.clone();
+      intersectionMaterial.polygonOffset = true;
+      intersectionMaterial.polygonOffsetFactor = -1;
+      intersectionMaterial.polygonOffsetUnits = -1;
       const intersection = box(
         MAJOR_ROAD_WIDTH + 0.8,
         0.05,
         MAJOR_ROAD_WIDTH + 0.8,
-        this.materials.asphalt,
+        intersectionMaterial,
       );
       intersection.position.set(
         position.x,
@@ -1963,15 +1969,45 @@ function createWorldMaterials() {
     });
   return {
     ground: new THREE.MeshStandardMaterial({ color: "#71866d", roughness: 1 }),
-    lawn: new THREE.MeshStandardMaterial({ color: "#76976c", roughness: 1 }),
-    campusGrass: new THREE.MeshStandardMaterial({ color: "#87a978", roughness: 1 }),
+    lawn: new THREE.MeshStandardMaterial({
+      color: "#76976c",
+      roughness: 1,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
+    campusGrass: new THREE.MeshStandardMaterial({
+      color: "#87a978",
+      roughness: 1,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    }),
     blockPaving: new THREE.MeshStandardMaterial({ color: "#b7b3a3", roughness: 0.96 }),
     asphalt: new THREE.MeshStandardMaterial({ color: "#2c3337", roughness: 0.92 }),
     editedAsphalt: new THREE.MeshStandardMaterial({ color: "#242b2e", roughness: 0.88 }),
     sidewalk: new THREE.MeshStandardMaterial({ color: "#c7c5ba", roughness: 0.94 }),
-    yellowLine: new THREE.MeshStandardMaterial({ color: "#f1ca56", roughness: 0.75 }),
-    whiteLine: new THREE.MeshStandardMaterial({ color: "#f1efe8", roughness: 0.8 }),
-    bikeLane: new THREE.MeshStandardMaterial({ color: "#2ca79f", roughness: 0.84 }),
+    yellowLine: new THREE.MeshStandardMaterial({
+      color: "#f1ca56",
+      roughness: 0.75,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }),
+    whiteLine: new THREE.MeshStandardMaterial({
+      color: "#f1efe8",
+      roughness: 0.8,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }),
+    bikeLane: new THREE.MeshStandardMaterial({
+      color: "#2ca79f",
+      roughness: 0.84,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
     historicBrick: material(brickTexture),
     redBrick: material(redBrickTexture),
     rowhouseRed: material(redBrickTexture, "#c9826f"),
