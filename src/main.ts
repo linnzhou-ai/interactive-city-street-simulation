@@ -12,11 +12,13 @@ import type {
   LaneDirection,
   ManualSignalTarget,
   MapOverlayMode,
+  SceneHoverSelection,
   SignalControlMode,
   SignalTiming,
 } from "./models/types";
 import type {
   BuildingConnectionKind,
+  BuildingTrafficAttribution,
   DetailedBuilding,
   DetailedPerson,
   EntitySelection,
@@ -304,6 +306,22 @@ flowControls.addEventListener("change", () => {
   renderer.setVisibleFlowKinds(visible);
 });
 
+entityInspector.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLElement>("[data-road-focus]")
+    : null;
+  const segmentId = target?.dataset.roadFocus;
+  if (!segmentId) return;
+  const feature = features.find((candidate) => candidate.id === segmentId);
+  if (!feature) return;
+  renderer.setSelectedFeature(segmentId);
+  const [start, end = start] = feature.path;
+  renderer.flyTo({
+    longitude: (start.longitude + end.longitude) / 2,
+    latitude: (start.latitude + end.latitude) / 2,
+  }, cameraMode === "orbit" ? 330 : 180);
+});
+
 settingsButton.addEventListener("click", () => setSettingsOpen(true));
 settingsCloseButton.addEventListener("click", () => setSettingsOpen(false));
 settingsScrim.addEventListener("click", () => setSettingsOpen(false));
@@ -349,6 +367,7 @@ renderer.setSelectionHandler((feature) => {
 renderer.setEntitySelectionHandler((selection) => {
   selectedTrafficFeature = null;
   selectedEntity = selection;
+  renderer.setSelectedFeature(null);
   renderer.setSelectedEntity(selection);
   syncEntitySelectionState();
   entityInterfaceSignature = "";
@@ -730,6 +749,17 @@ function updateEntityInterface(): void {
   const selectedPerson = selectedEntity?.kind === "person"
     ? state.entities.people.find((person) => person.id === selectedEntity?.id)
     : undefined;
+  const selectedBuildingTraffic = selectedEntity?.kind === "building"
+    ? simulation.getBuildingTrafficAttribution(selectedEntity.id)
+    : null;
+  renderer.setTrafficFocusSegments(
+    selectedBuildingTraffic?.roads.slice(0, 8).map((road) => road.segmentId) ?? [],
+  );
+  const trafficSignature = selectedBuildingTraffic
+    ? `${selectedBuildingTraffic.totalTransportCost}:${selectedBuildingTraffic.roads.slice(0, 6)
+      .map((road) => `${road.segmentId}-${road.congestionPercent}-${road.attributedCongestionCost}`)
+      .join(",")}`
+    : "no-building-traffic";
   const signature = [
     state.entities.lastUpdatedDay,
     selectedPerson?.currentActivity ?? "static",
@@ -739,6 +769,7 @@ function updateEntityInterface(): void {
     state.roadTraffic.find((road) => road.segmentId === selectedTrafficFeature?.id)?.congestionPercent ?? 0,
     analysisOverlay.value,
     appMode,
+    trafficSignature,
   ].join(":");
   if (signature === entityInterfaceSignature) return;
   entityInterfaceSignature = signature;
@@ -807,6 +838,7 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   const netLabel = civic ? "Balance" : "Net";
   const maxFlow = Math.max(1, accounting.operatingRevenue, accounting.operatingCost);
   const cityTraffic = state.city.metrics;
+  const traffic = simulation.getBuildingTrafficAttribution(building.id);
   const generatedTrips = connectionTotals.commute + connectionTotals.customer + connectionTotals.supply;
   const primaryStats = housing
     ? [
@@ -853,13 +885,23 @@ function renderBuildingInspector(building: DetailedBuilding): void {
         <p class="entity-diagnosis">${escapeHtml(accounting.diagnosis)}</p>
       </section>
       <section class="traffic-impact">
-        <h4>Traffic consequence</h4>
+        <h4>Transport cost</h4>
         <div class="impact-chain">
-          <span><small>Generated</small><b>${Math.round(generatedTrips)} trips</b></span><i>→</i>
-          <span><small>Network</small><b>${cityTraffic.averageTrafficDelayMinutes.toFixed(1)} min delay</b></span><i>→</i>
-          <span><small>This building</small><b>${formatDetailedMoney(accounting.transportCost)} transport</b></span>
+          <span><small>Base travel</small><b>${formatDetailedMoney(traffic?.baseTransportCost ?? accounting.transportCost)}</b></span><i>+</i>
+          <span><small>Congestion</small><b>${formatDetailedMoney(traffic?.congestionSurcharge ?? 0)}</b></span><i>→</i>
+          <span><small>Total daily</small><b>${formatDetailedMoney(traffic?.totalTransportCost ?? accounting.transportCost)}</b></span>
         </div>
-        <p>Congestion delays employees, customers, and deliveries. It raises transport costs and can reduce staffing, sales, land value, and resident happiness.</p>
+        <div class="transport-cost-summary">
+          <span><small>Deliveries</small><b>${formatDetailedMoney(traffic?.deliveryTransportCost ?? accounting.transportCost)}</b></span>
+          <span><small>Resident commutes</small><b>${formatDetailedMoney(traffic?.residentCommuteCost ?? 0)}</b></span>
+          <span><small>Route delay</small><b>${(traffic?.averageRouteDelayMinutes ?? cityTraffic.averageTrafficDelayMinutes).toFixed(1)} min</b></span>
+          <span><small>Road passages</small><b>${Math.round(traffic?.roadTripsDaily ?? generatedTrips).toLocaleString()}</b></span>
+        </div>
+        <p>The congestion surcharge is allocated to this building's commute, customer, and delivery routes using each road's live queues and delay.</p>
+      </section>
+      <section class="road-impact-section">
+        <h4>Roads increasing this cost</h4>
+        ${renderRoadImpacts(traffic)}
       </section>
       <section class="connection-summary">
         <h4>Daily connections</h4>
@@ -871,6 +913,24 @@ function renderBuildingInspector(building: DetailedBuilding): void {
         <details><summary>Connected buildings</summary>${renderConnectionDetails(connections, building.id)}</details>
       </section>
     </article>`;
+}
+
+function renderRoadImpacts(traffic: BuildingTrafficAttribution | null): string {
+  if (!traffic || traffic.roads.length === 0) {
+    return `<p class="road-impact-empty">No vehicle route reaches this building. Start the simulation to collect live road delay.</p>`;
+  }
+  const maxCost = Math.max(0.01, ...traffic.roads.map((road) => road.attributedCongestionCost));
+  return `<div class="road-impact-list">${traffic.roads.slice(0, 6).map((road, index) => {
+    const kinds = road.kinds.map(capitalize).join(" · ");
+    const share = road.attributedCongestionCost / maxCost * 100;
+    return `<button type="button" class="road-impact-row" data-road-focus="${escapeHtml(road.segmentId)}">
+      <i data-rank="${Math.min(index + 1, 3)}"></i>
+      <span><b>${escapeHtml(road.roadName)}</b><small>${escapeHtml(road.description)} · ${escapeHtml(kinds)}</small></span>
+      <meter min="0" max="100" value="${share}"></meter>
+      <strong>${formatDetailedMoney(road.attributedCongestionCost)}</strong>
+      <em>${road.congestionPercent.toFixed(0)}% congestion · ${road.averageDelaySeconds.toFixed(0)} sec delay</em>
+    </button>`;
+  }).join("")}</div>`;
 }
 
 function renderTrafficInspector(feature: DistrictFeature): void {
@@ -1037,7 +1097,7 @@ function renderGroupedAlerts(): void {
 }
 
 function updateEntityTooltip(
-  selection: EntitySelection | null,
+  selection: SceneHoverSelection | null,
   clientX: number,
   clientY: number,
 ): void {
@@ -1047,7 +1107,11 @@ function updateEntityTooltip(
   }
   const state = simulation.getState();
   const mode = analysisOverlay.value as MapOverlayMode;
-  if (selection.kind === "person") {
+  if (selection.kind === "road") {
+    const feature = features.find((candidate) => candidate.id === selection.id);
+    if (!feature) return;
+    entityTooltip.innerHTML = roadTooltip(feature);
+  } else if (selection.kind === "person") {
     const person = state.entities.people.find((candidate) => candidate.id === selection.id);
     if (!person) return;
     entityTooltip.innerHTML = `<strong>${escapeHtml(person.name)}</strong><span>${formatActivity(person.currentActivity)} · ${person.happiness.toFixed(0)}% happiness</span><small>${escapeHtml(person.migrationReason)}</small>`;
@@ -1057,8 +1121,32 @@ function updateEntityTooltip(
     entityTooltip.innerHTML = buildingTooltip(building, mode);
   }
   entityTooltip.hidden = false;
-  entityTooltip.style.left = `${Math.min(window.innerWidth - 260, clientX + 14)}px`;
-  entityTooltip.style.top = `${Math.min(window.innerHeight - 130, clientY + 14)}px`;
+  const bounds = entityTooltip.getBoundingClientRect();
+  entityTooltip.style.left = `${Math.max(8, Math.min(window.innerWidth - bounds.width - 8, clientX + 14))}px`;
+  entityTooltip.style.top = `${Math.max(8, Math.min(window.innerHeight - bounds.height - 8, clientY + 14))}px`;
+}
+
+function roadTooltip(feature: DistrictFeature): string {
+  const state = simulation.getState();
+  const road = state.roadTraffic.find((candidate) => candidate.segmentId === feature.id);
+  const signal = state.signals.find((candidate) => candidate.intersectionId === feature.id);
+  const selectedTraffic = selectedEntity?.kind === "building"
+    ? simulation.getBuildingTrafficAttribution(selectedEntity.id)
+    : null;
+  const buildingImpact = selectedTraffic?.roads.find((impact) => impact.segmentId === feature.id);
+  if (!road) {
+    const signalValue = signal
+      ? `${formatSignalPhase(signal.phase)} · ${signal.timeRemainingSeconds?.toFixed(0) ?? "manual"} sec remaining`
+      : "No signal controller";
+    return `<strong>${escapeHtml(feature.name)}</strong><span>${escapeHtml(signalValue)}</span><small>${escapeHtml(feature.description)}</small>`;
+  }
+  const value = `${road.congestionPercent.toFixed(0)}% congestion · ${road.averageSpeedMph.toFixed(1)} mph · ${road.queuedVehicles} queued`;
+  const cause = buildingImpact
+    ? `${Math.round(buildingImpact.roadTripsDaily)} of the selected building's daily vehicle passages use this segment. Its queues and ${buildingImpact.averageDelaySeconds.toFixed(0)} seconds of measured delay account for ${formatDetailedMoney(buildingImpact.attributedCongestionCost)} of that building's congestion surcharge.`
+    : selectedTraffic
+      ? `${road.activeVehicles} vehicles are currently present with ${road.averageDelaySeconds.toFixed(0)} seconds of measured delay. The selected building has no modeled vehicle route on this segment.`
+      : `${road.activeVehicles} vehicles are currently present. Measured delay is ${road.averageDelaySeconds.toFixed(0)} seconds; click a building to see whether its commutes, customers, or deliveries use this road.`;
+  return `<strong>${escapeHtml(feature.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(feature.description)}</small><div class="tooltip-transport">${escapeHtml(cause)}</div>`;
 }
 
 function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): string {
@@ -1067,6 +1155,7 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
   const residents = state.entities.people.filter((person) => person.homeBuildingId === building.id);
   const trips = state.entities.connections
     .filter((connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id);
+  const traffic = simulation.getBuildingTrafficAttribution(building.id);
   let value = `${formatBuildingFunction(building.function)} · ${formatEntityStatus(accounting.status)}`;
   let why = accounting.diagnosis;
   if (mode === "profitability") value = `${formatDetailedMoney(accounting.operatingRevenue)} revenue − ${formatDetailedMoney(accounting.operatingCost)} costs = ${formatDetailedMoney(accounting.profit)}`;
@@ -1091,7 +1180,11 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
     value = `${Math.round(commuteTrips + customerTrips + supplyTrips)} connected daily trips`;
     why = `${Math.round(commuteTrips)} commute, ${Math.round(customerTrips)} customer, and ${Math.round(supplyTrips)} supply trips; network delay is ${state.city.metrics.averageTrafficDelayMinutes.toFixed(1)} minutes and transport costs this building ${formatDetailedMoney(accounting.transportCost)} daily.`;
   }
-  return `<strong>${escapeHtml(building.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(why)}</small>`;
+  const topRoad = traffic?.roads[0];
+  const transport = traffic
+    ? `<div class="tooltip-transport"><b>${formatDetailedMoney(traffic.totalTransportCost)} daily transport</b><span>${formatDetailedMoney(traffic.baseTransportCost)} base + ${formatDetailedMoney(traffic.congestionSurcharge)} congestion</span><small>${topRoad ? `${escapeHtml(topRoad.roadName)} is the largest road cause at ${formatDetailedMoney(topRoad.attributedCongestionCost)}.` : "No active vehicle route is measured."}</small></div>`
+    : "";
+  return `<strong>${escapeHtml(building.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(why)}</small>${transport}`;
 }
 
 function setSettingsOpen(open: boolean): void {

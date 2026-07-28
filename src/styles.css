@@ -582,6 +582,7 @@ body[data-app-mode="build"] .controls-panel > .alert-summary {
 
 .accounting-section,
 .traffic-impact,
+.road-impact-section,
 .connection-summary,
 .schedule-section,
 .needs-section,
@@ -751,6 +752,135 @@ body[data-app-mode="build"] .controls-panel > .alert-summary {
   width: 100%;
   height: 7px;
   accent-color: #e1a966;
+}
+
+.transport-cost-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.transport-cost-summary > span {
+  min-width: 0;
+  padding: 0.36rem 0.42rem;
+  border-left: 2px solid #e1a966;
+  background: rgb(255 255 255 / 4%);
+}
+
+.transport-cost-summary small,
+.transport-cost-summary b {
+  display: block;
+}
+
+.transport-cost-summary small {
+  color: #8da198;
+  font-size: 0.48rem;
+}
+
+.transport-cost-summary b {
+  overflow: hidden;
+  margin-top: 0.08rem;
+  color: #e5eee9;
+  font-size: 0.61rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.road-impact-section > h4 {
+  margin-bottom: 0.42rem;
+}
+
+.road-impact-list {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.road-impact-row {
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr) 58px auto;
+  grid-template-areas:
+    "rank name meter cost"
+    "rank detail detail detail";
+  align-items: center;
+  gap: 0.18rem 0.45rem;
+  width: 100%;
+  padding: 0.42rem;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 5px;
+  color: inherit;
+  background: rgb(255 255 255 / 3%);
+  text-align: left;
+  cursor: pointer;
+}
+
+.road-impact-row:hover,
+.road-impact-row:focus-visible {
+  border-color: rgb(241 159 69 / 62%);
+  background: rgb(241 159 69 / 10%);
+  outline: none;
+}
+
+.road-impact-row > i {
+  grid-area: rank;
+  align-self: stretch;
+  border-radius: 2px;
+  background: #f2d064;
+}
+
+.road-impact-row > i[data-rank="1"] { background: #f15b47; }
+.road-impact-row > i[data-rank="2"] { background: #f59f45; }
+
+.road-impact-row > span {
+  grid-area: name;
+  min-width: 0;
+}
+
+.road-impact-row > span b,
+.road-impact-row > span small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.road-impact-row > span b {
+  color: #edf4f0;
+  font-size: 0.56rem;
+}
+
+.road-impact-row > span small {
+  margin-top: 0.08rem;
+  color: #82988e;
+  font-size: 0.45rem;
+}
+
+.road-impact-row > meter {
+  grid-area: meter;
+  width: 58px;
+  height: 6px;
+  accent-color: #ef7357;
+}
+
+.road-impact-row > strong {
+  grid-area: cost;
+  color: #f1c56e;
+  font-size: 0.57rem;
+  text-align: right;
+}
+
+.road-impact-row > em {
+  grid-area: detail;
+  color: #97aaa1;
+  font-size: 0.46rem;
+  font-style: normal;
+}
+
+.road-impact-empty {
+  margin: 0;
+  color: #91a59b;
+  font-size: 0.52rem;
+  line-height: 1.4;
 }
 
 .connection-totals {
@@ -977,7 +1107,7 @@ body[data-app-mode="build"] .controls-panel > .alert-summary {
   z-index: 8;
   display: grid;
   gap: 0.2rem;
-  width: 245px;
+  width: min(310px, calc(100vw - 16px));
   padding: 0.6rem;
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 7px;
@@ -994,6 +1124,27 @@ body[data-app-mode="build"] .controls-panel > .alert-summary {
 .entity-tooltip strong { font-size: 0.68rem; }
 .entity-tooltip span { color: #f0d68d; font-size: 0.57rem; }
 .entity-tooltip small { color: #9eb2a8; font-size: 0.51rem; line-height: 1.35; }
+
+.tooltip-transport {
+  display: grid;
+  gap: 0.14rem;
+  margin-top: 0.22rem;
+  padding-top: 0.38rem;
+  border-top: 1px solid rgb(255 255 255 / 12%);
+  color: #cddbd4;
+  font-size: 0.51rem;
+  line-height: 1.4;
+}
+
+.tooltip-transport b,
+.tooltip-transport span,
+.tooltip-transport small {
+  display: block;
+}
+
+.tooltip-transport b { color: #f1c56e; font-size: 0.58rem; }
+.tooltip-transport span { color: #dbe7e1; font-size: 0.52rem; }
+.tooltip-transport small { color: #90a69b; font-size: 0.49rem; }
 
 .panel-heading {
   display: flex;

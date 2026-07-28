@@ -136,6 +136,32 @@ export interface EntityConnection {
   personIds: string[];
 }
 
+export interface BuildingRoadTrafficImpact {
+  segmentId: string;
+  roadName: string;
+  description: string;
+  kinds: BuildingConnectionKind[];
+  roadTripsDaily: number;
+  congestionPercent: number;
+  averageDelaySeconds: number;
+  averageSpeedMph: number;
+  queuedVehicles: number;
+  attributedCongestionCost: number;
+}
+
+export interface BuildingTrafficAttribution {
+  buildingId: string;
+  connectedVolumeDaily: number;
+  roadTripsDaily: number;
+  deliveryTransportCost: number;
+  residentCommuteCost: number;
+  totalTransportCost: number;
+  baseTransportCost: number;
+  congestionSurcharge: number;
+  averageRouteDelayMinutes: number;
+  roads: BuildingRoadTrafficImpact[];
+}
+
 export interface EntityEvent {
   id: string;
   day: number;

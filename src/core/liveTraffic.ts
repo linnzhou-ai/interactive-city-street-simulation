@@ -81,6 +81,11 @@ interface GridNode {
   z: number;
 }
 
+export type TrafficRouteEndpoint =
+  | Readonly<{ x: number; z: number }>
+  | "outside-work"
+  | "outside-market";
+
 interface VehicleAgent {
   id: number;
   path: readonly GridNode[];
@@ -96,6 +101,7 @@ interface VehicleAgent {
   segmentId: string;
   spawnedAt: number;
   delaySeconds: number;
+  segmentDelaySeconds: number;
 }
 
 interface PedestrianAgent {
@@ -398,6 +404,31 @@ export class LiveTrafficSystem {
     return this.roadSegments.get(segmentId);
   }
 
+  getRouteSegmentIds(
+    from: TrafficRouteEndpoint,
+    to: TrafficRouteEndpoint,
+  ): string[] {
+    const fromPoint = typeof from === "string" ? null : nearestGridNodeFromWorld(this.nodes, from.x, from.z);
+    const toPoint = typeof to === "string" ? null : nearestGridNodeFromWorld(this.nodes, to.x, to.z);
+    const origin = typeof from === "string"
+      ? this.outsideRouteNode(from, toPoint)
+      : fromPoint as GridNode;
+    const destination = typeof to === "string"
+      ? this.outsideRouteNode(to, fromPoint)
+      : toPoint as GridNode;
+    const route = this.findVehicleRoute(origin, destination, 1.1) ?? [];
+    const segments: string[] = [];
+    for (let index = 0; index < route.length - 1; index += 1) {
+      segments.push(segmentIdBetween(
+        route[index].column,
+        route[index].row,
+        route[index + 1].column,
+        route[index + 1].row,
+      ));
+    }
+    return segments;
+  }
+
   getCoverage(): {
     vehicleSegments: ReadonlySet<string>;
     pedestrianSegments: ReadonlySet<string>;
@@ -468,7 +499,7 @@ export class LiveTrafficSystem {
       );
       const averageDelaySeconds = vehicles.length === 0
         ? 0
-        : vehicles.reduce((total, vehicle) => total + vehicle.delaySeconds, 0) / vehicles.length;
+        : vehicles.reduce((total, vehicle) => total + vehicle.segmentDelaySeconds, 0) / vehicles.length;
 
       return {
         segmentId: segment.id,
@@ -574,6 +605,23 @@ export class LiveTrafficSystem {
     return conflicts;
   }
 
+  private outsideRouteNode(
+    endpoint: Extract<TrafficRouteEndpoint, string>,
+    reference: GridNode | null,
+  ): GridNode {
+    if (endpoint === "outside-market") return this.nodes[0][0];
+    const boundary = this.nodes.flat().filter((node) =>
+      node.column === 0
+      || node.row === 0
+      || node.column === this.nodes.length - 1
+      || node.row === this.nodes[0].length - 1
+    );
+    if (!reference) return boundary[0];
+    return boundary.reduce((nearest, node) =>
+      distance(node, reference) < distance(nearest, reference) ? node : nearest
+    );
+  }
+
   private updateVehicleSpawner(
     deltaSeconds: number,
     demand: number,
@@ -606,6 +654,7 @@ export class LiveTrafficSystem {
           segmentId: assignment.segment.id,
           spawnedAt: this.elapsedSeconds,
           delaySeconds: 0,
+          segmentDelaySeconds: 0,
         });
         this.nextVehicleId += 1;
       }
@@ -653,6 +702,7 @@ export class LiveTrafficSystem {
       vehicle.segmentIndex = 0;
       vehicle.segmentId = segment.id;
       vehicle.lane = lane;
+      vehicle.segmentDelaySeconds = 0;
       return true;
     });
   }
@@ -779,7 +829,10 @@ export class LiveTrafficSystem {
       acceleration * deltaSeconds,
     );
     vehicle.queued = vehicle.speed < 0.25 && targetSpeed < 0.5;
-    if (vehicle.queued) vehicle.delaySeconds += deltaSeconds;
+    if (vehicle.queued) {
+      vehicle.delaySeconds += deltaSeconds;
+      vehicle.segmentDelaySeconds += deltaSeconds;
+    }
     let travel = vehicle.speed * deltaSeconds;
     while (travel > 0 && vehicle.segmentIndex < vehicle.path.length - 1) {
       const segmentStart = vehicle.path[vehicle.segmentIndex];
@@ -793,6 +846,7 @@ export class LiveTrafficSystem {
       travel -= available;
       vehicle.segmentIndex += 1;
       vehicle.distanceOnSegment = 0;
+      vehicle.segmentDelaySeconds = 0;
       if (vehicle.segmentIndex < vehicle.path.length - 1) {
         const assignment = this.laneForPath(
           vehicle.path,
@@ -1176,6 +1230,25 @@ function nearestGridNode(
     (longitude - PENN_CENTER.longitude) * METERS_PER_DEGREE_LONGITUDE;
   const z =
     -(latitude - PENN_CENTER.latitude) * METERS_PER_DEGREE_LATITUDE;
+  let nearest = nodes[0][0];
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const column of nodes) {
+    for (const node of column) {
+      const candidateDistance = Math.hypot(node.x - x, node.z - z);
+      if (candidateDistance < nearestDistance) {
+        nearest = node;
+        nearestDistance = candidateDistance;
+      }
+    }
+  }
+  return nearest;
+}
+
+function nearestGridNodeFromWorld(
+  nodes: readonly (readonly GridNode[])[],
+  x: number,
+  z: number,
+): GridNode {
   let nearest = nodes[0][0];
   let nearestDistance = Number.POSITIVE_INFINITY;
   for (const column of nodes) {

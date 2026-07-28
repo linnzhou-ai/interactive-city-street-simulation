@@ -25,6 +25,7 @@ import type {
   GeoPoint,
   MapOverlayMode,
   PedestrianSnapshot,
+  SceneHoverSelection,
   SignalSnapshot,
   SimulationState,
   VehicleKind,
@@ -101,7 +102,7 @@ interface SpatialBounds {
 
 type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
 type EntityHoverHandler = (
-  selection: EntitySelection | null,
+  selection: SceneHoverSelection | null,
   clientX: number,
   clientY: number,
 ) => void;
@@ -125,6 +126,7 @@ export class ThreeRenderer {
   private readonly selectableRoads: THREE.Mesh[] = [];
   private readonly designGroup = new THREE.Group();
   private readonly analysisGroup = new THREE.Group();
+  private readonly trafficFocusGroup = new THREE.Group();
   private readonly entityMarkerGroup = new THREE.Group();
   private readonly entityFlowGroup = new THREE.Group();
   private readonly entityHighlightGroup = new THREE.Group();
@@ -167,6 +169,11 @@ export class ThreeRenderer {
       side: THREE.DoubleSide,
     }),
   );
+  private readonly trafficFocusMaterials = [
+    new THREE.MeshBasicMaterial({ color: "#f15b47", transparent: true, opacity: 0.92, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color: "#f59f45", transparent: true, opacity: 0.86, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color: "#f2d064", transparent: true, opacity: 0.78, depthWrite: false }),
+  ];
   private readonly trafficDebugGroup = new THREE.Group();
   private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
     "collisionDebug",
@@ -188,6 +195,7 @@ export class ThreeRenderer {
   private lastState: Readonly<SimulationState> | null = null;
   private overlaySignature = "";
   private flowSignature = "";
+  private trafficFocusSignature = "";
   private cameraMode: CameraMode = "orbit";
   private flySpeedScale = 1.2;
   private flyYaw = 0;
@@ -239,6 +247,7 @@ export class ThreeRenderer {
     this.scene.add(
       this.designGroup,
       this.analysisGroup,
+      this.trafficFocusGroup,
       this.entityMarkerGroup,
       this.entityFlowGroup,
       this.entityHighlightGroup,
@@ -397,6 +406,24 @@ export class ThreeRenderer {
     this.selectedEntity = selection;
     this.flowSignature = "";
     this.rebuildEntitySelection();
+  }
+
+  setTrafficFocusSegments(segmentIds: readonly string[]): void {
+    const signature = segmentIds.join(":");
+    if (signature === this.trafficFocusSignature) return;
+    this.trafficFocusSignature = signature;
+    clearGroup(this.trafficFocusGroup);
+    for (const [index, segmentId] of segmentIds.slice(0, 8).entries()) {
+      const feature = this.features.find(
+        (candidate) => candidate.id === segmentId && candidate.kind === "street",
+      );
+      if (!feature) continue;
+      const material = this.trafficFocusMaterials[Math.min(index, 2)];
+      const ribbon = createSegmentMesh(feature, roadWidth(feature) * 0.42, 0.26, material);
+      ribbon.position.y = RENDER_HEIGHTS.selectionSurface + 0.2;
+      ribbon.renderOrder = 7;
+      this.trafficFocusGroup.add(ribbon);
+    }
   }
 
   setVisibleFlowKinds(kinds: ReadonlySet<BuildingConnectionKind>): void {
@@ -1555,7 +1582,8 @@ export class ThreeRenderer {
     });
     this.canvas.addEventListener("pointermove", (event) => {
       if (!this.looking && document.pointerLockElement !== this.canvas && event.buttons === 0) {
-        const selection = this.pickEntityAt(event.clientX, event.clientY);
+        const selection = this.pickEntityAt(event.clientX, event.clientY)
+          ?? this.pickRoadAt(event.clientX, event.clientY);
         this.entityHoverHandler?.(selection, event.clientX, event.clientY);
         this.canvas.style.cursor = selection
           ? "pointer"
@@ -1654,13 +1682,23 @@ export class ThreeRenderer {
       return;
     }
     if (this.cameraMode !== "orbit") return;
+    const road = this.pickRoadAt(clientX, clientY, bounds);
+    const feature = road
+      ? this.features.find((candidate) => candidate.id === road.id)
+      : undefined;
+    if (feature) this.selectionHandler?.(feature);
+  }
+
+  private pickRoadAt(
+    clientX: number,
+    clientY: number,
+    bounds = this.canvas.getBoundingClientRect(),
+  ): Extract<SceneHoverSelection, { kind: "road" }> | null {
     this.setPointerFromClient(clientX, clientY, bounds);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hit = this.raycaster.intersectObjects(this.selectableRoads, false)[0];
     const featureId = hit?.object.userData.featureId as string | undefined;
-    if (!featureId) return;
-    const feature = this.features.find((candidate) => candidate.id === featureId);
-    if (feature) this.selectionHandler?.(feature);
+    return featureId ? { kind: "road", id: featureId } : null;
   }
 
   private pickEntityAt(

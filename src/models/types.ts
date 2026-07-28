@@ -3,7 +3,7 @@ import type {
   CitySystemEvent,
   TimeHorizon,
 } from "./cityTypes";
-import type { DetailedEntityState } from "./entityTypes";
+import type { DetailedEntityState, EntitySelection } from "./entityTypes";
 
 export type AppMode = "build" | "simulate";
 export type CameraMode = "orbit" | "fly" | "walk";
@@ -33,6 +33,7 @@ export type FeatureKind = "street" | "intersection";
 export type FeatureAxis = "x" | "z";
 export type LaneDirection = "two-way" | "forward" | "reverse";
 export type VehicleKind = "sedan" | "compact" | "suv" | "van" | "bus";
+export type SceneHoverSelection = EntitySelection | { kind: "road"; id: string };
 
 export type BuildTool =
   | "add-lane"

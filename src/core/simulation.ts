@@ -16,7 +16,11 @@ import type {
   CitySectionState,
   TimeHorizon,
 } from "../models/cityTypes";
-import type { EntityBuildingDefinition } from "../models/entityTypes";
+import type {
+  BuildingTrafficAttribution,
+  EntityBuildingDefinition,
+  EntityConnection,
+} from "../models/entityTypes";
 import { PENN_BUILDINGS } from "../data/pennBuildings";
 import type { RoadSegmentModel } from "../data/roadLanes";
 import { advanceCitySection } from "./cityEngine";
@@ -25,6 +29,8 @@ import {
   createDemoCitySectionDefinition,
 } from "./cityModel";
 import { LiveTrafficSystem } from "./liveTraffic";
+import type { TrafficRouteEndpoint } from "./liveTraffic";
+import { calculateBuildingTrafficAttribution } from "./trafficAttribution";
 import {
   advanceDetailedTime,
   createDetailedEntityState,
@@ -132,6 +138,16 @@ export class Simulation {
 
   getRoadSegment(segmentId: string): RoadSegmentModel | undefined {
     return this.traffic.getRoadSegment(segmentId);
+  }
+
+  getBuildingTrafficAttribution(buildingId: string): BuildingTrafficAttribution | null {
+    return calculateBuildingTrafficAttribution(
+      buildingId,
+      this.state.entities,
+      this.state.roadTraffic,
+      this.state.city.metrics.congestionPercent,
+      (connection) => this.routeForConnection(connection),
+    );
   }
 
   start(): void {
@@ -293,6 +309,20 @@ export class Simulation {
     this.syncDemandFromCity();
     this.traffic.update(simulationDelta, this.settings);
     this.syncTrafficState();
+  }
+
+  private routeForConnection(connection: Readonly<EntityConnection>): string[] {
+    const endpoint = (buildingId: string): TrafficRouteEndpoint => {
+      const building = this.state.entities.buildings.find(
+        (candidate) => candidate.id === buildingId,
+      );
+      if (building) return { x: building.x, z: building.z };
+      return buildingId === "outside-market" ? "outside-market" : "outside-work";
+    };
+    return this.traffic.getRouteSegmentIds(
+      endpoint(connection.fromBuildingId),
+      endpoint(connection.toBuildingId),
+    );
   }
 
   private cityPolicy(): Partial<CityPolicySettings> {

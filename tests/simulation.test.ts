@@ -137,4 +137,35 @@ describe("Simulation", () => {
     expect(simulation.getBaselineMetrics()).toEqual(baseline);
     expect(simulation.getState().metrics).not.toEqual(baseline);
   });
+
+  it("traces a building's transport costs to roads on its active routes", () => {
+    const simulation = new Simulation();
+    simulation.start();
+    simulation.update(8);
+    const state = simulation.getState();
+    const building = state.entities.buildings.find((candidate) =>
+      candidate.accounting.transportCost > 0
+      && state.entities.connections.some((connection) =>
+        connection.fromBuildingId === candidate.id
+        || connection.toBuildingId === candidate.id
+      )
+    );
+
+    expect(building).toBeDefined();
+    const traffic = simulation.getBuildingTrafficAttribution(building!.id);
+    expect(traffic).not.toBeNull();
+    expect(traffic!.roads.length).toBeGreaterThan(0);
+    expect(traffic!.totalTransportCost).toBeCloseTo(
+      traffic!.baseTransportCost + traffic!.congestionSurcharge,
+      1,
+    );
+
+    const liveRoadIds = new Set(state.roadTraffic.map((road) => road.segmentId));
+    expect(traffic!.roads.every((road) => liveRoadIds.has(road.segmentId))).toBe(true);
+    const attributedCost = traffic!.roads.reduce(
+      (total, road) => total + road.attributedCongestionCost,
+      0,
+    );
+    expect(Math.abs(attributedCost - traffic!.congestionSurcharge)).toBeLessThan(0.2);
+  });
 });
