@@ -1,292 +1,151 @@
 import "./styles.css";
-import createElement from "lucide/dist/esm/createElement.mjs";
-import CarFront from "lucide/dist/esm/icons/car-front.mjs";
-import ChartNoAxesCombined from "lucide/dist/esm/icons/chart-no-axes-combined.mjs";
-import Landmark from "lucide/dist/esm/icons/landmark.mjs";
-import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
-import MapPinned from "lucide/dist/esm/icons/map-pinned.mjs";
-import Users from "lucide/dist/esm/icons/users.mjs";
-import {
-  captureBaseline,
-  compareWithBaseline,
-  deriveCongestionTripBreakdown,
-  deriveBuildingFinancialFlow,
-  deriveBuildingTrafficInsight,
-  deriveBuildingUtilityInsight,
-  deriveHappinessBreakdown,
-  deriveMigrationBreakdown,
-  derivePersonHappinessInsight,
-  derivePersonDailyInsight,
-  derivePriceBreakdowns,
-  deriveRepresentationSummary,
-  type BaselineComparisonRow,
-  type BuildingFinancialFlow,
-  type InsightContribution,
-} from "./core/insights";
-import { OUTSIDE_COMMUTER_BUILDING_ID, planRoute, type MobilityNetwork } from "./core/network";
-import { explainModeChoice, type MobilityConditions } from "./core/population";
 import { Simulation } from "./core/simulation";
-import { formatClockTime, formatLongDate } from "./core/timeScale";
+import { PENN_LANDMARKS } from "./data/pennRoadGraph";
+import type {
+  AppMode,
+  BuildTool,
+  CameraMode,
+  DesignImpact,
+  DistrictFeature,
+  EnvironmentMode,
+  FeatureDesign,
+  LaneDirection,
+  ManualSignalTarget,
+  MapOverlayMode,
+  SignalControlMode,
+  SignalTiming,
+} from "./models/types";
+import type {
+  BuildingConnectionKind,
+  DetailedBuilding,
+  DetailedPerson,
+  EntitySelection,
+} from "./models/entityTypes";
 import type { TimeHorizon } from "./models/cityTypes";
-import type { Building, BuildingConnection, Person, SimulationEvent, SimulationState } from "./models/types";
-import {
-  ThreeRenderer,
-  type SceneSelection,
-  type VisibleFlow,
-  type VisualLayer,
-} from "./rendering/threeRenderer";
-
-type Layer = "overview" | "people" | "economy" | "infrastructure" | "land-use";
-type Mode = "overview" | "traffic" | "economy" | "people" | "services" | "land";
-
-interface DisplayItem {
-  label: string;
-  value: (state: Readonly<SimulationState>) => string;
-  detail?: string;
-}
-
-interface LayerView {
-  title: string;
-  sceneLabel: string;
-  summary: (state: Readonly<SimulationState>) => string;
-  inspector: DisplayItem[];
-  metrics: DisplayItem[];
-}
+import { ThreeRenderer } from "./rendering/threeRenderer";
 
 const canvas = requireElement<HTMLCanvasElement>("simulation-canvas");
+const simulationTitle = requireElement<HTMLElement>("simulation-title");
+const sceneSubtitle = requireElement<HTMLElement>("scene-subtitle");
+const buildModeButton = requireElement<HTMLButtonElement>("build-mode-button");
+const simulateModeButton = requireElement<HTMLButtonElement>("simulate-mode-button");
+const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button");
+const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
+const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
+const environmentMode = requireElement<HTMLElement>("environment-mode");
+const orbitCameraHint = requireElement<HTMLElement>("orbit-camera-hint");
 const runButton = requireElement<HTMLButtonElement>("run-button");
 const pauseButton = requireElement<HTMLButtonElement>("pause-button");
 const resetButton = requireElement<HTMLButtonElement>("reset-button");
-const settingsButton = requireElement<HTMLButtonElement>("settings-button");
-const settingsClose = requireElement<HTMLButtonElement>("settings-close");
-const settingsScrim = requireElement<HTMLButtonElement>("settings-scrim");
-const settingsDrawer = requireElement<HTMLElement>("settings-drawer");
-const statusPill = requireElement<HTMLSpanElement>("status-pill");
-const dayOutput = requireElement<HTMLElement>("day-output");
-const timeOutput = requireElement<HTMLElement>("time-output");
-const hourOutput = requireElement<HTMLTimeElement>("hour-output");
-const signalPhase = requireElement<HTMLElement>("signal-phase");
+const resetDesignButton = requireElement<HTMLButtonElement>("reset-design-button");
+const speedControl = requireElement<HTMLInputElement>("speed-control");
+const speedOutput = requireElement<HTMLOutputElement>("speed-output");
+const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
+const pedestrianVolumeOutput = requireElement<HTMLOutputElement>("pedestrian-volume-output");
+const cityDate = requireElement<HTMLElement>("city-date");
+const cityClock = requireElement<HTMLElement>("city-clock");
+const timeHorizonControl = requireElement<HTMLSelectElement>("time-horizon-control");
+const commuteTripShare = requireElement<HTMLElement>("commute-trip-share");
+const shoppingTripShare = requireElement<HTMLElement>("shopping-trip-share");
+const freightTripShare = requireElement<HTMLElement>("freight-trip-share");
+const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
+const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
+const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-control");
+const signalEditor = requireElement<HTMLElement>("signal-editor");
+const signalModeControl = requireElement<HTMLSelectElement>("signal-mode-control");
+const signalNorthSouthGreen = requireElement<HTMLInputElement>("signal-ns-green");
+const signalEastWestGreen = requireElement<HTMLInputElement>("signal-ew-green");
+const signalYellow = requireElement<HTMLInputElement>("signal-yellow");
+const signalAllRed = requireElement<HTMLInputElement>("signal-all-red");
+const signalPedestrian = requireElement<HTMLInputElement>("signal-pedestrian");
+const signalCurrentPhase = requireElement<HTMLElement>("signal-current-phase");
+const signalNextPhase = requireElement<HTMLElement>("signal-next-phase");
 const signalTimeRemaining = requireElement<HTMLElement>("signal-time-remaining");
-const activeLayerLabel = requireElement<HTMLElement>("active-layer-label");
-const cityNameOutput = requireElement<HTMLElement>("city-name-output");
-const representationBadge = requireElement<HTMLElement>("representation-badge");
-const inspectorTitle = requireElement<HTMLElement>("inspector-title");
-const inspectorSummary = requireElement<HTMLElement>("inspector-summary");
-const metricsTitle = requireElement<HTMLElement>("metrics-title");
-const eventList = requireElement<HTMLElement>("event-list");
-const generatedCommutes = requireElement<HTMLElement>("generated-commutes");
-const generatedShopping = requireElement<HTMLElement>("generated-shopping");
-const generatedPedestrians = requireElement<HTMLElement>("generated-pedestrians");
-const generatedFreight = requireElement<HTMLElement>("generated-freight");
-const inspectorPanel = requireElement<HTMLElement>("inspector-panel");
-const dashboardPanel = requireElement<HTMLElement>("dashboard-panel");
-const modeSystemFlow = requireElement<HTMLElement>("mode-system-flow");
-const selectionPanel = requireElement<HTMLElement>("selection-panel");
-const selectionKicker = requireElement<HTMLElement>("selection-kicker");
+const manualSignalControls = requireElement<HTMLElement>("manual-signal-controls");
+const manualNorthSouthButton = requireElement<HTMLButtonElement>("manual-ns-button");
+const manualEastWestButton = requireElement<HTMLButtonElement>("manual-ew-button");
+const manualAllRedButton = requireElement<HTMLButtonElement>("manual-all-red-button");
+const statusPill = requireElement<HTMLElement>("status-pill");
+const signalPhase = requireElement<HTMLElement>("signal-phase");
 const selectionTitle = requireElement<HTMLElement>("selection-title");
-const selectionSummary = requireElement<HTMLElement>("selection-summary");
-const selectionVisuals = requireElement<HTMLElement>("selection-visuals");
-const selectionFinancialFlow = requireElement<HTMLElement>("selection-financial-flow");
-const selectionSystemVisual = requireElement<HTMLElement>("selection-system-visual");
-const selectionStats = requireElement<HTMLElement>("selection-stats");
-const selectionConnectionsTitle = requireElement<HTMLElement>("selection-connections-title");
-const selectionConnections = requireElement<HTMLElement>("selection-connections");
-const selectionClose = requireElement<HTMLButtonElement>("selection-close");
-const selectionDiagnosis = requireElement<HTMLElement>("selection-diagnosis");
-const selectionTimelineSection = requireElement<HTMLElement>("selection-timeline-section");
-const selectionTimeline = requireElement<HTMLOListElement>("selection-timeline");
-const representationPerson = requireElement<HTMLElement>("representation-person");
-const representationBuildings = requireElement<HTMLElement>("representation-buildings");
-const representationActivity = requireElement<HTMLElement>("representation-activity");
-const causeSection = requireElement<HTMLElement>("cause-section");
-const causeList = requireElement<HTMLElement>("cause-list");
-const baselineList = requireElement<HTMLElement>("baseline-list");
-const timelineMarkers = requireElement<HTMLOListElement>("timeline-markers");
-const detailModeOutput = requireElement<HTMLElement>("detail-mode-output");
-const flowToggles = [...document.querySelectorAll<HTMLInputElement>(".flow-toggles input")];
-const heatLowLabel = requireElement<HTMLElement>("heat-low-label");
-const heatHighLabel = requireElement<HTMLElement>("heat-high-label");
+const selectionDescription = requireElement<HTMLElement>("selection-description");
+const selectionStatus = requireElement<HTMLElement>("selection-status");
+const featureKind = requireElement<HTMLElement>("feature-kind");
+const designSummary = requireElement<HTMLElement>("design-summary");
+const vehicleTime = requireElement<HTMLElement>("vehicle-time");
+const congestion = requireElement<HTMLElement>("congestion");
+const pedestrianWait = requireElement<HTMLElement>("pedestrian-wait");
+const conflicts = requireElement<HTMLElement>("conflicts");
+const throughput = requireElement<HTMLElement>("throughput");
+const activeVehicles = requireElement<HTMLElement>("active-vehicles");
+const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
+const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
+const averageSpeed = requireElement<HTMLElement>("average-speed");
+const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
+const cityPopulation = requireElement<HTMLElement>("city-population");
+const cityOutput = requireElement<HTMLElement>("city-output");
+const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
+const cityUtilities = requireElement<HTMLElement>("city-utilities");
+const cityImports = requireElement<HTMLElement>("city-imports");
+const cityMigration = requireElement<HTMLElement>("city-migration");
+const representationNote = requireElement<HTMLElement>("representation-note");
+const baselineMetricsButton = requireElement<HTMLButtonElement>("baseline-metrics-button");
+const modifiedMetricsButton = requireElement<HTMLButtonElement>("modified-metrics-button");
+const metricsKicker = requireElement<HTMLElement>("metrics-kicker");
+const analysisOverlay = requireElement<HTMLSelectElement>("analysis-overlay");
+const entityInspector = requireElement<HTMLElement>("entity-inspector");
 const mapLegend = requireElement<HTMLElement>("map-legend");
-const mapLegendTitle = requireElement<HTMLElement>("map-legend-title");
-const modeLayerMenu = requireElement<HTMLElement>("mode-layer-menu");
-const modeRailButtons = [...document.querySelectorAll<HTMLButtonElement>(".mode-rail button")];
-const inspectorElements = Array.from({ length: 4 }, (_, index) => ({
-  label: requireElement(`inspector-label-${index + 1}`),
-  value: requireElement(`inspector-value-${index + 1}`),
-}));
-const metricElements = Array.from({ length: 6 }, (_, index) => ({
-  label: requireElement(`metric-label-${index + 1}`),
-  value: requireElement(`metric-value-${index + 1}`),
-  detail: requireElement(`metric-detail-${index + 1}`),
-}));
-const INTERFACE_UPDATE_INTERVAL_MS = 100;
-
-type SimulationRate = "slow" | "standard" | "fast" | "day" | "week";
-
-const SIMULATION_RATES: Record<SimulationRate, { horizon: TimeHorizon; multiplier: number; label: string }> = {
-  slow: { horizon: "day", multiplier: 0.5, label: "30 city min/sec" },
-  standard: { horizon: "day", multiplier: 1, label: "1 city hour/sec" },
-  fast: { horizon: "week", multiplier: 1, label: "6 city hours/sec" },
-  day: { horizon: "month", multiplier: 1, label: "1 city day/sec" },
-  week: { horizon: "year", multiplier: 1, label: "1 city week/sec" },
-};
+const alertCount = requireElement<HTMLElement>("alert-count");
+const groupedAlerts = requireElement<HTMLElement>("grouped-alerts");
+const entityTooltip = requireElement<HTMLElement>("entity-tooltip");
+const flowControls = requireElement<HTMLFieldSetElement>("flow-controls");
+const settingsButton = requireElement<HTMLButtonElement>("settings-button");
+const settingsCloseButton = requireElement<HTMLButtonElement>("settings-close-button");
+const settingsDrawer = requireElement<HTMLElement>("settings-drawer");
+const settingsScrim = requireElement<HTMLButtonElement>("settings-scrim");
+const speedLimitOutput = requireElement<HTMLOutputElement>("speed-limit-output");
+const signalCycleOutput = requireElement<HTMLOutputElement>("signal-cycle-output");
+const transitHeadwayControl = requireElement<HTMLInputElement>("transit-headway-control");
+const transitHeadwayOutput = requireElement<HTMLOutputElement>("transit-headway-output");
+const roadCapacityControl = requireElement<HTMLInputElement>("road-capacity-control");
+const roadCapacityOutput = requireElement<HTMLOutputElement>("road-capacity-output");
+const utilityCapacityControl = requireElement<HTMLInputElement>("utility-capacity-control");
+const utilityCapacityOutput = requireElement<HTMLOutputElement>("utility-capacity-output");
+const zoningControl = requireElement<HTMLInputElement>("zoning-control");
+const zoningOutput = requireElement<HTMLOutputElement>("zoning-output");
+const timeHorizonPreview = requireElement<HTMLElement>("time-horizon-preview");
+const speedLimitPreview = requireElement<HTMLElement>("speed-limit-preview");
+const signalCyclePreview = requireElement<HTMLElement>("signal-cycle-preview");
+const transitHeadwayPreview = requireElement<HTMLElement>("transit-headway-preview");
+const roadCapacityPreview = requireElement<HTMLElement>("road-capacity-preview");
+const utilityCapacityPreview = requireElement<HTMLElement>("utility-capacity-preview");
+const zoningPreview = requireElement<HTMLElement>("zoning-preview");
+const locationSearch = requireElement<HTMLFormElement>("location-search");
+const locationSearchInput = requireElement<HTMLInputElement>("location-search-input");
+const locationOptions = requireElement<HTMLDataListElement>("location-options");
+const buildToolButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-build-tool]"),
+);
 
 const simulation = new Simulation();
-const baseline = captureBaseline(simulation.getState().city);
-let activeSelection: SceneSelection = null;
-const renderer = new ThreeRenderer(canvas, (selection) => {
-  if (selection !== null) document.body.dataset.mobileInspector = "open";
-  activeSelection = selection;
-  updateInterface();
-});
+simulation.setSimulationSeed(createSessionSeed());
+simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
+const renderer = new ThreeRenderer(canvas);
+const designs = new Map<string, FeatureDesign>();
+const features = renderer.getFeatures();
+let appMode: AppMode = "build";
+let cameraMode: CameraMode = "orbit";
+let metricView: "baseline" | "modified" = "modified";
+let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
+let selectedEntity: EntitySelection | null = null;
+let entityInterfaceSignature = "";
 let previousTimestamp = performance.now();
-let previousInterfaceTimestamp = previousTimestamp;
-let activeLayer: Layer = "overview";
-let activeMode: Mode = "overview";
-let activeVisualLayer: VisualLayer = "none";
 
-interface ModeLayerOption {
-  label: string;
-  layer: Layer;
-  visualLayer: VisualLayer;
-}
-
-const modeLayers: Record<Mode, readonly ModeLayerOption[]> = {
-  overview: [{ label: "Standard", layer: "overview", visualLayer: "none" }],
-  traffic: [
-    { label: "Congestion", layer: "infrastructure", visualLayer: "congestion" },
-    { label: "Pedestrian wait", layer: "infrastructure", visualLayer: "pedestrian-wait" },
-    { label: "Freight", layer: "infrastructure", visualLayer: "freight" },
-  ],
-  economy: [
-    { label: "Profit", layer: "economy", visualLayer: "profit" },
-    { label: "Goods shortages", layer: "economy", visualLayer: "shortages" },
-  ],
-  people: [
-    { label: "Job access", layer: "people", visualLayer: "jobs" },
-    { label: "Migration", layer: "people", visualLayer: "migration" },
-  ],
-  services: [{ label: "Utilities", layer: "infrastructure", visualLayer: "utilities" }],
-  land: [{ label: "Land value", layer: "land-use", visualLayer: "land-value" }],
-};
-
-const modeIcons = {
-  overview: LayoutDashboard,
-  traffic: CarFront,
-  economy: ChartNoAxesCombined,
-  people: Users,
-  services: Landmark,
-  land: MapPinned,
-} satisfies Record<Mode, readonly unknown[]>;
-
-for (const placeholder of document.querySelectorAll<HTMLElement>("[data-mode-icon]")) {
-  const mode = placeholder.dataset.modeIcon as Mode;
-  placeholder.replaceWith(createElement(modeIcons[mode]));
-}
-
-const views: Record<Layer, LayerView> = {
-  overview: {
-    title: "City section health",
-    sceneLabel: "City systems overview",
-    summary: (state) => state.city.metrics.utilityCoveragePercent < 88
-      ? "Utility limits are reducing district performance and long-term growth."
-      : state.city.metrics.congestionPercent >= 65
-        ? "Regional travel demand is exceeding the connected network capacity."
-        : "Population, services, mobility and development are operating within modeled capacity.",
-    inspector: [
-      entry("City population", (state) => number(state.city.metrics.population)),
-      entry("Districts", (state) => number(state.city.districts.length)),
-      entry("Unemployment", (state) => percent(state.city.metrics.unemploymentPercent)),
-      entry("Utility coverage", (state) => percent(state.city.metrics.utilityCoveragePercent)),
-    ],
-    metrics: [
-      entry("Congestion", (state) => percent(state.city.metrics.congestionPercent), "Daily network demand against capacity"),
-      entry("Daily output", (state) => currency(state.city.metrics.grossCityProductDaily), "Modeled gross city product"),
-      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Residents against available units"),
-      entry("Transit share", (state) => percent(state.city.metrics.transitSharePercent), "Trips carried by public transit"),
-      entry("Land value", (state) => currency(state.city.metrics.averageLandValue), "Population-weighted district value"),
-      entry("Municipal balance", (state) => currency(state.city.metrics.municipalBalance), "Taxes less infrastructure maintenance"),
-    ],
-  },
-  people: {
-    title: "Population and households",
-    sceneLabel: "Demographics and migration",
-    summary: (state) => `${number(state.city.metrics.population)} residents in ${number(state.city.metrics.households)} households respond to housing, jobs, services, costs and access.`,
-    inspector: [
-      entry("Children", (state) => number(sumDistricts(state, (district) => district.children))),
-      entry("Adults", (state) => number(sumDistricts(state, (district) => district.adults))),
-      entry("Moving in / year", (state) => number(state.city.metrics.annualizedMigrationIn)),
-      entry("Moving out / year", (state) => number(state.city.metrics.annualizedMigrationOut)),
-    ],
-    metrics: [
-      entry("Population", (state) => number(state.city.metrics.population), "District-level demographic totals"),
-      entry("Households", (state) => number(state.city.metrics.households), "Average modeled household size"),
-      entry("Moving in", (state) => number(state.city.metrics.annualizedMigrationIn), "Annualized arrivals under current conditions"),
-      entry("Moving out", (state) => number(state.city.metrics.annualizedMigrationOut), "Annualized departures under current conditions"),
-      entry("Net migration", (state) => signedNumber(state.city.metrics.annualizedNetMigration), "Arrivals less departures per year"),
-      entry("Happiness", (state) => percent(state.city.metrics.happiness), "Jobs, goods, services, rent and travel"),
-    ],
-  },
-  economy: {
-    title: "Goods and money",
-    sceneLabel: "Supply, demand and trade",
-    summary: (state) => `${percent(state.city.market.localSupplyPercent)} of purchased goods are supplied locally; ${number(state.economy.externalWorkers)} visible workers commute outside the section.`,
-    inspector: [
-      entry("Food", (state) => marketBalance(state, "food")),
-      entry("Consumer goods", (state) => marketBalance(state, "consumerGoods")),
-      entry("Industrial materials", (state) => marketBalance(state, "industrialMaterials")),
-      entry("External workers", (state) => number(state.economy.externalWorkers)),
-    ],
-    metrics: [
-      entry("Household income", (state) => currency(state.city.metrics.householdIncomeDaily), "Wages and senior income each day"),
-      entry("Household spending", (state) => currency(state.city.metrics.householdSpendingDaily), "Budget-limited purchases at current prices"),
-      entry("Business profit", (state) => currency(state.city.metrics.businessProfitDaily), "Revenue less wages, rent, inputs and transport"),
-      entry("Price index", (state) => state.city.market.consumerPriceIndex.toFixed(1), "Food and consumer goods against base prices"),
-      entry("Goods imported", (state) => formatAmount(state.city.metrics.goodsImportedDaily), "Bounded external supply delivered each day"),
-      entry("Transport cost", (state) => currency(state.city.market.transportCostDaily), "Distance, weight and congestion costs"),
-    ],
-  },
-  infrastructure: {
-    title: "Infrastructure networks",
-    sceneLabel: "Mobility and utilities",
-    summary: (state) => `${number(state.city.links.length)} district links carry ${number(state.city.metrics.dailyTrips)} daily trips while shared networks allocate power, water and waste capacity.`,
-    inspector: [
-      entry("Citywide power", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.power * 100))),
-      entry("Citywide water", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.water * 100))),
-      entry("Citywide waste service", (state) => percent(weightedCity(state, (district) => district.utilityCoverage.waste * 100))),
-      entry("Citywide links", (state) => number(state.city.links.length)),
-    ],
-    metrics: [
-      entry("Commutes", (state) => number(state.city.metrics.commuteTripsDaily), "Work journeys generated by filled jobs"),
-      entry("Shopping", (state) => number(state.city.metrics.shoppingTripsDaily), "Trips generated by household purchases"),
-      entry("Freight", (state) => number(state.city.metrics.freightTripsDaily), "Local deliveries, imports and exports"),
-      entry("Congestion", (state) => percent(state.city.metrics.congestionPercent), "Private trips against road capacity"),
-      entry("Transit share", (state) => percent(state.city.metrics.transitSharePercent), "Demand served by transit capacity"),
-      entry("Utilities", (state) => percent(state.city.metrics.utilityCoveragePercent), "Power, water and waste coverage"),
-      entry("Waste service coverage", (state) => percent(state.city.metrics.wasteCollectionPercent), "Citywide access to waste service"),
-      entry("Maintenance", (state) => currency(state.city.metrics.maintenanceCostDaily), "Daily systems operating cost"),
-    ],
-  },
-  "land-use": {
-    title: "Land use and growth",
-    sceneLabel: "District zoning and value",
-    summary: (state) => `${state.city.districts.length} districts apply terrain, zoning strictness, floor-area limits, housing demand and infrastructure reliability.`,
-    inspector: [
-      entry("Developed area", (state) => area(sumDistricts(state, (district) => district.developedFloorArea))),
-      entry("Zoned capacity", (state) => area(sumDistricts(state, (district) => district.maxFloorArea))),
-      entry("Housing units", (state) => number(sumDistricts(state, (district) => district.housingUnits))),
-      entry("Average value", (state) => currency(state.city.metrics.averageLandValue)),
-    ],
-    metrics: [
-      entry("Land value", (state) => currency(state.city.metrics.averageLandValue), "Access, services, demand and congestion"),
-      entry("Rent index", (state) => state.city.metrics.averageRentIndex.toFixed(2), "Value and occupancy pressure"),
-      entry("Housing occupancy", (state) => percent(state.city.metrics.housingOccupancyPercent), "Residents against available units"),
-      entry("Developed area", (state) => area(sumDistricts(state, (district) => district.developedFloorArea)), "Current modeled floor area"),
-      entry("Zoned capacity", (state) => area(sumDistricts(state, (district) => district.maxFloorArea)), "Maximum permitted floor area"),
-      entry("Timeline points", (state) => number(state.city.timeline.length), "Weekly and calendar-boundary history"),
-    ],
-  },
-};
+buildModeButton.addEventListener("click", () => setAppMode("build"));
+simulateModeButton.addEventListener("click", () => setAppMode("simulate"));
+orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
+flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
+walkCameraButton.addEventListener("click", () => setCameraMode("walk"));
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -300,101 +159,147 @@ pauseButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   simulation.reset();
-  activeSelection = null;
-  renderer.setSelection(null);
   updateInterface();
 });
 
-selectionClose.addEventListener("click", () => {
-  closeInspection();
+resetDesignButton.addEventListener("click", () => {
+  designs.clear();
+  syncDesign();
+  selectionStatus.textContent = "All campus street interventions were reset.";
+});
+
+speedControl.addEventListener("input", () => {
+  const speed = Number(speedControl.value);
+  simulation.setSimulationSpeed(speed);
+  speedOutput.value = `${speed.toFixed(1)}×`;
+});
+
+timeHorizonControl.addEventListener("change", () => {
+  simulation.setTimeHorizon(timeHorizonControl.value as TimeHorizon);
+  updateControlPreviews();
   updateInterface();
 });
 
-for (const toggle of flowToggles) {
-  toggle.addEventListener("change", () => {
-    renderer.setVisibleFlows(flowToggles
-      .filter((candidate) => candidate.checked)
-      .map((candidate) => candidate.value as VisibleFlow));
-    updateInterface();
-  });
+speedLimitControl.addEventListener("change", () => {
+  simulation.setSpeedLimit(Number(speedLimitControl.value));
+  speedLimitControl.value = String(simulation.getSettings().speedLimitMph);
+  updateControlPreviews();
+});
+
+signalCycleControl.addEventListener("change", () => {
+  simulation.setSignalCycle(Number(signalCycleControl.value));
+  signalCycleControl.value = String(simulation.getSettings().signalCycleSeconds);
+  updateControlPreviews();
+  updateSelectionPanel();
+});
+
+simulationSeedControl.addEventListener("change", () => {
+  simulation.setSimulationSeed(Number(simulationSeedControl.value));
+  simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
+  updateInterface();
+});
+
+signalModeControl.addEventListener("change", () => {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  simulation.setSignalMode(
+    selectedFeature.id,
+    signalModeControl.value as SignalControlMode,
+  );
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `${formatSignalMode(signalModeControl.value as SignalControlMode)} control enabled at ${selectedFeature.name}.`;
+});
+
+for (const input of [
+  signalNorthSouthGreen,
+  signalEastWestGreen,
+  signalYellow,
+  signalAllRed,
+  signalPedestrian,
+]) {
+  input.addEventListener("change", updateSelectedSignalTiming);
 }
 
-settingsButton.addEventListener("click", () => setSettingsOpen(settingsDrawer.dataset.open !== "true"));
-settingsClose.addEventListener("click", () => setSettingsOpen(false));
-settingsScrim.addEventListener("click", () => setSettingsOpen(false));
-window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && settingsDrawer.dataset.open === "true") setSettingsOpen(false);
-  else if (event.key === "Escape" && !modeLayerMenu.hidden) modeLayerMenu.hidden = true;
-  else if (event.key === "Escape" && activeSelection !== null) closeInspection();
+manualNorthSouthButton.addEventListener("click", () => {
+  requestManualSignal("ns-green");
+});
+manualEastWestButton.addEventListener("click", () => {
+  requestManualSignal("ew-green");
+});
+manualAllRedButton.addEventListener("click", () => {
+  requestManualSignal("all-red");
 });
 
-for (const button of modeRailButtons) {
+for (const button of buildToolButtons) {
   button.addEventListener("click", () => {
-    const mode = button.dataset.mode as Mode;
-    const wasActive = activeMode === mode;
-    const options = modeLayers[mode];
-    if (!wasActive) setMapLayer(mode, options[0]!);
-    if (options.length > 1) {
-      renderModeLayerMenu(mode);
-      modeLayerMenu.hidden = wasActive ? !modeLayerMenu.hidden : false;
-    } else {
-      modeLayerMenu.hidden = true;
-    }
+    const tool = button.dataset.buildTool;
+    if (isBuildTool(tool)) applyBuildTool(tool);
   });
 }
 
-function setMapLayer(mode: Mode, option: Readonly<ModeLayerOption>): void {
-  activeMode = mode;
-  activeLayer = option.layer;
-  activeVisualLayer = option.visualLayer;
-  renderer.setVisualLayer(activeVisualLayer);
-  updateHeatLegend(activeVisualLayer);
-  setText(mapLegendTitle, option.label);
-  setText(activeLayerLabel, option.label);
-  mapLegend.hidden = activeVisualLayer === "none";
-  modeRailButtons.forEach((candidate) => {
-    candidate.setAttribute("aria-pressed", String(candidate.dataset.mode === activeMode));
-  });
-  updateInterface();
-}
+baselineMetricsButton.addEventListener("click", () => setMetricView("baseline"));
+modifiedMetricsButton.addEventListener("click", () => setMetricView("modified"));
 
-function renderModeLayerMenu(mode: Mode): void {
-  const options = modeLayers[mode];
-  modeLayerMenu.dataset.mode = mode;
-  modeLayerMenu.replaceChildren(...options.map((option) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = option.label;
-    button.setAttribute("aria-pressed", String(option.visualLayer === activeVisualLayer));
-    button.addEventListener("click", () => {
-      setMapLayer(mode, option);
-      modeLayerMenu.hidden = true;
-    });
-    return button;
-  }));
-}
-
-const settings = simulation.getSettings();
-const simulationRateControl = requireElement<HTMLSelectElement>("simulation-rate-control");
-const dayNightControl = requireElement<HTMLInputElement>("day-night-control");
-const speedLimitControl = bindRange("speed-limit-control", "speed-limit-output", settings.speedLimitMph, (value) => `${value} mph`, (value) => simulation.setSpeedLimitMph(value));
-const signalCycleControl = bindRange("signal-cycle-control", "signal-cycle-output", settings.signalCycleSeconds, (value) => `${value}s`, (value) => simulation.setSignalCycleSeconds(value));
-const transitHeadwayControl = bindRange("transit-headway-control", "transit-headway-output", settings.transitHeadwayMinutes, (value) => `${value} min`, (value) => simulation.setTransitHeadwayMinutes(value));
-const roadCapacityControl = bindRange("road-capacity-control", "road-capacity-output", settings.roadCapacity, (value) => `${value} vehicles`, (value) => simulation.setRoadCapacity(value));
-const utilityCapacityControl = bindRange("utility-capacity-control", "utility-capacity-output", settings.utilityCapacityScale, (value) => percent(value * 100), (value) => simulation.setUtilityCapacityScale(value));
-const zoningStrictnessControl = bindRange("zoning-strictness-control", "zoning-strictness-output", settings.zoningStrictness, (value) => percent(value * 100), (value) => simulation.setZoningStrictness(value));
-
-simulationRateControl.value = simulationRateForSettings(settings.timeHorizon, settings.simulationSpeed);
-simulationRateControl.addEventListener("change", () => {
-  const rate = SIMULATION_RATES[simulationRateControl.value as SimulationRate];
-  simulation.setTimeHorizon(rate.horizon);
-  simulation.setSimulationSpeed(rate.multiplier);
-  updateInterface();
+analysisOverlay.addEventListener("change", () => {
+  renderer.setMapOverlay(analysisOverlay.value as MapOverlayMode);
+  entityInterfaceSignature = "";
+  updateEntityInterface();
 });
-dayNightControl.addEventListener("change", () => {
-  renderer.setDayNightCycleEnabled(dayNightControl.checked);
-  renderer.render(simulation.getState());
-  updateControlEffects(simulation.getState());
+
+flowControls.addEventListener("change", () => {
+  const visible = new Set(
+    Array.from(flowControls.querySelectorAll<HTMLInputElement>("input:checked"))
+      .map((input) => input.value as BuildingConnectionKind),
+  );
+  renderer.setVisibleFlowKinds(visible);
+});
+
+settingsButton.addEventListener("click", () => setSettingsOpen(true));
+settingsCloseButton.addEventListener("click", () => setSettingsOpen(false));
+settingsScrim.addEventListener("click", () => setSettingsOpen(false));
+
+transitHeadwayControl.addEventListener("input", () => {
+  simulation.setTransitHeadway(Number(transitHeadwayControl.value));
+  updateControlPreviews();
+});
+roadCapacityControl.addEventListener("input", () => {
+  simulation.setRoadCapacity(Number(roadCapacityControl.value));
+  updateControlPreviews();
+});
+utilityCapacityControl.addEventListener("input", () => {
+  simulation.setUtilityCapacityScale(Number(utilityCapacityControl.value) / 100);
+  updateControlPreviews();
+});
+zoningControl.addEventListener("input", () => {
+  simulation.setZoningStrictness(Number(zoningControl.value) / 100);
+  updateControlPreviews();
+});
+
+locationSearch.addEventListener("submit", (event) => {
+  event.preventDefault();
+  flyToSearchResult(locationSearchInput.value);
+});
+
+renderer.setSelectionHandler((feature) => {
+  if (appMode !== "build") return;
+  selectedFeature = feature;
+  renderer.setSelectedFeature(feature.id);
+  updateSelectionPanel();
+});
+
+renderer.setEntitySelectionHandler((selection) => {
+  if (appMode !== "simulate") return;
+  selectedEntity = selection;
+  renderer.setSelectedEntity(selection);
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+});
+
+renderer.setEntityHoverHandler((selection, clientX, clientY) => {
+  updateEntityTooltip(selection, clientX, clientY);
+});
+
+renderer.setEnvironmentStatusHandler((mode, detail) => {
+  updateEnvironmentStatus(mode, detail);
 });
 
 window.addEventListener("resize", () => {
@@ -407,1472 +312,895 @@ function animationFrame(timestamp: number): void {
   previousTimestamp = timestamp;
   simulation.update(deltaSeconds);
   renderer.render(simulation.getState());
-  if (timestamp - previousInterfaceTimestamp >= INTERFACE_UPDATE_INTERVAL_MS) {
-    previousInterfaceTimestamp = timestamp;
-    updateInterface();
-  }
+  updateMetrics();
   window.requestAnimationFrame(animationFrame);
+}
+
+function setAppMode(mode: AppMode): void {
+  appMode = mode;
+  document.body.dataset.appMode = mode;
+  const building = mode === "build";
+  buildModeButton.setAttribute("aria-pressed", String(building));
+  simulateModeButton.setAttribute("aria-pressed", String(!building));
+  renderer.setBuildMode(building);
+  renderer.setMapOverlay(
+    building ? "none" : (analysisOverlay.value as MapOverlayMode),
+  );
+  renderer.setSelectedEntity(building ? null : selectedEntity);
+  if (building) {
+    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a highlighted street";
+    updateSelectionPanel();
+  } else {
+    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a building or person";
+    simulationTitle.textContent = "Penn · University City";
+    sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
+  }
+  entityInterfaceSignature = "";
+  updateInterface();
+}
+
+function setCameraMode(mode: CameraMode): void {
+  cameraMode = mode;
+  document.body.dataset.cameraMode = mode;
+  orbitCameraButton.setAttribute("aria-pressed", String(mode === "orbit"));
+  flyCameraButton.setAttribute("aria-pressed", String(mode === "fly"));
+  walkCameraButton.setAttribute("aria-pressed", String(mode === "walk"));
+  renderer.setCameraMode(mode);
+}
+
+function updateEnvironmentStatus(mode: EnvironmentMode, detail: string): void {
+  environmentMode.textContent = mode === "rendered" ? "Rendered" : "Loading";
+  environmentMode.parentElement?.setAttribute("data-environment", mode);
+  environmentMode.parentElement?.setAttribute("title", detail);
 }
 
 function updateInterface(): void {
   const state = simulation.getState();
-  const view = views[activeLayer];
-  const selectedMapLayer = modeLayers[activeMode].find((option) => option.visualLayer === activeVisualLayer)
-    ?? modeLayers[activeMode][0]!;
-  statusPill.dataset.status = state.running ? "running" : state.elapsedSeconds > 0 ? "paused" : "ready";
-  setText(statusPill, state.running ? "Running" : state.elapsedSeconds > 0 ? "Paused" : "Ready");
+  statusPill.dataset.status = state.running ? "running" : "paused";
+  statusPill.textContent = state.running
+    ? "Running"
+    : state.elapsedSeconds > 0
+      ? "Paused"
+      : "Ready";
   runButton.disabled = state.running;
   pauseButton.disabled = !state.running;
-  setText(dayOutput, `Day ${Math.floor(state.metrics.simulatedDays) + 1} · ${selectedSimulationRate().label}`);
-  setText(timeOutput, formatLongDate(state.city.startYear, state.metrics.simulatedDays));
-  const clockTime = formatClockTime(state.timeOfDayMinutes);
-  setText(hourOutput, clockTime);
-  hourOutput.dateTime = clockTime;
-  setText(signalPhase, state.signalPhase === "vehicles" ? "Vehicles" : "Pedestrians");
-  setText(signalTimeRemaining, state.signalPhaseRemainingSeconds.toFixed(1));
-  setText(generatedCommutes, `${number(state.city.metrics.commuteTripsDaily)}/day`);
-  setText(generatedShopping, `${number(state.city.metrics.shoppingTripsDaily)}/day`);
-  setText(generatedPedestrians, `${number(state.city.metrics.pedestrianTripsDaily)}/day`);
-  setText(generatedFreight, `${number(state.city.metrics.freightTripsDaily)}/day`);
-  setText(cityNameOutput, state.city.name);
-  setText(activeLayerLabel, selectedMapLayer.label);
-  setText(detailModeOutput, `${capitalize(renderer.getDetailMode())} detail`);
-  setText(inspectorTitle, view.title);
-  setText(inspectorSummary, view.summary(state));
-  setText(metricsTitle, view.sceneLabel);
-  view.inspector.forEach((display, index) => {
-    const elements = inspectorElements[index]!;
-    setText(elements.label, display.label);
-    setText(elements.value, display.value(state));
-  });
-  view.metrics.slice(0, 6).forEach((display, index) => {
-    const elements = metricElements[index]!;
-    setText(elements.label, display.label);
-    setText(elements.value, display.value(state));
-    setText(elements.detail, display.detail ?? "");
-  });
-  renderRepresentation(state);
-  renderModeSystemFlow(state);
-  renderCauses(state);
-  renderBaseline(state);
-  renderTimelineMarkers(state);
-  renderEvents(state);
-  updateControlEffects(state);
-  renderSelection(state);
+  renderer.render(state);
+  updateMetrics();
 }
 
-function renderRepresentation(state: Readonly<SimulationState>): void {
-  const summary = deriveRepresentationSummary(state.city, state.people, state.buildings);
-  const movingAgents = state.vehicles.filter((vehicle) => !vehicle.completed).length
-    + state.pedestrians.filter((pedestrian) => !pedestrian.completed).length;
-  setText(representationPerson, summary.peopleLabel);
-  setText(representationBadge, summary.peopleLabel);
-  setText(representationBuildings, summary.citywideLabel);
-  setText(
-    representationActivity,
-    `${number(movingAgents)} visible moving agents sample ${number(state.city.metrics.dailyTrips)} citywide trips per day.`,
+function updateMetrics(): void {
+  const state = simulation.getState();
+  const metrics =
+    metricView === "baseline" ? simulation.getBaselineMetrics() : state.metrics;
+  vehicleTime.textContent = `${metrics.vehicleTravelSeconds.toFixed(1)} s`;
+  averageSpeed.textContent = `${metrics.averageSpeedMph.toFixed(1)} mph`;
+  congestion.textContent = String(metrics.congestion);
+  intersectionDelay.textContent = `${metrics.intersectionDelaySeconds.toFixed(1)} s`;
+  pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
+  conflicts.textContent = String(metrics.potentialConflicts);
+  throughput.textContent = metrics.throughputPerHour.toLocaleString();
+  activeVehicles.textContent = metrics.activeVehicles.toLocaleString();
+  activePedestrians.textContent = metrics.activePedestrians.toLocaleString();
+  crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
+  signalPhase.textContent = formatSignalPhase(state.signalPhase);
+  cityDate.textContent = state.cityActivity.dateLabel;
+  cityClock.textContent = state.cityActivity.clockLabel;
+  vehicleVolumeOutput.value = formatVolume(state.cityActivity.vehicleDemandLevel);
+  pedestrianVolumeOutput.value = formatVolume(
+    state.cityActivity.pedestrianDemandLevel,
+  );
+  commuteTripShare.textContent = `Work ${state.cityActivity.commuteSharePercent}%`;
+  shoppingTripShare.textContent = `Shopping ${state.cityActivity.shoppingSharePercent}%`;
+  freightTripShare.textContent = `Freight ${state.cityActivity.freightSharePercent}%`;
+  const cityMetrics = state.city.metrics;
+  cityPopulation.textContent = Math.round(cityMetrics.population).toLocaleString();
+  cityOutput.textContent = formatCurrency(cityMetrics.grossCityProductDaily);
+  cityUnemployment.textContent = `${cityMetrics.unemploymentPercent.toFixed(1)}%`;
+  cityUtilities.textContent = `${cityMetrics.utilityCoveragePercent.toFixed(0)}%`;
+  cityImports.textContent = `${state.city.market.importDependencePercent.toFixed(0)}%`;
+  cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
+  const visiblePeople = Math.max(
+    1,
+    metrics.activePedestrians + metrics.activeVehicles * 1.4,
+  );
+  const representedResidents = Math.max(
+    1,
+    Math.round(cityMetrics.population / visiblePeople / 10) * 10,
+  );
+  representationNote.textContent = `1 visible agent represents about ${representedResidents.toLocaleString()} residents; buildings represent district activity.`;
+  updateSelectedSignalStatus();
+  updateEntityInterface();
+}
+
+function setMetricView(view: "baseline" | "modified"): void {
+  metricView = view;
+  const baseline = view === "baseline";
+  baselineMetricsButton.setAttribute("aria-pressed", String(baseline));
+  modifiedMetricsButton.setAttribute("aria-pressed", String(!baseline));
+  metricsKicker.textContent = baseline ? "Baseline network" : "Modified design";
+  updateMetrics();
+}
+
+function updateSelectionPanel(): void {
+  if (!selectedFeature) return;
+  const design = getDesign(selectedFeature.id);
+  selectionTitle.textContent = selectedFeature.name;
+  selectionDescription.textContent = selectedFeature.description;
+  featureKind.textContent = selectedFeature.kind === "street" ? "Street" : "Intersection";
+  featureKind.dataset.kind = selectedFeature.kind;
+  simulationTitle.textContent = selectedFeature.name;
+  sceneSubtitle.textContent = selectedFeature.description;
+  signalEditor.hidden = selectedFeature.kind !== "intersection";
+  if (selectedFeature.kind === "intersection") {
+    const signal = simulation.getSignal(selectedFeature.id);
+    if (signal) {
+      signalModeControl.value = signal.mode;
+      signalNorthSouthGreen.value = String(
+        signal.timing.northSouthGreenSeconds,
+      );
+      signalEastWestGreen.value = String(signal.timing.eastWestGreenSeconds);
+      signalYellow.value = String(signal.timing.yellowSeconds);
+      signalAllRed.value = String(signal.timing.allRedSeconds);
+      signalPedestrian.value = String(signal.timing.pedestrianSeconds);
+    }
+    updateSelectedSignalStatus();
+  }
+
+  for (const button of buildToolButtons) {
+    button.disabled = button.dataset.target !== selectedFeature.kind;
+  }
+
+  const summaries =
+    selectedFeature.kind === "street"
+      ? streetDesignSummaries(selectedFeature, design)
+      : [
+          design.crosswalk ? "High-vis crosswalk" : "Standard crosswalk",
+          design.pedestrianIsland ? "Pedestrian island" : "No refuge island",
+          `${signalCycleSeconds(selectedFeature.id).toFixed(0)} sec signal`,
+        ];
+
+  designSummary.replaceChildren(
+    ...summaries.map((summary, index) => {
+      const tag = document.createElement("span");
+      tag.textContent = summary;
+      tag.dataset.active = String(index === 0 || !summary.startsWith("No "));
+      return tag;
+    }),
+  );
+  selectionStatus.textContent = "Changes appear directly in the 3D street and update simulation results.";
+}
+
+function updateSelectedSignalTiming(): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  const timing: SignalTiming = {
+    northSouthGreenSeconds: Number(signalNorthSouthGreen.value),
+    eastWestGreenSeconds: Number(signalEastWestGreen.value),
+    yellowSeconds: Number(signalYellow.value),
+    allRedSeconds: Number(signalAllRed.value),
+    pedestrianSeconds: Number(signalPedestrian.value),
+  };
+  simulation.setSignalTiming(selectedFeature.id, timing);
+  const signal = simulation.getSignal(selectedFeature.id);
+  if (signal) {
+    signalNorthSouthGreen.value = String(signal.timing.northSouthGreenSeconds);
+    signalEastWestGreen.value = String(signal.timing.eastWestGreenSeconds);
+    signalYellow.value = String(signal.timing.yellowSeconds);
+    signalAllRed.value = String(signal.timing.allRedSeconds);
+    signalPedestrian.value = String(signal.timing.pedestrianSeconds);
+  }
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `Live signal timing updated at ${selectedFeature.name}.`;
+}
+
+function requestManualSignal(target: ManualSignalTarget): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  simulation.requestManualSignal(selectedFeature.id, target);
+  signalModeControl.value = "manual";
+  updateSelectedSignalStatus();
+  selectionStatus.textContent = `${formatSignalPhase(target)} requested with a safe yellow and all-red transition.`;
+}
+
+function updateSelectedSignalStatus(): void {
+  if (!selectedFeature || selectedFeature.kind !== "intersection") return;
+  const signal = simulation.getSignal(selectedFeature.id);
+  if (!signal) return;
+  signalModeControl.value = signal.mode;
+  manualSignalControls.hidden = signal.mode !== "manual";
+  signalCurrentPhase.textContent = formatSignalPhase(signal.phase);
+  signalNextPhase.textContent = formatSignalPhase(signal.nextPhase);
+  signalTimeRemaining.textContent =
+    signal.timeRemainingSeconds === null
+      ? "Held"
+      : `${signal.timeRemainingSeconds.toFixed(1)} sec`;
+  manualNorthSouthButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "ns-green"),
+  );
+  manualEastWestButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "ew-green"),
+  );
+  manualAllRedButton.setAttribute(
+    "aria-pressed",
+    String(signal.phase === "all-red"),
   );
 }
 
-function renderModeSystemFlow(state: Readonly<SimulationState>): void {
-  modeSystemFlow.hidden = false;
-  if (activeMode === "traffic") {
-    if (activeVisualLayer === "pedestrian-wait") {
-      const queued = state.pedestrians.filter((pedestrian) => pedestrian.waitSeconds > 0.5).length;
-      renderModeEquation(
-        "Visible street sample",
-        [
-          ["Walking demand", number(state.pedestrians.length)],
-          ["Waiting", number(queued)],
-          ["Average wait", `${Math.round(state.metrics.pedestrianWaitSeconds)} sec`],
-        ],
-        "Pedestrian queues are measured only for the detailed intersection, not the full city section.",
-      );
-      return;
-    }
-    if (activeVisualLayer === "freight") {
-      const activeTrucks = state.vehicles.filter((vehicle) => !vehicle.completed && vehicle.vehicleType === "truck").length;
-      renderModeEquation(
-        "Freight activity",
-        [
-          ["Citywide demand", `${number(state.city.metrics.freightTripsDaily)}/day`],
-          ["Visible trucks", number(activeTrucks)],
-          ["Deliveries", number(state.economy.deliveriesCompleted)],
-        ],
-        "Citywide freight demand generates a smaller visible sample of street deliveries.",
-      );
-      return;
-    }
-    const roadDemand = deriveCongestionTripBreakdown(state.city).roadTripsDaily;
-    const roadCapacity = state.city.links.reduce((total, link) => total + link.roadCapacityDaily, 0)
-      * roadCapacityControl.valueAsNumber / 20;
-    const queuedVehicles = state.vehicles.filter((vehicle) => !vehicle.completed && vehicle.waitingSeconds > 0.5);
-    const averageWait = average(queuedVehicles.map((vehicle) => vehicle.waitingSeconds));
-    renderModeEquation(
-      "Traffic accounting",
-      [
-        ["Citywide demand", `${number(roadDemand)}/day`],
-        ["Citywide capacity", `${number(roadCapacity)}/day`],
-        ["Citywide congestion", percent(state.city.metrics.congestionPercent)],
-      ],
-      `Visible street sample: ${number(state.vehicles.length)} active vehicles, ${number(queuedVehicles.length)} queued, ${Math.round(averageWait)} sec average queue delay.`,
-    );
+function signalCycleSeconds(intersectionId: string): number {
+  const timing = simulation.getSignal(intersectionId)?.timing;
+  if (!timing) return simulation.getSettings().signalCycleSeconds;
+  return (
+    timing.northSouthGreenSeconds +
+    timing.eastWestGreenSeconds +
+    timing.yellowSeconds * 2 +
+    timing.allRedSeconds * 3 +
+    timing.pedestrianSeconds
+  );
+}
+
+function applyBuildTool(tool: BuildTool): void {
+  if (!selectedFeature) return;
+  const streetTool = ["add-lane", "remove-lane", "bike-lane", "sidewalk", "direction"].includes(
+    tool,
+  );
+  if (
+    (streetTool && selectedFeature.kind !== "street") ||
+    (!streetTool && selectedFeature.kind !== "intersection")
+  ) {
+    selectionStatus.textContent = `Select a ${streetTool ? "street segment" : "intersection"} first.`;
     return;
   }
 
-  if (activeMode === "services") {
-    const heading = document.createElement("strong");
-    const rows = document.createElement("div");
-    const note = document.createElement("p");
-    heading.textContent = "Detailed utility networks";
-    rows.className = "utility-flow-rows";
-    rows.replaceChildren(...(["power", "water", "waste"] as const).map((kind) => {
-      const utility = state.infrastructure.utilities[kind];
-      const row = document.createElement("article");
-      const title = document.createElement("strong");
-      const equation = document.createElement("div");
-      title.textContent = `${capitalize(kind)} · ${utility.sourceName}`;
-      equation.className = "utility-flow-equation";
-      const values: ReadonlyArray<readonly [string, string]> = [
-        ["Demand", formatAmount(utility.demand)],
-        ["Losses", percent(utility.lossPercent)],
-        ["Delivered", formatAmount(utility.delivered)],
-        ["Shortfall", formatAmount(Math.max(0, utility.demand - utility.delivered))],
-      ];
-      values.forEach(([label, value], index) => {
-        if (index > 0) {
-          const arrow = document.createElement("i");
-          arrow.textContent = "→";
-          equation.append(arrow);
-        }
-        const item = document.createElement("span");
-        const itemLabel = document.createElement("small");
-        const itemValue = document.createElement("b");
-        itemLabel.textContent = label;
-        itemValue.textContent = value;
-        item.append(itemLabel, itemValue);
-        equation.append(item);
-      });
-      row.append(title, equation);
-      return row;
-    }));
-    note.textContent = `Visible street coverage ${percent(state.metrics.utilityCoveragePercent)} · citywide service coverage ${percent(state.city.metrics.utilityCoveragePercent)}.`;
-    modeSystemFlow.replaceChildren(heading, rows, note);
-    return;
-  }
+  const design = getDesign(selectedFeature.id);
+  if (tool === "add-lane") design.laneDelta = design.laneDelta === 1 ? 0 : 1;
+  if (tool === "remove-lane") design.laneDelta = design.laneDelta === -1 ? 0 : -1;
+  if (tool === "bike-lane") design.bikeLane = !design.bikeLane;
+  if (tool === "sidewalk") design.widenedSidewalk = !design.widenedSidewalk;
+  if (tool === "crosswalk") design.crosswalk = !design.crosswalk;
+  if (tool === "island") design.pedestrianIsland = !design.pedestrianIsland;
+  if (tool === "direction") design.laneDirection = nextDirection(design.laneDirection);
 
-  modeSystemFlow.hidden = true;
-  modeSystemFlow.replaceChildren();
+  designs.set(selectedFeature.id, design);
+  syncDesign();
+  selectionStatus.textContent = `${formatTool(tool)} applied to ${selectedFeature.name}.`;
 }
 
-function renderModeEquation(
-  titleText: string,
-  values: ReadonlyArray<readonly [string, string]>,
-  noteText: string,
-): void {
-  const title = document.createElement("strong");
-  const equation = document.createElement("div");
-  const note = document.createElement("p");
-  title.textContent = titleText;
-  equation.className = "mode-equation";
-  values.forEach(([label, value], index) => {
-    if (index > 0) {
-      const arrow = document.createElement("i");
-      arrow.textContent = "→";
-      equation.append(arrow);
-    }
-    const node = document.createElement("span");
-    const nodeLabel = document.createElement("small");
-    const nodeValue = document.createElement("b");
-    nodeLabel.textContent = label;
-    nodeValue.textContent = value;
-    node.append(nodeLabel, nodeValue);
-    equation.append(node);
-  });
-  note.textContent = noteText;
-  modeSystemFlow.replaceChildren(title, equation, note);
-}
-
-function renderCauses(state: Readonly<SimulationState>): void {
-  if (activeMode === "services") {
-    causeSection.hidden = true;
-    return;
-  }
-  causeSection.hidden = false;
-  let contributions: InsightContribution[];
-  let formatValue: (value: number) => string;
-  if (activeLayer === "people" || activeLayer === "land-use") {
-    contributions = deriveMigrationBreakdown(state.city).contributions;
-    formatValue = (value) => `${signedNumber(value)}/yr`;
-  } else if (activeLayer === "economy") {
-    contributions = derivePriceBreakdowns(state.city).consumerGoods.contributions;
-    formatValue = (value) => signedCurrency(value);
-  } else if (activeLayer === "infrastructure") {
-    const breakdown = deriveCongestionTripBreakdown(state.city);
-    contributions = breakdown.rows.filter((row) => row.contributesToRoadCongestion).map((row) => ({
-      key: row.category,
-      label: row.label.replace("Private ", ""),
-      value: breakdown.roadTripsDaily > 0 ? row.tripsDaily / breakdown.roadTripsDaily * 100 : 0,
-      explanation: `${number(row.tripsDaily)} citywide daily trips use road capacity.`,
-    }));
-    formatValue = (value) => percent(value);
-  } else {
-    contributions = deriveHappinessBreakdown(state.city).contributions;
-    formatValue = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(1)} pts`;
-  }
-
-  const displayedContributions = contributions
-    .filter((row) => row.key !== "reconciliation")
-    .sort((left, right) => Math.abs(right.value) - Math.abs(left.value))
-    .slice(0, 5);
-  const renderKey = `${activeLayer}:${displayedContributions.map((row) => `${row.key}:${row.value.toFixed(3)}`).join("|")}`;
-  if (causeList.dataset.renderKey === renderKey) return;
-  causeList.dataset.renderKey = renderKey;
-  const maximum = Math.max(1, ...displayedContributions.map((row) => Math.abs(row.value)));
-  causeList.replaceChildren(...displayedContributions.map((contribution) => {
-    const row = document.createElement("div");
-    row.title = contribution.explanation;
-    const term = document.createElement("dt");
-    const value = document.createElement("dd");
-    const meter = document.createElement("span");
-    const fill = document.createElement("i");
-    term.textContent = contribution.label;
-    value.textContent = formatValue(contribution.value);
-    meter.className = "cause-meter";
-    fill.style.setProperty("--cause-width", `${Math.max(1, Math.abs(contribution.value) / maximum * 100)}%`);
-    fill.style.setProperty("--cause-color", contribution.value < 0 ? "#e16d61" : "#75dabc");
-    meter.append(fill);
-    row.append(term, value, meter);
-    return row;
-  }));
-}
-
-function renderBaseline(state: Readonly<SimulationState>): void {
-  const displayedKeys = new Set<BaselineComparisonRow["key"]>([
-    "population",
-    "grossCityProductDaily",
-    "congestionPercent",
-    "averageLandValue",
-  ]);
-  const rows = compareWithBaseline(state.city, baseline).filter((row) => displayedKeys.has(row.key));
-  const renderKey = rows.map((row) => `${row.key}:${row.current.toFixed(2)}`).join("|");
-  if (baselineList.dataset.renderKey === renderKey) return;
-  baselineList.dataset.renderKey = renderKey;
-  baselineList.replaceChildren(...rows.map((comparison) => {
-    const row = document.createElement("div");
-    const label = document.createElement("span");
-    const current = document.createElement("strong");
-    const original = document.createElement("span");
-    const difference = document.createElement("em");
-    row.className = "baseline-row";
-    label.textContent = comparison.label;
-    current.textContent = formatBaselineValue(comparison, comparison.current);
-    original.textContent = formatBaselineValue(comparison, comparison.baseline);
-    difference.textContent = formatBaselineDifference(comparison);
-    difference.dataset.direction = comparison.difference < 0 ? "down" : comparison.difference > 0 ? "up" : "flat";
-    row.append(label, current, original, difference);
-    return row;
-  }));
-}
-
-function renderTimelineMarkers(state: Readonly<SimulationState>): void {
-  const points = state.city.timeline.filter((point) => point.day > baseline.elapsedDays).slice(-3);
-  const values = points.map((point) => {
-    const populationDifference = point.population - baseline.values.population;
-    const outputDifference = point.grossCityProductDaily - baseline.values.grossCityProductDaily;
-    const congestionDifference = point.congestionPercent - baseline.values.congestionPercent;
-    return `${formatLongDate(state.city.startYear, point.day)}: population ${signedNumber(populationDifference)}, output ${signedCurrency(outputDifference)}, congestion ${signedFixed(congestionDifference)} pts.`;
-  });
-  const rows = values.length > 0 ? values : ["Run the simulation to add control comparison markers."];
-  const renderKey = rows.join("|");
-  if (timelineMarkers.dataset.renderKey === renderKey) return;
-  timelineMarkers.dataset.renderKey = renderKey;
-  timelineMarkers.replaceChildren(...rows.map((value) => {
-    const row = document.createElement("li");
-    row.textContent = value;
-    return row;
-  }));
-}
-
-function renderSelection(state: Readonly<SimulationState>): void {
-  inspectorPanel.dataset.view = activeSelection === null ? "mode" : "selection";
-  inspectorPanel.hidden = false;
-  selectionPanel.hidden = activeSelection === null;
-  dashboardPanel.hidden = activeSelection !== null;
-  if (activeSelection === null) return;
-
-  if (activeSelection.kind === "building") {
-    const building = state.buildings.find((candidate) => candidate.id === activeSelection?.id);
-    if (building === undefined) {
-      clearSelection();
-      return;
-    }
-    renderBuildingSelection(building, state);
-    return;
-  }
-
-  const person = state.people.find((candidate) => candidate.id === activeSelection?.id);
-  if (person === undefined) {
-    clearSelection();
-    return;
-  }
-  renderPersonSelection(person, state);
-}
-
-function renderBuildingSelection(building: Building, state: Readonly<SimulationState>): void {
-  const inspectorNames: Record<Building["buildingUse"], string> = {
-    housing: "Residential property",
-    retail: "Retail business",
-    industrial: "Industrial employer",
-    school: "School service",
-    library: "Library service",
-    clinic: "Health service",
-    park: "Public amenity",
+function syncDesign(): void {
+  renderer.setDesigns(designs);
+  simulation.setRoadDesigns(designs);
+  const impact: DesignImpact = {
+    laneCapacityDelta: 0,
+    bikeLanes: 0,
+    sidewalkUpgrades: 0,
+    crosswalks: 0,
+    pedestrianIslands: 0,
   };
-  selectionKicker.textContent = inspectorNames[building.buildingUse];
-  selectionTitle.textContent = building.name;
-  const calculatedWages = building.employeeIds.reduce((total, personId) => {
-    const employee = state.people.find((person) => person.id === personId);
-    return total + (employee?.dailyWage ?? 0);
-  }, 0);
-  const accounting = building.accounting ?? {
-    operatingModel: building.zone === "residential" ? "housing" : "business",
-    operatingStatus: "closed",
-    serviceKind: "none",
-    requiredWorkers: building.jobCapacity,
-    staffingRatio: 0,
-    averageWage: building.wageOffer ?? 0,
-    unitPrice: building.retailPrice ?? 0,
-    cashReserve: building.cashReserve ?? 0,
-    workforceChange: 0,
-    lossStreak: building.unprofitableDays ?? 0,
-    dailyWages: calculatedWages,
-    rentIncome: 0,
-    occupancyCost: building.zone === "commercial" || building.zone === "industrial" ? building.rent : 0,
-    maintenanceCost: 0,
-    utilityCost: 0,
-    goodsReceived: 0,
-    localSupplies: 0,
-    importedSupplies: 0,
-    supplyCost: 0,
-    transportCost: 0,
-    goodsSold: 0,
-    revenue: 0,
-    operatingCost: calculatedWages + building.rent,
-    profit: -(calculatedWages + building.rent),
-    customers: 0,
-    municipalFunding: 0,
-    serviceDemand: 0,
-    serviceDelivered: 0,
-    serviceQuality: 0,
-  };
-  const averageWage = building.employeeIds.length > 0
-    ? accounting.dailyWages / building.employeeIds.length
-    : 0;
-  const utilitySummary = `Power ${percent(building.utilityService.power * 100)}, water ${percent(building.utilityService.water * 100)}, waste ${percent(building.utilityService.waste * 100)}`;
-  const commonBusinessRows: ReadonlyArray<readonly [string, string]> = [
-    ["Operating status", capitalize(accounting.operatingStatus)],
-    ["Employees", `${building.employeeIds.length} / ${building.jobCapacity}`],
-    ["Average daily wage", currency(averageWage || accounting.averageWage)],
-    ["Workforce change", signedNumber(accounting.workforceChange)],
+  for (const design of designs.values()) {
+    impact.laneCapacityDelta += design.laneDelta;
+    impact.bikeLanes += Number(design.bikeLane);
+    impact.sidewalkUpgrades += Number(design.widenedSidewalk);
+    impact.crosswalks += Number(design.crosswalk);
+    impact.pedestrianIslands += Number(design.pedestrianIsland);
+  }
+  simulation.setDesignImpact(impact);
+  updateSelectionPanel();
+  updateMetrics();
+}
+
+function getDesign(featureId: string): FeatureDesign {
+  const road = simulation.getRoadSegment(featureId);
+  return (
+    designs.get(featureId) ?? {
+      laneDelta: 0,
+      bikeLane: road?.lanes.some((lane) => lane.type === "bike") ?? false,
+      widenedSidewalk: false,
+      crosswalk: false,
+      pedestrianIsland: false,
+      laneDirection: road?.directionality ?? "two-way",
+      signalCycleSeconds: simulation.getSettings().signalCycleSeconds,
+    }
+  );
+}
+
+function streetDesignSummaries(
+  feature: DistrictFeature,
+  design: Readonly<FeatureDesign>,
+): string[] {
+  const road = simulation.getRoadSegment(feature.id);
+  if (!road) {
+    return [
+      formatLaneChange(design.laneDelta),
+      formatDirection(design.laneDirection, feature.axis),
+    ];
+  }
+  return [
+    `${road.roadClass.replace("-", " ")} · ${road.travelLaneCount} travel lanes`,
+    road.lanes.some((lane) => lane.type === "bike")
+      ? "Protected bike lane"
+      : "No bike lane",
+    road.lanes.some((lane) => lane.type === "parking")
+      ? "Curb parking lane"
+      : "No parking lane",
+    design.widenedSidewalk ? "Wider sidewalk" : "Standard sidewalk",
+    formatDirection(road.directionality, feature.axis),
   ];
-  const tenantArrears = state.households
-    .filter((household) => household.homeBuildingId === building.id)
-    .reduce((total, household) => total + household.rentArrears, 0);
-  renderBuildingVisuals(building, accounting);
-  renderBuildingFinancialFlow(building, accounting);
-  if (activeMode === "traffic") renderBuildingTrafficVisual(building, state);
-  else renderBuildingUtilityVisual(building);
+}
 
-  switch (building.buildingUse) {
-    case "housing":
-      selectionSummary.textContent = `${building.floors}-floor housing property. ${utilitySummary}.`;
-      renderStatRows([
-        ["Residents", `${building.residentIds.length} / ${building.residentCapacity}`],
-        ["Occupancy", percent(building.residentIds.length / Math.max(1, building.residentCapacity) * 100)],
-        ["Daily asking rent", currency(building.rent)],
-        ["Tenant arrears", currency(tenantArrears)],
-        ["Rent collected", currency(accounting.rentIncome)],
-        ["Maintenance and utilities", currency(accounting.maintenanceCost + accounting.utilityCost)],
-        ["Property net income", currency(accounting.profit)],
-      ]);
-      break;
-    case "retail":
-      selectionSummary.textContent = `Customer-facing shop operating at ${percent(building.efficiency * 100)} efficiency. ${utilitySummary}.`;
-      renderStatRows([
-        ...commonBusinessRows,
-        ["Selling price", currency(accounting.unitPrice)],
-        ["Customers today", number(accounting.customers)],
-        ["Units sold", `${formatAmount(accounting.goodsSold)} of ${formatAmount(building.goodsInventory + accounting.goodsSold)} available`],
-        ["Local / imported supply", `${formatAmount(accounting.localSupplies)} / ${formatAmount(accounting.importedSupplies)}`],
-        ["Revenue / operating cost", `${currency(accounting.revenue)} / ${currency(accounting.operatingCost)}`],
-        ["Operating profit", currency(accounting.profit)],
-        ["Cash reserve", currency(accounting.cashReserve)],
-      ]);
-      break;
-    case "industrial":
-      selectionSummary.textContent = `Goods producer with ${formatAmount(building.goodsInventory)} units in inventory. ${utilitySummary}.`;
-      renderStatRows([
-        ...commonBusinessRows,
-        ["Production capacity", `${formatAmount(building.productionRate)} units/day`],
-        ["Goods produced or received", formatAmount(accounting.goodsReceived)],
-        ["Goods shipped", formatAmount(accounting.goodsSold)],
-        ["Inventory", formatAmount(building.goodsInventory)],
-        ["Supply and transport", currency(accounting.supplyCost + accounting.transportCost)],
-        ["Revenue / operating cost", `${currency(accounting.revenue)} / ${currency(accounting.operatingCost)}`],
-        ["Operating profit", currency(accounting.profit)],
-        ["Cash reserve", currency(accounting.cashReserve)],
-      ]);
-      break;
-    case "school":
-      selectionSummary.textContent = `Education facility funded to serve local students. ${utilitySummary}.`;
-      renderServiceRows(building, accounting, "Students served", "Education coverage");
-      break;
-    case "library":
-      selectionSummary.textContent = `Community learning facility providing library access. ${utilitySummary}.`;
-      renderServiceRows(building, accounting, "Visits served", "Library coverage");
-      break;
-    case "clinic":
-      selectionSummary.textContent = `Health facility treating residents within available staff and utility capacity. ${utilitySummary}.`;
-      renderServiceRows(building, accounting, "Patients served", "Health coverage");
-      break;
-    case "park":
-      selectionSummary.textContent = `Public recreation space maintained for neighborhood visits. ${utilitySummary}.`;
-      renderServiceRows(building, accounting, "Recreation visits", "Amenity coverage");
-      break;
+function updateEntityInterface(): void {
+  if (appMode !== "simulate") return;
+  const state = simulation.getState();
+  const selectedPerson = selectedEntity?.kind === "person"
+    ? state.entities.people.find((person) => person.id === selectedEntity?.id)
+    : undefined;
+  const signature = [
+    state.entities.lastUpdatedDay,
+    selectedPerson?.currentActivity ?? "static",
+    selectedEntity?.kind ?? "none",
+    selectedEntity?.id ?? "none",
+    analysisOverlay.value,
+  ].join(":");
+  if (signature === entityInterfaceSignature) return;
+  entityInterfaceSignature = signature;
+  renderMapLegend(analysisOverlay.value as MapOverlayMode);
+  renderGroupedAlerts();
+
+  if (!selectedEntity) {
+    const represented = Math.max(1, Math.round(state.city.metrics.population / Math.max(1, state.entities.people.length)));
+    const localWorkers = state.entities.people.filter((person) => person.employment === "local").length;
+    const externalWorkers = state.entities.people.filter((person) => person.employment === "external").length;
+    entityInspector.innerHTML = `
+      <div class="inspector-empty district-overview">
+        <strong>University City model</strong>
+        <p>Click any building or visible person to inspect the decisions behind the citywide totals.</p>
+        <div class="inspector-stat-grid">
+          <span><small>Modeled buildings</small><b>${state.entities.buildings.length}</b></span>
+          <span><small>Sample residents</small><b>${state.entities.people.length}</b></span>
+          <span><small>Local workers</small><b>${localWorkers}</b></span>
+          <span><small>Outside workers</small><b>${externalWorkers}</b></span>
+        </div>
+        <p class="representation-callout">1 visible resident represents about ${represented.toLocaleString()} city residents. Every modeled building has its own function and accounting.</p>
+        <details class="simulation-order">
+          <summary>Today's simulation steps</summary>
+          <ol>
+            <li>Buildings request workers and supplies.</li>
+            <li>Residents work, earn wages, and make service visits.</li>
+            <li>Labor and utilities gate production and sales.</li>
+            <li>Revenue, costs, prices, wages, and rent adjust.</li>
+            <li>Households evaluate needs, finances, and migration.</li>
+          </ol>
+        </details>
+      </div>`;
+    return;
   }
-  selectionTimelineSection.hidden = true;
-  setText(selectionDiagnosis, diagnoseBuilding(building));
 
-  selectionConnectionsTitle.textContent = "Connection totals";
-  const buildingById = new Map(state.buildings.map((candidate) => [candidate.id, candidate]));
-  const relationships = state.buildingConnections.filter(
+  if (selectedEntity.kind === "building") {
+    const building = state.entities.buildings.find((candidate) => candidate.id === selectedEntity?.id);
+    if (building) renderBuildingInspector(building);
+  } else {
+    const person = state.entities.people.find((candidate) => candidate.id === selectedEntity?.id);
+    if (person) renderPersonInspector(person);
+  }
+}
+
+function renderBuildingInspector(building: DetailedBuilding): void {
+  const state = simulation.getState();
+  const accounting = building.accounting;
+  const residents = building.residentIds.length;
+  const employees = building.employeeIds.length;
+  const connections = state.entities.connections.filter(
     (connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id,
   );
-  renderConnectionGroups(buildBuildingConnectionGroups(building, relationships, buildingById));
-}
-
-function renderServiceRows(
-  building: Readonly<Building>,
-  accounting: NonNullable<Building["accounting"]>,
-  deliveredLabel: string,
-  coverageLabel: string,
-): void {
-  renderStatRows([
-    ["Operating status", capitalize(accounting.operatingStatus)],
-    ["Staff", `${building.employeeIds.length} / ${building.jobCapacity}`],
-    [deliveredLabel, `${formatAmount(accounting.serviceDelivered)} / ${formatAmount(accounting.serviceDemand)} demand`],
-    [coverageLabel, percent(accounting.serviceQuality * 100)],
-    ["Daily staff wages", currency(accounting.dailyWages)],
-    ["Maintenance and utilities", currency(accounting.maintenanceCost + accounting.utilityCost)],
-    ["Municipal funding", currency(accounting.municipalFunding)],
-    ["Funding balance", currency(accounting.municipalFunding - accounting.operatingCost)],
-  ]);
-}
-
-interface VisualSummary {
-  label: string;
-  value: string;
-  detail: string;
-  progress?: number;
-  tone?: "positive" | "warning" | "negative" | "neutral";
-}
-
-function renderBuildingVisuals(
-  building: Readonly<Building>,
-  accounting: NonNullable<Building["accounting"]>,
-): void {
-  const staffing = building.jobCapacity > 0 ? building.employeeIds.length / building.jobCapacity * 100 : 100;
-  const utilityCoverage = (building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3 * 100;
-  const financialTone = accounting.profit > 0 ? "positive" : accounting.profit < 0 ? "negative" : "neutral";
-  const workforce: VisualSummary = {
-    label: accounting.operatingModel === "civic" || accounting.operatingModel === "amenity" ? "Staffing" : "Workforce",
-    value: `${building.employeeIds.length} / ${building.jobCapacity}`,
-    detail: `${percent(staffing)} of positions filled`,
-    progress: staffing,
-    tone: staffing >= 80 ? "positive" : staffing >= 50 ? "warning" : "negative",
+  const connectionTotals = {
+    commute: sumNumbers(connections.filter((connection) => connection.kind === "commute").map((connection) => connection.volume)),
+    customer: sumNumbers(connections.filter((connection) => connection.kind === "customer").map((connection) => connection.volume)),
+    supply: sumNumbers(connections.filter((connection) => connection.kind === "supply").map((connection) => connection.volume)),
   };
-  const utilities: VisualSummary = {
-    label: "Utilities",
-    value: percent(utilityCoverage),
-    detail: "Power, water and waste",
-    progress: utilityCoverage,
-    tone: utilityCoverage >= 90 ? "positive" : utilityCoverage >= 70 ? "warning" : "negative",
+  const civic = isCivicFunction(building.function);
+  const housing = building.function === "housing";
+  const revenueLabel = housing ? "Rent" : civic ? "Funding + fees" : "Revenue";
+  const netLabel = civic ? "Balance" : "Net";
+  const maxFlow = Math.max(1, accounting.operatingRevenue, accounting.operatingCost);
+  const utilityAverage = (
+    (building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3
+  ) * 100;
+  const primaryStats = housing
+    ? [
+        ["Residents", `${residents} / ${building.residentCapacity}`],
+        ["Daily rent", formatDetailedMoney(building.rentDaily)],
+        ["Land value", formatDetailedMoney(building.landValue)],
+        ["Utilities", `${utilityAverage.toFixed(0)}%`],
+      ]
+    : civic
+      ? [
+          ["Staff", `${employees} / ${accounting.requiredWorkers}`],
+          ["Service visits", `${Math.round(accounting.serviceDelivered)} / ${Math.round(accounting.serviceDemand)}`],
+          ["Service quality", `${Math.round(accounting.serviceQuality * 100)}%`],
+          ["Daily wage", formatDetailedMoney(accounting.averageWage)],
+        ]
+      : [
+          ["Employees", `${employees} / ${accounting.requiredWorkers}`],
+          ["Customers", accounting.customers.toLocaleString()],
+          ["Goods sold", accounting.goodsSold.toLocaleString()],
+          ["Daily wage", formatDetailedMoney(accounting.averageWage)],
+        ];
+  entityInspector.innerHTML = `
+    <article class="entity-card">
+      <header class="entity-heading">
+        <div><small>${formatBuildingFunction(building.function)} · ${escapeHtml(building.address)}</small><h3>${escapeHtml(building.name)}</h3></div>
+        <span data-entity-status="${accounting.status}">${formatEntityStatus(accounting.status)}</span>
+      </header>
+      <div class="inspector-stat-grid">${primaryStats.map(([label, value]) => `<span><small>${label}</small><b>${value}</b></span>`).join("")}</div>
+      <section class="accounting-section">
+        <h4>${civic ? "Service accounting" : housing ? "Housing accounting" : "Business accounting"}</h4>
+        <div class="accounting-flow">
+          ${accountingNode(revenueLabel, accounting.operatingRevenue, maxFlow, "income")}
+          <i>→</i>
+          ${accountingNode("Costs", accounting.operatingCost, maxFlow, "cost")}
+          <i>→</i>
+          ${accountingNode(netLabel, accounting.profit, maxFlow, accounting.profit >= 0 ? "income" : "loss")}
+        </div>
+        <div class="cost-breakdown">
+          <span>Payroll <b>${formatDetailedMoney(accounting.dailyWages)}</b></span>
+          <span>Supplies <b>${formatDetailedMoney(accounting.supplyCost)}</b></span>
+          <span>Transport <b>${formatDetailedMoney(accounting.transportCost)}</b></span>
+          <span>Utilities <b>${formatDetailedMoney(accounting.utilityCost)}</b></span>
+          <span>Maintenance <b>${formatDetailedMoney(accounting.maintenanceCost)}</b></span>
+        </div>
+        <p class="entity-diagnosis">${escapeHtml(accounting.diagnosis)}</p>
+      </section>
+      <section class="utility-strip">
+        <h4>Utility service</h4>
+        ${utilityMeter("Power", building.utilityService.power, "Regional electric grid")}
+        ${utilityMeter("Water", building.utilityService.water, "Municipal water system")}
+        ${utilityMeter("Waste", building.utilityService.waste, "Sanitation collection")}
+      </section>
+      <section class="connection-summary">
+        <h4>Daily connections</h4>
+        <div class="connection-totals">
+          <span data-flow="commute"><b>${Math.round(connectionTotals.commute)}</b> commuters</span>
+          <span data-flow="customer"><b>${Math.round(connectionTotals.customer)}</b> visits</span>
+          <span data-flow="supply"><b>${Math.round(connectionTotals.supply)}</b> supply units</span>
+        </div>
+        <details><summary>Connected buildings</summary>${renderConnectionDetails(connections, building.id)}</details>
+      </section>
+    </article>`;
+}
+
+function renderPersonInspector(person: DetailedPerson): void {
+  const state = simulation.getState();
+  const buildingById = new Map(state.entities.buildings.map((building) => [building.id, building]));
+  const household = state.entities.households.find((candidate) => candidate.id === person.householdId);
+  const householdMembers = household?.memberIds
+    .map((id) => state.entities.people.find((candidate) => candidate.id === id)?.name)
+    .filter((name): name is string => Boolean(name)) ?? [];
+  const net = person.dailyWage - person.dailySpending;
+  const maxFlow = Math.max(1, person.dailyWage, person.dailySpending);
+  entityInspector.innerHTML = `
+    <article class="entity-card person-card">
+      <header class="entity-heading">
+        <div><small>${person.age} years old · ${formatEmployment(person.employment)}</small><h3>${escapeHtml(person.name)}</h3></div>
+        <span data-migration="${person.migrationStatus}">${formatActivity(person.currentActivity)}</span>
+      </header>
+      <section class="schedule-section">
+        <h4>Daily route</h4>
+        <div class="schedule-timeline">${person.schedule.map((item) => {
+          const buildingName = buildingById.get(item.buildingId)?.name ?? "Outside University City";
+          return `<div><time>${formatMinute(item.startMinute)}</time><span data-activity="${item.activity}"></span><p><b>${formatActivity(item.activity)}</b><small>${escapeHtml(buildingName)} · ${formatMode(item.mode)} · ${item.travelMinutes} min</small></p></div>`;
+        }).join("")}</div>
+      </section>
+      <section class="accounting-section">
+        <h4>Daily finances</h4>
+        <div class="accounting-flow">
+          ${accountingNode("Wage", person.dailyWage, maxFlow, "income")}
+          <i>→</i>
+          ${accountingNode("Spending", person.dailySpending, maxFlow, "cost")}
+          <i>→</i>
+          ${accountingNode("Net", net, maxFlow, net >= 0 ? "income" : "loss")}
+        </div>
+        <div class="cost-breakdown">
+          <span>Commute <b>${formatDetailedMoney(person.commuteCost)}</b></span>
+          <span>Cash <b>${formatDetailedMoney(person.money)}</b></span>
+          <span>Household <b>${householdMembers.length} people</b></span>
+          <span>Shared balance <b>${formatDetailedMoney(household?.money ?? 0)}</b></span>
+        </div>
+      </section>
+      <section class="needs-section">
+        <h4>Needs and happiness <strong>${person.happiness.toFixed(0)}%</strong></h4>
+        ${Object.entries(person.needs).map(([need, value]) => `<label><span>${capitalize(need)}</span><meter min="0" max="100" value="${value}"></meter><b>${value.toFixed(0)}</b></label>`).join("")}
+      </section>
+      <section class="household-section">
+        <h4>Household</h4>
+        <p>${householdMembers.map(escapeHtml).join(", ")}</p>
+        <div class="cost-breakdown">
+          <span>Income <b>${formatDetailedMoney(household?.dailyIncome ?? 0)}</b></span>
+          <span>Housing <b>${formatDetailedMoney(household?.dailyExpenses.housing ?? 0)}</b></span>
+          <span>Goods <b>${formatDetailedMoney(household?.dailyExpenses.goods ?? 0)}</b></span>
+          <span>Transport <b>${formatDetailedMoney(household?.dailyExpenses.transport ?? 0)}</b></span>
+        </div>
+      </section>
+      <p class="migration-callout" data-migration="${person.migrationStatus}"><b>${formatMigration(person.migrationStatus)}</b>${escapeHtml(person.migrationReason)}</p>
+    </article>`;
+}
+
+function renderConnectionDetails(
+  connections: ReturnType<Simulation["getState"]>["entities"]["connections"],
+  selectedBuildingId: string,
+): string {
+  const buildingById = new Map(simulation.getState().entities.buildings.map((building) => [building.id, building.name]));
+  const rows = connections.slice(0, 12).map((connection) => {
+    const otherId = connection.fromBuildingId === selectedBuildingId
+      ? connection.toBuildingId
+      : connection.fromBuildingId;
+    const name = buildingById.get(otherId)
+      ?? (otherId === "outside-work" ? "Jobs outside the section" : "Regional suppliers");
+    return `<li><span data-flow="${connection.kind}">${capitalize(connection.kind)}</span><b>${Math.round(connection.volume)}</b><small>${escapeHtml(name)}</small></li>`;
+  }).join("");
+  return `<ul class="connection-list">${rows || "<li>No active connections in this category.</li>"}</ul>`;
+}
+
+function renderMapLegend(mode: MapOverlayMode): void {
+  const legends: Partial<Record<MapOverlayMode, readonly [string, string]>> = {
+    economy: ["Low activity", "High activity"],
+    profitability: ["Operating loss", "Strong surplus"],
+    "land-value": ["Lower value", "Higher value"],
+    utilities: ["Service shortage", "Fully served"],
+    employment: ["Understaffed", "Fully staffed"],
+    happiness: ["Low wellbeing", "High wellbeing"],
+    migration: ["Leaving pressure", "Stable"],
+    goods: ["Shortage", "Well stocked"],
   };
-
-  if (building.buildingUse === "housing") {
-    const occupancy = building.residentIds.length / Math.max(1, building.residentCapacity) * 100;
-    renderVisualSummaries([
-      {
-        label: "Occupancy",
-        value: percent(occupancy),
-        detail: `${building.residentIds.length} of ${building.residentCapacity} resident places`,
-        progress: occupancy,
-        tone: occupancy >= 85 ? "positive" : occupancy >= 55 ? "warning" : "negative",
-      },
-      {
-        label: "Rent collected",
-        value: currency(accounting.rentIncome),
-        detail: `${currency(building.rent)} asking rent per day`,
-        tone: accounting.rentIncome > 0 ? "positive" : "warning",
-      },
-      {
-        label: "Net income",
-        value: signedCurrency(accounting.profit),
-        detail: "After maintenance and utilities",
-        tone: financialTone,
-      },
-      utilities,
-    ]);
-    return;
-  }
-
-  if (building.buildingUse === "retail") {
-    const available = building.goodsInventory + accounting.goodsSold;
-    const sellThrough = accounting.goodsSold / Math.max(1, available) * 100;
-    const received = accounting.localSupplies + accounting.importedSupplies;
-    const localShare = accounting.localSupplies / Math.max(1, received) * 100;
-    renderVisualSummaries([
-      workforce,
-      {
-        label: "Sales",
-        value: formatAmount(accounting.goodsSold),
-        detail: `${number(accounting.customers)} customers today`,
-        progress: sellThrough,
-        tone: sellThrough >= 65 ? "positive" : sellThrough >= 30 ? "warning" : "negative",
-      },
-      {
-        label: "Local supply",
-        value: percent(localShare),
-        detail: `${formatAmount(accounting.localSupplies)} local · ${formatAmount(accounting.importedSupplies)} imported`,
-        progress: localShare,
-        tone: localShare >= 60 ? "positive" : "warning",
-      },
-      {
-        label: "Profit",
-        value: signedCurrency(accounting.profit),
-        detail: `${currency(accounting.revenue)} revenue`,
-        tone: financialTone,
-      },
-    ]);
-    return;
-  }
-
-  if (building.buildingUse === "industrial") {
-    const output = accounting.goodsReceived / Math.max(1, building.productionRate) * 100;
-    renderVisualSummaries([
-      workforce,
-      {
-        label: "Output",
-        value: formatAmount(accounting.goodsReceived),
-        detail: `${formatAmount(building.productionRate)} unit daily capacity`,
-        progress: output,
-        tone: output >= 75 ? "positive" : output >= 40 ? "warning" : "negative",
-      },
-      {
-        label: "Inventory",
-        value: formatAmount(building.goodsInventory),
-        detail: `${formatAmount(accounting.goodsSold)} shipped today`,
-        tone: building.goodsInventory > 0 ? "neutral" : "warning",
-      },
-      {
-        label: "Profit",
-        value: signedCurrency(accounting.profit),
-        detail: `${currency(accounting.revenue)} revenue`,
-        tone: financialTone,
-      },
-    ]);
-    return;
-  }
-
-  const demandServed = accounting.serviceDelivered / Math.max(1, accounting.serviceDemand) * 100;
-  const fundingBalance = accounting.municipalFunding - accounting.operatingCost;
-  renderVisualSummaries([
-    workforce,
-    {
-      label: "Demand served",
-      value: percent(demandServed),
-      detail: `${formatAmount(accounting.serviceDelivered)} of ${formatAmount(accounting.serviceDemand)} visits`,
-      progress: demandServed,
-      tone: demandServed >= 80 ? "positive" : demandServed >= 50 ? "warning" : "negative",
-    },
-    {
-      label: "Service quality",
-      value: percent(accounting.serviceQuality * 100),
-      detail: "Staffing and utilities combined",
-      progress: accounting.serviceQuality * 100,
-      tone: accounting.serviceQuality >= 0.8 ? "positive" : accounting.serviceQuality >= 0.5 ? "warning" : "negative",
-    },
-    {
-      label: "Funding balance",
-      value: signedCurrency(fundingBalance),
-      detail: `${currency(accounting.municipalFunding)} municipal funding`,
-      tone: fundingBalance >= 0 ? "positive" : "negative",
-    },
-  ]);
+  const labels = legends[mode];
+  mapLegend.innerHTML = labels
+    ? `<span>${labels[0]}</span><i></i><span>${labels[1]}</span>`
+    : mode === "none"
+      ? "<span>Building rings show assigned functions.</span>"
+      : `<span>${capitalize(mode.replace("-", " "))} is drawn on streets and intersections.</span>`;
 }
 
-function renderVisualSummaries(items: readonly VisualSummary[]): void {
-  const renderKey = JSON.stringify(items);
-  if (selectionVisuals.dataset.renderKey === renderKey) return;
-  selectionVisuals.dataset.renderKey = renderKey;
-  selectionVisuals.replaceChildren(...items.map((item) => {
-    const card = document.createElement("article");
-    const label = document.createElement("span");
-    const value = document.createElement("strong");
-    const detail = document.createElement("small");
-    card.dataset.tone = item.tone ?? "neutral";
-    label.textContent = item.label;
-    value.textContent = item.value;
-    detail.textContent = item.detail;
-    card.append(label, value);
-    if (item.progress !== undefined) {
-      const meter = document.createElement("div");
-      const fill = document.createElement("i");
-      meter.className = "visual-meter";
-      fill.style.setProperty("--visual-progress", `${Math.max(0, Math.min(100, item.progress))}%`);
-      meter.append(fill);
-      card.append(meter);
-    }
-    card.append(detail);
-    return card;
-  }));
+function renderGroupedAlerts(): void {
+  const state = simulation.getState();
+  const events = state.entities.events;
+  alertCount.textContent = String(events.length + state.cityEvents.length);
+  const groups = new Map<string, string[]>();
+  for (const entry of events) {
+    const list = groups.get(entry.category) ?? [];
+    list.push(entry.message);
+    groups.set(entry.category, list);
+  }
+  for (const entry of state.cityEvents) {
+    const list = groups.get(entry.category) ?? [];
+    list.push(entry.message);
+    groups.set(entry.category, list);
+  }
+  groupedAlerts.innerHTML = [...groups.entries()].map(([category, messages]) => `
+    <section><h4>${capitalize(category.replace("-", " "))} <span>${messages.length}</span></h4>
+    <ul>${messages.slice(0, 4).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></section>`).join("")
+    || "<p>No active warnings.</p>";
 }
 
-function renderBuildingFinancialFlow(
-  building: Readonly<Building>,
-  accounting: NonNullable<Building["accounting"]>,
+function updateEntityTooltip(
+  selection: EntitySelection | null,
+  clientX: number,
+  clientY: number,
 ): void {
-  const flow = deriveBuildingFinancialFlow(building, accounting);
-  if (flow === null) {
-    selectionFinancialFlow.hidden = true;
-    selectionFinancialFlow.removeAttribute("data-render-key");
-    selectionFinancialFlow.replaceChildren();
+  if (!selection || appMode !== "simulate") {
+    entityTooltip.hidden = true;
     return;
   }
-
-  selectionFinancialFlow.hidden = false;
-  const renderKey = JSON.stringify(flow);
-  if (selectionFinancialFlow.dataset.renderKey === renderKey) return;
-  selectionFinancialFlow.dataset.renderKey = renderKey;
-
-  const heading = document.createElement("div");
-  const title = document.createElement("strong");
-  const equation = document.createElement("small");
-  heading.className = "financial-flow-heading";
-  title.textContent = "Daily financial flow";
-  equation.textContent = `${flow.revenueLabel} - costs = ${flow.resultLabel.toLowerCase()}`;
-  heading.append(title, equation);
-
-  const chart = document.createElement("div");
-  chart.className = "financial-flow-chart";
-  const maximum = Math.max(flow.revenue, flow.costs, Math.abs(flow.profit), 1);
-  const nodes: ReadonlyArray<{
-    kind: "revenue" | "costs" | "result";
-    label: string;
-    value: number;
-  }> = [
-    { kind: "revenue", label: flow.revenueLabel, value: flow.revenue },
-    { kind: "costs", label: "Costs", value: flow.costs },
-    { kind: "result", label: flow.resultLabel, value: flow.profit },
-  ];
-
-  nodes.forEach((item, index) => {
-    if (index > 0) {
-      const arrow = document.createElement("span");
-      arrow.className = "financial-flow-arrow";
-      arrow.textContent = "\u2192";
-      arrow.setAttribute("aria-hidden", "true");
-      chart.append(arrow);
-    }
-
-    const node = document.createElement("div");
-    const label = document.createElement("span");
-    const amount = document.createElement("strong");
-    const meter = document.createElement("div");
-    const fill = document.createElement("div");
-    node.className = "financial-flow-node";
-    node.dataset.kind = item.kind;
-    if (item.kind === "result") node.dataset.tone = item.value < 0 ? "negative" : "positive";
-    label.textContent = item.label;
-    amount.textContent = item.kind === "result" ? signedCurrency(item.value) : currency(item.value);
-    meter.className = "financial-flow-meter";
-    meter.setAttribute("role", "img");
-    meter.setAttribute("aria-label", `${item.label}: ${currency(item.value)}`);
-    fill.className = "financial-flow-fill";
-    fill.style.setProperty("--financial-width", `${item.value === 0 ? 0 : Math.max(5, Math.abs(item.value) / maximum * 100)}%`);
-    if (item.kind === "costs") appendCostSegments(fill, flow);
-    meter.append(fill);
-    node.append(label, amount, meter);
-    chart.append(node);
-  });
-
-  const costSummary = document.createElement("p");
-  const largestCost = [...flow.costSegments].sort((left, right) => right.value - left.value)[0];
-  costSummary.className = "financial-flow-summary";
-  costSummary.textContent = largestCost === undefined
-    ? "No operating costs recorded today."
-    : `Largest cost: ${largestCost.label} ${currency(largestCost.value)} (${percent(largestCost.sharePercent)}).`;
-  selectionFinancialFlow.replaceChildren(heading, chart, costSummary);
-}
-
-function appendCostSegments(container: HTMLElement, flow: Readonly<BuildingFinancialFlow>): void {
-  container.replaceChildren(...flow.costSegments.map((segment) => {
-    const bar = document.createElement("i");
-    bar.dataset.segment = segment.key;
-    bar.style.setProperty("--cost-share", `${segment.sharePercent}%`);
-    bar.title = `${segment.label}: ${currency(segment.value)} (${percent(segment.sharePercent)})`;
-    return bar;
-  }));
-}
-
-function renderBuildingUtilityVisual(building: Readonly<Building>): void {
-  const insight = deriveBuildingUtilityInsight(building);
-  const renderKey = `utilities:${JSON.stringify(insight)}`;
-  if (selectionSystemVisual.dataset.renderKey === renderKey) return;
-  selectionSystemVisual.dataset.renderKey = renderKey;
-  selectionSystemVisual.hidden = false;
-
-  const heading = createSystemVisualHeading(
-    "Utility service",
-    `Efficiency ${percent(insight.efficiencyPercent)}`,
-    "Delivered coverage affects daily operations",
-  );
-  const rows = document.createElement("div");
-  rows.className = "driver-rows";
-  rows.replaceChildren(...insight.coverage.map((utility) => createDriverRow(
-    utility.label,
-    percent(utility.coveragePercent),
-    utility.coveragePercent,
-    utility.coveragePercent >= 90 ? "positive" : utility.coveragePercent >= 70 ? "warning" : "negative",
-  )));
-  const summary = document.createElement("p");
-  summary.className = "system-visual-summary";
-  if (insight.bottleneck.coveragePercent >= 99 && insight.wasteStored === 0) {
-    summary.textContent = "All three utility networks are fully serving this building; no waste is awaiting collection.";
+  const state = simulation.getState();
+  const mode = analysisOverlay.value as MapOverlayMode;
+  if (selection.kind === "person") {
+    const person = state.entities.people.find((candidate) => candidate.id === selection.id);
+    if (!person) return;
+    entityTooltip.innerHTML = `<strong>${escapeHtml(person.name)}</strong><span>${formatActivity(person.currentActivity)} · ${person.happiness.toFixed(0)}% happiness</span><small>${escapeHtml(person.migrationReason)}</small>`;
   } else {
-    summary.textContent = `${insight.bottleneck.label} is the limiting network at ${percent(insight.bottleneck.coveragePercent)}. `
-      + `${formatAmount(insight.wasteStored)} units of waste are awaiting collection.`;
+    const building = state.entities.buildings.find((candidate) => candidate.id === selection.id);
+    if (!building) return;
+    entityTooltip.innerHTML = buildingTooltip(building, mode);
   }
-  selectionSystemVisual.replaceChildren(heading, rows, summary);
+  entityTooltip.hidden = false;
+  entityTooltip.style.left = `${Math.min(window.innerWidth - 260, clientX + 14)}px`;
+  entityTooltip.style.top = `${Math.min(window.innerHeight - 130, clientY + 14)}px`;
 }
 
-function renderBuildingTrafficVisual(
-  building: Readonly<Building>,
-  state: Readonly<SimulationState>,
-): void {
-  const insight = deriveBuildingTrafficInsight(
-    building,
-    state.vehicles,
-    state.buildingConnections,
-    state.network.edges,
-  );
-  const renderKey = `traffic:${JSON.stringify(insight)}`;
-  if (selectionSystemVisual.dataset.renderKey === renderKey) return;
-  selectionSystemVisual.dataset.renderKey = renderKey;
-  selectionSystemVisual.hidden = false;
-
-  const heading = createSystemVisualHeading(
-    "Destination traffic",
-    `${number(insight.activeArrivals)} active`,
-    "Visible vehicles currently heading here",
-  );
-  const rows = document.createElement("div");
-  rows.className = "driver-rows";
-  rows.replaceChildren(...insight.rows.map((row) => createDriverRow(
-    row.label,
-    number(row.activeArrivals),
-    row.sharePercent,
-    row.activeArrivals > 0 ? "warning" : "positive",
-  )));
-  const summary = document.createElement("p");
-  summary.className = "system-visual-summary";
-  summary.textContent = `${number(insight.queuedArrivals)} arrivals queued · ${Math.round(insight.averageWaitSeconds)} sec average wait · ${percent(insight.accessLoadPercent)} access-road load. `
-    + `Connected daily activity: ${formatAmount(insight.connectedCommutes)} commuters, ${formatAmount(insight.connectedVisitors)} visitors, ${formatAmount(insight.connectedSupplyUnits)} supply units.`;
-  selectionSystemVisual.replaceChildren(heading, rows, summary);
-}
-
-function renderPersonHappinessVisual(person: Readonly<Person>): void {
-  const insight = derivePersonHappinessInsight(person);
-  const renderKey = `happiness:${JSON.stringify(insight)}`;
-  if (selectionSystemVisual.dataset.renderKey === renderKey) return;
-  selectionSystemVisual.dataset.renderKey = renderKey;
-  selectionSystemVisual.hidden = false;
-
-  const heading = createSystemVisualHeading(
-    "Happiness drivers",
-    percent(insight.score),
-    "100 points minus unmet needs",
-  );
-  const rows = document.createElement("div");
-  rows.className = "driver-rows";
-  rows.replaceChildren(...insight.drivers.map((driver) => createDriverRow(
-    driver.label,
-    `-${driver.penaltyPoints.toFixed(1)}`,
-    driver.unmetPercent,
-    driver.unmetPercent <= 30 ? "positive" : driver.unmetPercent <= 60 ? "warning" : "negative",
-  )));
-  const largestPenalty = [...insight.drivers].sort((left, right) => right.penaltyPoints - left.penaltyPoints)[0]!;
-  const summary = document.createElement("p");
-  summary.className = "system-visual-summary";
-  summary.textContent = `${largestPenalty.label} is the largest drag, subtracting ${largestPenalty.penaltyPoints.toFixed(1)} points.`;
-  selectionSystemVisual.replaceChildren(heading, rows, summary);
-}
-
-function createSystemVisualHeading(titleText: string, outcomeText: string, equationText: string): HTMLElement {
-  const heading = document.createElement("div");
-  const copy = document.createElement("div");
-  const title = document.createElement("strong");
-  const equation = document.createElement("small");
-  const outcome = document.createElement("b");
-  heading.className = "system-visual-heading";
-  title.textContent = titleText;
-  equation.textContent = equationText;
-  outcome.textContent = outcomeText;
-  copy.append(title, equation);
-  heading.append(copy, outcome);
-  return heading;
-}
-
-function createDriverRow(
-  labelText: string,
-  valueText: string,
-  progress: number,
-  tone: "positive" | "warning" | "negative",
-): HTMLElement {
-  const row = document.createElement("div");
-  const label = document.createElement("span");
-  const track = document.createElement("div");
-  const fill = document.createElement("i");
-  const value = document.createElement("strong");
-  row.className = "driver-row";
-  row.dataset.tone = tone;
-  label.textContent = labelText;
-  track.className = "driver-track";
-  fill.style.setProperty("--driver-progress", `${Math.max(0, Math.min(100, progress))}%`);
-  track.append(fill);
-  value.textContent = valueText;
-  row.append(label, track, value);
-  return row;
-}
-
-interface ConnectionGroup {
-  label: string;
-  summary: string;
-  details: string[];
-}
-
-function buildBuildingConnectionGroups(
-  building: Readonly<Building>,
-  relationships: readonly BuildingConnection[],
-  buildingById: ReadonlyMap<string, Building>,
-): ConnectionGroup[] {
-  const labels: Record<Building["buildingUse"], string> = {
-    housing: "Resident destinations",
-    retail: "Customers",
-    industrial: "Trade partners",
-    school: "Students",
-    library: "Library visitors",
-    clinic: "Patients",
-    park: "Park visitors",
-  };
-  return (["commute", "customer", "supply"] as const).map((kind) => {
-    const connections = relationships.filter((connection) => connection.kind === kind);
-    const total = connections.reduce((sum, connection) => sum + connection.volume, 0);
-    const inbound = connections
-      .filter((connection) => connection.toBuildingId === building.id)
-      .reduce((sum, connection) => sum + connection.volume, 0);
-    const outbound = total - inbound;
-    const label = kind === "commute" ? "Workforce trips" : kind === "customer" ? labels[building.buildingUse] : "Goods movement";
-    const unit = kind === "supply" ? "units" : "people";
-    const totalUnit = total === 1 ? (kind === "supply" ? "unit" : "person") : unit;
-    return {
-      label,
-      summary: `${formatAmount(total)} ${totalUnit} · ${formatAmount(inbound)} in / ${formatAmount(outbound)} out`,
-      details: connections.map((connection) => {
-        const isOutbound = connection.fromBuildingId === building.id;
-        const counterpartId = isOutbound ? connection.toBuildingId : connection.fromBuildingId;
-        const counterpart = buildingById.get(counterpartId)?.name ?? "Outside city market";
-        const direction = isOutbound ? "to" : "from";
-        return `${formatAmount(connection.volume)} ${unit} ${direction} ${counterpart}`;
-      }),
-    };
-  });
-}
-
-function diagnoseBuilding(building: Building): string {
+function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): string {
   const accounting = building.accounting;
-  if (!accounting) return "Detailed accounting will appear after the next daily economy cycle.";
-  const vacancies = Math.max(0, building.jobCapacity - building.employeeIds.length);
-  if (accounting.operatingModel === "housing") {
-    if (building.residentIds.length === 0) return "This property is vacant, so it receives no rent while maintenance and utility costs continue.";
-    if (accounting.profit < 0) return "Collected rent does not cover this property's maintenance and delivered utility costs.";
-    return "Collected rent covers this property's maintenance and delivered utility costs.";
+  const utility = Math.round((building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3 * 100);
+  const residents = simulation.getState().entities.people.filter((person) => person.homeBuildingId === building.id);
+  const trips = simulation.getState().entities.connections
+    .filter((connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id);
+  let value = `${formatBuildingFunction(building.function)} · ${formatEntityStatus(accounting.status)}`;
+  let why = accounting.diagnosis;
+  if (mode === "profitability") value = `${formatDetailedMoney(accounting.operatingRevenue)} revenue − ${formatDetailedMoney(accounting.operatingCost)} costs = ${formatDetailedMoney(accounting.profit)}`;
+  else if (mode === "economy") value = `${formatDetailedMoney(accounting.operatingRevenue)} daily activity · ${accounting.customers} customers`;
+  else if (mode === "land-value") {
+    value = `${formatDetailedMoney(building.landValue)} land value`;
+    why = `Utility service ${utility}%, staffing ${Math.round(accounting.staffingRatio * 100)}%, and district congestion ${simulation.getState().city.metrics.congestionPercent.toFixed(0)}% drive this value.`;
+  } else if (mode === "utilities") {
+    value = `${utility}% utility service`;
+    why = `Power comes from the regional grid, water from the municipal system, and waste from sanitation collection.`;
+  } else if (mode === "employment") value = `${building.employeeIds.length} of ${accounting.requiredWorkers} required positions filled`;
+  else if (mode === "happiness") {
+    const happiness = residents.length > 0 ? sumNumbers(residents.map((person) => person.happiness)) / residents.length : accounting.serviceQuality * 100;
+    value = `${happiness.toFixed(0)}% ${residents.length > 0 ? "resident happiness" : "service quality"}`;
+    why = residents.length > 0 ? "Income, expenses, needs, commute, and service access determine this score." : accounting.diagnosis;
+  } else if (mode === "migration") {
+    const leaving = residents.filter((person) => person.migrationStatus !== "staying").length;
+    value = `${leaving} of ${residents.length} residents considering departure`;
+    why = leaving > 0 ? "Unemployment, negative finances, or unmet needs are the modeled causes." : "Residents currently have no strong pressure to leave.";
+  } else if (mode === "goods") value = `${building.goodsInventory.toFixed(0)} units in stock · ${accounting.importedSupplies.toFixed(0)} imported`;
+  else if (["congestion", "pedestrians", "conflicts"].includes(mode)) {
+    value = `${Math.round(sumNumbers(trips.map((connection) => connection.volume)))} connected daily trips`;
+    why = `Commutes, customer visits, and supply deliveries are the building's traffic causes.`;
   }
-  if (accounting.operatingModel === "civic" || accounting.operatingModel === "amenity") {
-    if (building.employeeIds.length === 0) return "No service is delivered because this facility has no staff; fixed maintenance costs still require municipal funding.";
-    if (accounting.serviceQuality < 0.75) return `Service is constrained by ${vacancies} vacant positions and available utility service.`;
-    return "Municipal funding covers staff, maintenance, and utilities; this facility is measured by service coverage rather than profit.";
-  }
-  if (accounting.profit < 0) {
-    if (accounting.operatingStatus === "closed") {
-      return `The business is closed after ${accounting.lossStreak} unprofitable days depleted its cash reserve.`;
-    }
-    if (accounting.importedSupplies > accounting.localSupplies) {
-      return `Profit is negative because imported supplies and their transport cost exceed current sales; ${vacancies} positions remain vacant.`;
-    }
-    if (vacancies > 0) {
-      return `Profit is negative while ${vacancies} positions remain vacant, limiting output and sales.`;
-    }
-    return "Profit is negative because wages, rent, supplies, and transport cost more than current revenue.";
-  }
-  if (accounting.importedSupplies > accounting.localSupplies) {
-    return `The building is profitable, but imported goods are its largest supply source and expose it to transport costs.`;
-  }
-  if (vacancies > 0) {
-    return `The building is profitable with mostly local supply, though ${vacancies} open positions limit capacity.`;
-  }
-  return "The building is profitable with a full workforce and locally supplied goods covering most receipts.";
-}
-
-function renderPersonSelection(person: Person, state: Readonly<SimulationState>): void {
-  const buildingById = new Map(state.buildings.map((building) => [building.id, building]));
-  const household = state.households.find((candidate) => candidate.id === person.householdId);
-  if (household === undefined) {
-    clearSelection();
-    return;
-  }
-  const insight = derivePersonDailyInsight(person, household, state.city, state.buildings);
-  const routes = buildPersonRoutes(person, state);
-  const currentBuilding = buildingById.get(person.currentBuildingId)?.name
-    ?? (person.currentBuildingId === OUTSIDE_COMMUTER_BUILDING_ID ? person.externalWorkplaceName ?? "Outside section job" : "In transit");
-  const householdNames = insight.householdMemberIds
-    .map((id) => state.people.find((candidate) => candidate.id === id)?.name ?? id)
-    .join(", ");
-  const dailySpending = insight.accounting.personalSpending;
-  const averageGoodsPrice = (state.city.market.prices.food + state.city.market.prices.consumerGoods) / 2;
-  const estimatedGoods = insight.accounting.personalGoodsSpending / Math.max(0.01, averageGoodsPrice);
-  const commuteCost = insight.accounting.commuteCost;
-  const [highestNeed, highestNeedLevel] = Object.entries(person.needs)
-    .sort((left, right) => right[1] - left[1])[0]!;
-  const dailyBalance = insight.accounting.dailyIncome - dailySpending;
-  selectionKicker.textContent = "Representative resident";
-  selectionTitle.textContent = person.name;
-  selectionSummary.textContent = `${person.age}-year-old ${person.incomeBand}-income resident, currently ${person.currentActivity} at ${currentBuilding}.`;
-  selectionFinancialFlow.hidden = true;
-  renderPersonHappinessVisual(person);
-  renderVisualSummaries([
-    {
-      label: "Happiness",
-      value: percent(person.happiness),
-      detail: "Education, goods, health, community and recreation",
-      progress: person.happiness,
-      tone: person.happiness >= 70 ? "positive" : person.happiness >= 45 ? "warning" : "negative",
-    },
-    {
-      label: "Daily balance",
-      value: signedCurrency(dailyBalance),
-      detail: `${currency(insight.accounting.dailyIncome)} income · ${currency(dailySpending)} spending`,
-      tone: dailyBalance >= 0 ? "positive" : "negative",
-    },
-    {
-      label: "Need met",
-      value: percent((1 - highestNeedLevel) * 100),
-      detail: `${capitalize(highestNeed)} is the greatest unmet need`,
-      progress: (1 - highestNeedLevel) * 100,
-      tone: highestNeedLevel <= 0.3 ? "positive" : highestNeedLevel <= 0.6 ? "warning" : "negative",
-    },
-    {
-      label: "Migration outlook",
-      value: capitalize(insight.migrationStatus),
-      detail: `${signedFixed(insight.migrationRatePercent)}% annual migration pressure`,
-      tone: insight.migrationStatus === "staying" ? "positive" : insight.migrationStatus === "leaving" ? "negative" : "warning",
-    },
-  ]);
-  renderStatRows([
-    ["Household members", number(insight.householdMemberIds.length)],
-    ["Shared household cash", currency(insight.accounting.sharedHouseholdCash)],
-    ["Daily wage", currency(insight.accounting.dailyIncome)],
-    ["Employment", employmentLabel(person)],
-    ["Unemployed", `${number(person.unemployedDays)} days`],
-    ["Daily spending", currency(dailySpending)],
-    ["Housing and utilities", currency(insight.accounting.expenses.housing + insight.accounting.expenses.utilities)],
-    ["Goods", currency(insight.accounting.expenses.goods)],
-    ["Health, education, recreation", currency(
-      insight.accounting.expenses.healthcare
-      + insight.accounting.expenses.education
-      + insight.accounting.expenses.recreation,
-    )],
-    ["Taxes", currency(insight.accounting.expenses.taxes)],
-    ["Commute cost", currency(commuteCost)],
-    ["Commute", person.commuteDistanceKm > 0
-      ? `${person.commuteDistanceKm.toFixed(1)} km · ${Math.max(1, Math.round(person.commuteMinutesOneWay))} min each way`
-      : "No work commute"],
-    ["Goods purchased", `${formatAmount(estimatedGoods)} units / ${currency(insight.accounting.personalGoodsSpending)}`],
-    ["Highest unmet need", `${capitalize(highestNeed)} · ${percent(highestNeedLevel * 100)}`],
-    ["Happiness", percent(person.happiness)],
-    ["Migration status", `${capitalize(insight.migrationStatus)} · ${signedFixed(insight.migrationRatePercent)}%/yr`],
-  ]);
-  const modeReason = routes[0]?.reason ?? "No travel is required for today's schedule.";
-  setText(selectionDiagnosis, `${insight.diagnosis} Transport: ${modeReason}`);
-  selectionTimelineSection.hidden = false;
-  renderPersonTimeline(person, routes, buildingById);
-
-  selectionConnectionsTitle.textContent = "Household and daily links";
-  renderConnectionGroups([
-    {
-      label: "Household",
-      summary: `${number(insight.householdMemberIds.length)} members · ${currency(insight.accounting.sharedHouseholdCash)} shared cash`,
-      details: [
-        `Members: ${householdNames}`,
-        `Home: ${buildingById.get(person.homeBuildingId)?.name ?? "Unknown"}`,
-      ],
-    },
-    {
-      label: "Work and daily travel",
-      summary: `${number(routes.length)} trips · ${currency(commuteCost)} commute cost`,
-      details: [
-        `Work: ${person.workBuildingId === undefined ? "Not employed" : buildingById.get(person.workBuildingId)?.name ?? person.externalWorkplaceName ?? "Outside city"}`,
-        ...routes.map((route) => `${capitalize(route.mode)} to ${route.destination}: ${route.reason}`),
-      ],
-    },
-  ]);
-}
-
-interface PersonRouteView {
-  activity: Person["currentActivity"];
-  fromActivity: Person["currentActivity"];
-  startMinute: number;
-  destination: string;
-  mode: Person["preferredMode"];
-  durationMinutes: number;
-  cost: number;
-  reason: string;
-}
-
-function buildPersonRoutes(person: Person, state: Readonly<SimulationState>): PersonRouteView[] {
-  const buildings = new Map(state.buildings.map((building) => [building.id, building]));
-  const conditions = currentMobilityConditions(state);
-  const routes: PersonRouteView[] = [];
-  person.schedule.forEach((activity, index) => {
-    const previous = person.schedule[index - 1];
-    if (previous === undefined || previous.buildingId === activity.buildingId) return;
-    const origin = routeLocation(previous.buildingId, buildings, person);
-    const destination = routeLocation(activity.buildingId, buildings, person);
-    if (origin === undefined || destination === undefined) return;
-    const choice = explainModeChoice(person, origin, destination, conditions);
-    let durationMinutes: number;
-    let cost = 0;
-    const isWorkCommute = activity.activity === "work" || previous.activity === "work";
-    if (isWorkCommute && person.commuteMinutesOneWay > 0) {
-      durationMinutes = person.commuteMinutesOneWay;
-      cost = person.commuteCostDaily / 2;
-      routes.push({
-        activity: activity.activity,
-        fromActivity: previous.activity,
-        startMinute: activity.startMinute,
-        destination: destination.name,
-        mode: choice.mode,
-        durationMinutes,
-        cost,
-        reason: choice.reason,
-      });
-      return;
-    }
-    try {
-      const plan = planRoute(state.network as MobilityNetwork, origin.id, destination.id, choice.mode);
-      durationMinutes = plan.cost.travelTimeSeconds * 12 / 60;
-      cost = plan.cost.monetaryCost;
-    } catch {
-      durationMinutes = Math.hypot(destination.x - origin.x, destination.z - origin.z) * 0.18;
-    }
-    routes.push({
-      activity: activity.activity,
-      fromActivity: previous.activity,
-      startMinute: activity.startMinute,
-      destination: destination.name,
-      mode: choice.mode,
-      durationMinutes,
-      cost,
-      reason: choice.reason,
-    });
-  });
-  return routes;
-}
-
-function routeLocation(
-  id: string,
-  buildings: ReadonlyMap<string, Building>,
-  person: Readonly<Person>,
-): Pick<Building, "id" | "name" | "x" | "z"> | undefined {
-  const building = buildings.get(id);
-  if (building !== undefined) return building;
-  return id === OUTSIDE_COMMUTER_BUILDING_ID
-    ? { id, name: person.externalWorkplaceName ?? "Outside section job", x: 85, z: -4 }
-    : undefined;
-}
-
-function employmentLabel(person: Readonly<Person>): string {
-  if (person.employmentStatus === "external") return `Outside section · ${person.externalWorkplaceName ?? "regional job"}`;
-  if (person.employmentStatus === "local") return "Local job";
-  if (person.employmentStatus === "unemployed") return "Unemployed";
-  return "Not in labor force";
-}
-
-function currentMobilityConditions(state: Readonly<SimulationState>): MobilityConditions {
-  return {
-    busAvailable: state.infrastructure.transitLines.some((line) => line.active),
-    parkingPressure: state.infrastructure.parkingUsed / Math.max(1, state.infrastructure.parkingCapacity),
-    congestion: state.metrics.congestionPercent / 100,
-  };
-}
-
-function renderPersonTimeline(
-  person: Person,
-  routes: readonly PersonRouteView[],
-  buildings: ReadonlyMap<string, Building>,
-): void {
-  const routeByStart = new Map(routes.map((route) => [route.startMinute, route]));
-  const renderKey = `${person.id}:${person.schedule.map((entry) => entry.buildingId).join("|")}:${routes.map((route) => `${route.mode}:${route.durationMinutes.toFixed(1)}`).join("|")}`;
-  if (selectionTimeline.dataset.renderKey === renderKey) return;
-  selectionTimeline.dataset.renderKey = renderKey;
-  selectionTimeline.replaceChildren(...person.schedule.map((activity) => {
-    const route = routeByStart.get(activity.startMinute);
-    const row = document.createElement("li");
-    const time = document.createElement("time");
-    const destination = document.createElement("strong");
-    const travel = document.createElement("small");
-    const departureMinute = route === undefined
-      ? activity.startMinute
-      : ((activity.startMinute - route.durationMinutes) % 1440 + 1440) % 1440;
-    time.textContent = formatClock(departureMinute);
-    destination.textContent = `${capitalize(activity.activity)} · ${buildings.get(activity.buildingId)?.name ?? "Outside city"}`;
-    travel.textContent = route === undefined
-      ? "Starts here"
-      : `${capitalize(route.mode)} · ${Math.max(1, Math.round(route.durationMinutes))} min · arrives ${formatClock(activity.startMinute)}`;
-    row.append(time, destination, travel);
-    return row;
-  }));
-}
-
-function renderStatRows(rows: ReadonlyArray<readonly [string, string]>): void {
-  const renderKey = JSON.stringify(rows);
-  if (selectionStats.dataset.renderKey === renderKey) return;
-  selectionStats.dataset.renderKey = renderKey;
-  selectionStats.replaceChildren(...rows.map(([label, value]) => {
-    const row = document.createElement("div");
-    const term = document.createElement("dt");
-    const description = document.createElement("dd");
-    term.textContent = label;
-    description.textContent = value;
-    row.append(term, description);
-    return row;
-  }));
-}
-
-function renderConnectionGroups(groups: readonly ConnectionGroup[]): void {
-  const values = groups.length > 0 ? groups : [{ label: "No activity", summary: "No connected activity recorded today.", details: [] }];
-  const renderKey = JSON.stringify(values);
-  if (selectionConnections.dataset.renderKey === renderKey) return;
-  selectionConnections.dataset.renderKey = renderKey;
-  selectionConnections.replaceChildren(...values.map((group) => {
-    const disclosure = document.createElement("details");
-    const summary = document.createElement("summary");
-    const heading = document.createElement("strong");
-    const total = document.createElement("span");
-    heading.textContent = group.label;
-    total.textContent = group.summary;
-    summary.append(heading, total);
-    disclosure.append(summary);
-    if (group.details.length > 0) {
-      const list = document.createElement("ol");
-      list.replaceChildren(...group.details.map((detail) => {
-        const row = document.createElement("li");
-        row.textContent = detail;
-        return row;
-      }));
-      disclosure.append(list);
-    }
-    return disclosure;
-  }));
-}
-
-function clearSelection(): void {
-  closeInspection();
-}
-
-function closeInspection(): void {
-  activeSelection = null;
-  renderer.setSelection(null);
-  selectionPanel.hidden = true;
-  inspectorPanel.hidden = false;
-  inspectorPanel.dataset.view = "mode";
-  dashboardPanel.hidden = false;
-  document.body.dataset.mobileInspector = "closed";
-}
-
-function renderEvents(state: Readonly<SimulationState>): void {
-  const events = state.events.slice(0, 30);
-  const renderKey = events.map((event) => `${event.id}:${event.message}`).join("|");
-  if (eventList.dataset.renderKey === renderKey) return;
-  eventList.dataset.renderKey = renderKey;
-  if (events.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "No alerts or system updates yet.";
-    eventList.replaceChildren(empty);
-    return;
-  }
-
-  const categories: SimulationEvent["category"][] = ["economy", "population", "mobility", "utilities", "land-use"];
-  const categoryLabels: Record<SimulationEvent["category"], string> = {
-    economy: "Economy",
-    population: "Population",
-    mobility: "Mobility",
-    utilities: "Utilities",
-    "land-use": "Land use",
-  };
-  eventList.replaceChildren(...categories.flatMap((category) => {
-    const categoryEvents = events.filter((event) => event.category === category);
-    if (categoryEvents.length === 0) return [];
-    const messages = new Map<string, { event: SimulationEvent; count: number }>();
-    for (const event of categoryEvents) {
-      const existing = messages.get(event.message);
-      if (existing === undefined) messages.set(event.message, { event, count: 1 });
-      else existing.count += 1;
-    }
-    const warningCount = categoryEvents.filter((event) => event.severity === "warning").length;
-    const disclosure = document.createElement("details");
-    disclosure.className = "alert-group";
-    disclosure.dataset.severity = warningCount > 0 ? "warning" : "info";
-    disclosure.open = warningCount > 0;
-    const summary = document.createElement("summary");
-    const label = document.createElement("strong");
-    const count = document.createElement("span");
-    label.textContent = categoryLabels[category];
-    count.textContent = warningCount > 0
-      ? `${warningCount} warning${warningCount === 1 ? "" : "s"}`
-      : `${categoryEvents.length} update${categoryEvents.length === 1 ? "" : "s"}`;
-    summary.append(label, count);
-    const list = document.createElement("ol");
-    list.replaceChildren(...[...messages.values()].map(({ event, count: repeats }) => {
-      const item = document.createElement("li");
-      item.dataset.severity = event.severity;
-      const time = document.createElement("time");
-      time.textContent = `Day ${Math.max(1, Math.floor((event.minute - 420) / 1440) + 1)}`;
-      const message = document.createElement("span");
-      message.textContent = `${event.message}${repeats > 1 ? ` · repeated ${repeats} times` : ""}`;
-      item.append(time, message);
-      return item;
-    }));
-    disclosure.append(summary, list);
-    return [disclosure];
-  }));
-}
-
-function updateControlEffects(state: Readonly<SimulationState>): void {
-  const speedLimit = speedLimitControl.valueAsNumber;
-  const signalCycle = signalCycleControl.valueAsNumber;
-  const transitHeadway = transitHeadwayControl.valueAsNumber;
-  const roadCapacity = roadCapacityControl.valueAsNumber;
-  const utilityCapacity = utilityCapacityControl.valueAsNumber;
-  const zoningStrictness = zoningStrictnessControl.valueAsNumber;
-  const speedTimeChange = (25 / speedLimit - 1) * 100;
-  const roadCapacityChange = (roadCapacity / 20 - 1) * 100;
-  const zoningAllowanceChange = (1 / zoningStrictness - 1) * 100;
-
-  setText(requireElement("simulation-speed-effect"), `${selectedSimulationRate().label}; faster rates emphasize citywide trends and sample less street-level movement.`);
-  setText(
-    requireElement("day-night-effect"),
-    dayNightControl.checked
-      ? "Lighting follows sunrise, sunset, and the displayed clock."
-      : "Lighting stays at midday while the simulation clock and schedules continue.",
-  );
-  setText(
-    requireElement("speed-limit-effect"),
-    speedTimeChange === 0
-      ? "Matches the 25 mph baseline for vehicles in the visible street sample."
-      : `${Math.abs(Math.round(speedTimeChange))}% ${speedTimeChange > 0 ? "longer" : "shorter"} visible-street free-flow time than 25 mph; this does not change citywide trip demand.`,
-  );
-  setText(requireElement("signal-cycle-effect"), `${Math.round(signalCycle / 2)}s vehicle phase and ${Math.round(signalCycle / 2)}s pedestrian phase at the visible intersection; observed pedestrian wait is ${Math.round(state.metrics.pedestrianWaitSeconds)}s.`);
-  setText(requireElement("transit-headway-effect"), `${(60 / transitHeadway).toFixed(1)} buses per hour; scheduled average wait is ${transitHeadway / 2} min.`);
-  setText(
-    requireElement("road-capacity-effect"),
-    roadCapacityChange === 0
-      ? `Matches baseline capacity; citywide congestion is ${percent(state.city.metrics.congestionPercent)} and visible street load is ${percent(state.metrics.congestionPercent)}.`
-      : `${Math.abs(Math.round(roadCapacityChange))}% ${roadCapacityChange > 0 ? "more" : "less"} capacity in both models; citywide congestion is ${percent(state.city.metrics.congestionPercent)} and visible street load is ${percent(state.metrics.congestionPercent)}.`,
-  );
-  setText(
-    requireElement("utility-capacity-effect"),
-    `Capacity is ${percent(utilityCapacity * 100)} of baseline; visible street coverage is ${percent(state.metrics.utilityCoveragePercent)} and citywide service coverage is ${percent(state.city.metrics.utilityCoveragePercent)}.`,
-  );
-  setText(
-    requireElement("zoning-strictness-effect"),
-    zoningAllowanceChange === 0
-      ? "Matches baseline development allowance before terrain and service limits."
-      : `${Math.abs(Math.round(zoningAllowanceChange))}% ${zoningAllowanceChange > 0 ? "more" : "less"} development allowance before terrain and service limits.`,
-  );
-}
-
-function selectedSimulationRate(): Readonly<(typeof SIMULATION_RATES)[SimulationRate]> {
-  return SIMULATION_RATES[simulationRateControl.value as SimulationRate] ?? SIMULATION_RATES.standard;
-}
-
-function simulationRateForSettings(horizon: TimeHorizon, multiplier: number): SimulationRate {
-  const match = (Object.entries(SIMULATION_RATES) as Array<[SimulationRate, (typeof SIMULATION_RATES)[SimulationRate]]>)
-    .find(([, rate]) => rate.horizon === horizon && rate.multiplier === multiplier);
-  return match?.[0] ?? "standard";
+  return `<strong>${escapeHtml(building.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(why)}</small>`;
 }
 
 function setSettingsOpen(open: boolean): void {
-  settingsDrawer.dataset.open = String(open);
-  settingsDrawer.setAttribute("aria-hidden", String(!open));
-  settingsDrawer.toggleAttribute("inert", !open);
-  settingsScrim.setAttribute("aria-hidden", String(!open));
+  settingsDrawer.hidden = !open;
+  settingsScrim.hidden = !open;
   settingsButton.setAttribute("aria-expanded", String(open));
-  document.body.dataset.settingsOpen = String(open);
 }
 
-function bindRange(
-  controlId: string,
-  outputId: string,
-  initialValue: number,
-  format: (value: number) => string,
-  apply: (value: number) => void,
-): HTMLInputElement {
-  const control = requireElement<HTMLInputElement>(controlId);
-  const output = requireElement<HTMLOutputElement>(outputId);
-  const update = (): void => {
-    const value = Number(control.value);
-    output.value = format(value);
-    apply(value);
+function updateControlPreviews(): void {
+  const settings = simulation.getSettings();
+  speedLimitOutput.value = `${settings.speedLimitMph} mph`;
+  signalCycleOutput.value = `${settings.signalCycleSeconds} sec`;
+  transitHeadwayOutput.value = `${settings.transitHeadwayMinutes} min`;
+  roadCapacityOutput.value = `${settings.roadCapacity}%`;
+  utilityCapacityOutput.value = `${Math.round(settings.utilityCapacityScale * 100)}%`;
+  zoningOutput.value = `${Math.round(settings.zoningStrictness * 100)}%`;
+  timeHorizonPreview.textContent = {
+    day: "Each real second advances one simulated hour.",
+    week: "Each real second advances six simulated hours.",
+    month: "Each real second advances one simulated day.",
+    year: "Each real second advances one simulated week.",
+  }[settings.timeHorizon];
+  speedLimitPreview.textContent = settings.speedLimitMph > 30
+    ? "Faster free-flow trips, with more braking distance and crossing exposure."
+    : settings.speedLimitMph < 20
+      ? "Lower conflict severity, but longer vehicle and delivery trips."
+      : "Balanced travel time and crossing risk.";
+  signalCyclePreview.textContent = Math.abs(settings.signalCycleSeconds - 75) < 15
+    ? "Near the district's balanced cycle."
+    : settings.signalCycleSeconds > 90
+      ? "Longer vehicle phases can increase pedestrian waiting."
+      : "Short phases can add stopping delay on busy approaches.";
+  transitHeadwayPreview.textContent = `About ${(60 / settings.transitHeadwayMinutes).toFixed(1)} departures per hour; shorter waits cost more service capacity.`;
+  roadCapacityPreview.textContent = settings.roadCapacity === 100
+    ? "Baseline vehicle and delivery capacity."
+    : `${Math.abs(settings.roadCapacity - 100)}% ${settings.roadCapacity > 100 ? "more" : "less"} capacity for commutes and freight.`;
+  utilityCapacityPreview.textContent = settings.utilityCapacityScale >= 1
+    ? "Current supply should meet modeled demand unless the city grows."
+    : "Shortfalls directly reduce production and civic-service delivery.";
+  zoningPreview.textContent = settings.zoningStrictness > 1
+    ? "Tighter limits slow floor-area and housing growth."
+    : settings.zoningStrictness < 1
+      ? "Looser limits allow faster long-term development."
+      : "Baseline limits on long-term development.";
+}
+
+function accountingNode(label: string, value: number, max: number, tone: string): string {
+  const width = Math.max(8, Math.min(100, Math.abs(value) / max * 100));
+  return `<span class="accounting-node" data-tone="${tone}"><small>${label}</small><b>${formatDetailedMoney(value)}</b><i style="width:${width}%"></i></span>`;
+}
+
+function utilityMeter(label: string, value: number, source: string): string {
+  return `<label><span>${label}<small>${source}</small></span><meter min="0" max="1" value="${value}"></meter><b>${Math.round(value * 100)}%</b></label>`;
+}
+
+function isCivicFunction(buildingFunction: DetailedBuilding["function"]): boolean {
+  return ["university", "library", "school", "clinic", "culture", "recreation"].includes(buildingFunction);
+}
+
+function formatBuildingFunction(value: DetailedBuilding["function"]): string {
+  const names: Record<DetailedBuilding["function"], string> = {
+    housing: "Residential building",
+    retail: "Retail business",
+    office: "Office employer",
+    university: "University facility",
+    library: "Community library",
+    school: "School",
+    clinic: "Health service",
+    culture: "Cultural service",
+    recreation: "Recreation service",
+    parking: "Parking service",
+    industrial: "Production and supply",
   };
-  control.value = String(initialValue);
-  output.value = format(initialValue);
-  control.addEventListener("input", update);
-  return control;
+  return names[value];
 }
 
-function entry(label: string, value: DisplayItem["value"], detail?: string): DisplayItem {
-  return { label, value, detail };
+function formatEntityStatus(value: DetailedBuilding["accounting"]["status"]): string {
+  return value === "understaffed" ? "Understaffed" : capitalize(value);
 }
 
-function sumDistricts(state: Readonly<SimulationState>, select: (district: SimulationState["city"]["districts"][number]) => number): number {
-  return state.city.districts.reduce((total, district) => total + select(district), 0);
+function formatEmployment(value: DetailedPerson["employment"]): string {
+  return value === "external" ? "Works outside the section" : value === "local" ? "Locally employed" : capitalize(value);
 }
 
-function weightedCity(state: Readonly<SimulationState>, select: (district: SimulationState["city"]["districts"][number]) => number): number {
-  const population = state.city.metrics.population;
-  return population > 0
-    ? sumDistricts(state, (district) => select(district) * district.population) / population
-    : 0;
+function formatActivity(value: DetailedPerson["currentActivity"]): string {
+  return value === "shop" ? "Shopping" : value === "healthcare" ? "Health visit" : capitalize(value);
 }
 
-function average(values: readonly number[]): number {
-  return values.length > 0 ? values.reduce((total, value) => total + value, 0) / values.length : 0;
+function formatMode(value: DetailedPerson["schedule"][number]["mode"]): string {
+  return value === "transit" ? "Transit" : capitalize(value);
+}
+
+function formatMigration(value: DetailedPerson["migrationStatus"]): string {
+  return value === "staying" ? "Staying: " : value === "considering-leaving" ? "Considering leaving: " : "Moving out: ";
+}
+
+function formatMinute(minute: number): string {
+  const normalized = ((minute % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  const period = hours >= 12 ? "PM" : "AM";
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+
+function formatDetailedMoney(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0,
+  }).format(value);
+}
+
+function sumNumbers(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
 }
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function percent(value: number): string {
-  return `${Math.round(value)}%`;
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  })[character] ?? character);
 }
 
-function currency(value: number): string {
-  const absolute = Math.abs(value);
-  const prefix = value < 0 ? "-$" : "$";
-  if (absolute >= 1_000_000) return `${prefix}${(absolute / 1_000_000).toFixed(1)}M`;
-  if (absolute >= 1_000) return `${prefix}${(absolute / 1_000).toFixed(1)}K`;
-  return `${prefix}${Math.round(absolute).toLocaleString()}`;
-}
-
-function marketBalance(
-  state: Readonly<SimulationState>,
-  good: keyof SimulationState["city"]["market"]["prices"],
-): string {
-  const market = state.city.market;
-  const supply = market.localSupplyDaily[good] + market.importsDaily[good];
-  return `$${market.prices[good].toFixed(2)} · ${formatAmount(supply)} / ${formatAmount(market.demandDaily[good])}`;
-}
-
-function number(value: number): string {
-  return Math.round(value).toLocaleString();
-}
-
-function signedNumber(value: number): string {
-  return `${value >= 0 ? "+" : ""}${number(value)}`;
-}
-
-function signedFixed(value: number): string {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}`;
-}
-
-function signedCurrency(value: number): string {
-  return `${value >= 0 ? "+" : ""}${currency(value)}`;
-}
-
-function formatBaselineValue(row: BaselineComparisonRow, value: number): string {
-  if (row.unit === "currency" || row.unit === "currency-per-day") return currency(value);
-  if (row.unit === "percent") return percent(value);
-  if (row.unit === "residents-per-year") return `${signedNumber(value)}/yr`;
-  return number(value);
-}
-
-function formatBaselineDifference(row: BaselineComparisonRow): string {
-  if (row.unit === "currency" || row.unit === "currency-per-day") return signedCurrency(row.difference);
-  if (row.unit === "percent") return `${signedFixed(row.difference)} pts`;
-  if (row.unit === "residents-per-year") return `${signedNumber(row.difference)}/yr`;
-  return signedNumber(row.difference);
-}
-
-function updateHeatLegend(layer: VisualLayer): void {
-  const labels: Record<VisualLayer, readonly [string, string]> = {
-    none: ["Base", "color"],
-    congestion: ["Free flow", "Gridlock"],
-    "pedestrian-wait": ["No wait", "Long wait"],
-    "land-value": ["Lower value", "Higher value"],
-    utilities: ["Unserved", "Covered"],
-    jobs: ["Few jobs", "Many jobs"],
-    shortages: ["Supplied", "Shortage"],
-    migration: ["Outflow", "Inflow"],
-    freight: ["Low freight", "High freight"],
-    profit: ["Loss", "Profit"],
-  };
-  const [low, high] = labels[layer];
-  setText(heatLowLabel, low);
-  setText(heatHighLabel, high);
-}
-
-function formatClock(minute: number): string {
-  if (minute >= 1440) return "12:00a";
-  const hours = Math.floor(minute / 60);
-  const minutes = minute % 60;
-  const displayHour = hours % 12 || 12;
-  return `${displayHour}:${String(minutes).padStart(2, "0")}${hours < 12 ? "a" : "p"}`;
-}
-
-function area(value: number): string {
-  return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M m²` : `${number(value)} m²`;
-}
-
-function formatAmount(value: number): string {
-  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : Number.isInteger(value) ? number(value) : value.toFixed(1);
-}
-
-function requireElement<T extends HTMLElement = HTMLElement>(id: string): T {
+function requireElement<T extends Element>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing required element: #${id}`);
-  return element as T;
+  return element as unknown as T;
 }
 
-function setText(element: HTMLElement, value: string): void {
-  if (element.textContent !== value) element.textContent = value;
+function createSessionSeed(): number {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return (values[0] & 0x7fffffff) || 1;
+}
+
+function isBuildTool(value: string | undefined): value is BuildTool {
+  return (
+    value === "add-lane" ||
+    value === "remove-lane" ||
+    value === "bike-lane" ||
+    value === "sidewalk" ||
+    value === "crosswalk" ||
+    value === "island" ||
+    value === "direction"
+  );
+}
+
+function nextDirection(direction: LaneDirection): LaneDirection {
+  if (direction === "two-way") return "forward";
+  if (direction === "forward") return "reverse";
+  return "two-way";
+}
+
+function formatVolume(volume: number): string {
+  return ["Low", "Medium", "High"][volume - 1] ?? "Medium";
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatSigned(value: number): string {
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? "+" : ""}${rounded.toLocaleString()}`;
+}
+
+function formatLaneChange(laneDelta: number): string {
+  if (laneDelta > 0) return "+1 vehicle lane";
+  if (laneDelta < 0) return "−1 vehicle lane";
+  return "Existing lane count";
+}
+
+function formatDirection(direction: LaneDirection, axis: DistrictFeature["axis"]): string {
+  if (direction === "two-way") return "Two-way";
+  if (axis === "x") return direction === "forward" ? "Eastbound only" : "Westbound only";
+  return direction === "forward" ? "Southbound only" : "Northbound only";
+}
+
+function formatTool(tool: BuildTool): string {
+  const names: Record<BuildTool, string> = {
+    "add-lane": "Vehicle lane",
+    "remove-lane": "Lane reduction",
+    "bike-lane": "Protected bike lane",
+    sidewalk: "Sidewalk widening",
+    crosswalk: "High-visibility crosswalk",
+    island: "Pedestrian island",
+    direction: "Lane direction",
+  };
+  return names[tool];
+}
+
+function formatSignalPhase(phase: ReturnType<Simulation["getState"]>["signalPhase"]): string {
+  if (phase === "ns-green") return "N/S green";
+  if (phase === "ns-yellow") return "N/S yellow";
+  if (phase === "ew-green") return "E/W green";
+  if (phase === "ew-yellow") return "E/W yellow";
+  if (phase === "pedestrian-walk") return "Pedestrian walk";
+  return "All red";
+}
+
+function formatSignalMode(mode: SignalControlMode): string {
+  return mode === "automatic" ? "Automatic" : "Manual";
+}
+
+function initializeSearch(): void {
+  const optionNames = new Set<string>();
+  for (const landmark of PENN_LANDMARKS) optionNames.add(landmark.name);
+  for (const feature of features) optionNames.add(feature.name);
+  locationOptions.replaceChildren(
+    ...Array.from(optionNames)
+      .sort()
+      .map((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        return option;
+      }),
+  );
+
+}
+
+function flyToSearchResult(rawQuery: string): void {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return;
+  const landmark = PENN_LANDMARKS.find(
+    (candidate) => candidate.name.toLowerCase() === query,
+  );
+  const feature = features.find(
+    (candidate) =>
+      candidate.name.toLowerCase() === query ||
+      `${candidate.name} ${candidate.description}`.toLowerCase().includes(query),
+  );
+  const point = landmark ?? feature?.path[Math.floor(feature.path.length / 2)];
+  if (!point) {
+    locationSearchInput.setCustomValidity("Choose a listed Penn landmark or street.");
+    locationSearchInput.reportValidity();
+    return;
+  }
+  locationSearchInput.setCustomValidity("");
+  renderer.flyTo(point);
+  if (feature) {
+    selectedFeature = feature;
+    renderer.setSelectedFeature(feature.id);
+    if (appMode === "build") updateSelectionPanel();
+  } else if (landmark) {
+    simulationTitle.textContent = landmark.name;
+    sceneSubtitle.textContent = "Penn campus landmark";
+  }
 }
 
 renderer.resize();
-renderer.render(simulation.getState());
-updateHeatLegend("none");
+renderer.setSelectedFeature(selectedFeature?.id ?? null);
+initializeSearch();
+updateControlPreviews();
+setCameraMode(cameraMode);
+setAppMode("build");
+simulation.start();
 updateInterface();
 window.requestAnimationFrame(animationFrame);

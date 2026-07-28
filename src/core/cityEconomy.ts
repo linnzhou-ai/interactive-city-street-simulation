@@ -7,8 +7,10 @@ import type {
   GoodsBasket,
   GoodType,
 } from "../models/cityTypes";
-import type { HouseholdExpenseLedger } from "../models/types";
-import { UTILITY_CUSTOMER_RATES } from "./infrastructure";
+import type {
+  HouseholdExpenseLedger,
+  UtilityKind,
+} from "../models/cityEconomyTypes";
 
 export const GOODS: GoodType[] = ["food", "consumerGoods", "industrialMaterials"];
 export const BASE_GOODS_PRICES: GoodsBasket = {
@@ -24,6 +26,11 @@ const GOODS_WEIGHT: GoodsBasket = {
 };
 const TRUCK_CAPACITY = 28;
 const CROSS_BORDER_WORK_SHARE = 0.12;
+const UTILITY_CUSTOMER_RATES: Record<UtilityKind, number> = {
+  power: 0.18,
+  water: 0.12,
+  waste: 0.16,
+};
 
 export interface DistrictTransportCapacity {
   road: number;

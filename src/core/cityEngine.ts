@@ -7,7 +7,10 @@ import type {
   CitySystemEvent,
   CityTimelinePoint,
 } from "../models/cityTypes";
-import type { HouseholdExpenseLedger, UtilityKind } from "../models/types";
+import type {
+  HouseholdExpenseLedger,
+  UtilityKind,
+} from "../models/cityEconomyTypes";
 import { advanceCityEconomy } from "./cityEconomy";
 import { calendarFromElapsedDays } from "./timeScale";
 

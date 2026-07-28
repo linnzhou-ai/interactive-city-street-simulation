@@ -1,44 +1,61 @@
-# Interactive City Street Simulation
+# Campus Street Simulator
 
-A browser-based city-section systems simulator for testing how small operating
-and policy differences compound across days, weeks, months, and years.
+A standalone Three.js urban simulation world inspired by Penn and University
+City. The application converts a structured geographic street graph into local
+meter coordinates, then generates its own roads, sidewalks, blocks, buildings,
+landmarks, vegetation, vehicles, pedestrians, and lighting.
 
-The project's core workflow is:
-
-1. Configure transit, signals, road capacity, utilities, zoning policy, district
-   production, and the city's links to outside markets.
-2. Let household work and shopping, business production, and physical goods
-   deliveries generate passenger and freight demand.
-3. Run the connected population, mobility, economy, land-use, utility, and
-   municipal-finance model over days, weeks, months, or years.
-4. Keep the original street agents as a bounded detail layer for traffic behavior.
-5. Compare historical population, output, congestion, service, housing, value,
-   and budget outcomes.
-
-The model is deterministic and data-driven. A partner city can replace the demo
-districts and links without changing the engine. Its outputs support scenario
-comparison; they are not engineering or financial forecasts.
-
-See [PROJECT_PROPOSAL.md](PROJECT_PROPOSAL.md) for the full scope, milestones,
-team responsibilities, success criteria, and fallback plan.
+The visible scene does not load or display map imagery, satellite tiles,
+provider road graphics, or a globe.
 
 ## Development
-
-Install a supported Node.js version, then run:
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Before opening a pull request, verify the complete foundation:
+Open the local URL printed by Vite. Do not open `index.html` directly with a
+`file://` URL because TypeScript modules and styles require the development or
+production server.
+
+Run the full verification suite:
 
 ```bash
 pnpm check
 ```
 
-The application uses Vite, TypeScript, Three.js, Graphology, Vitest, and ESLint.
-See [docs/architecture.md](docs/architecture.md) for subsystem boundaries and
-team ownership. See [docs/city-model-integration.md](docs/city-model-integration.md)
-for the input contract used by an external city model and
-[docs/economy-model.md](docs/economy-model.md) for the economic update rules.
+## World
+
+- District coverage spans approximately 30th–45th Streets and Market–South.
+- Roads and sidewalks are real Three.js geometry generated from the structured
+  street graph.
+- Twelve architectural archetypes create historic, Gothic, brick, glass,
+  research, dormitory, apartment, rowhouse, office, hospital, parking, and
+  retail buildings.
+- College Hall, Fisher Fine Arts, Huntsman Hall, Van Pelt Library, Penn Museum,
+  Franklin Field, Amy Gutmann Hall, Houston Hall, Penn Engineering, and Penn
+  Medicine use custom landmark geometry.
+- Instanced trees, lights, parked cars, and lower-detail skyline buildings keep
+  the district dense while limiting draw overhead.
+
+## Controls
+
+- `Orbit`: drag to rotate and scroll to zoom.
+- `Fly`: drag to look, use `W/A/S/D` to move, `E/Q` to rise or descend, and
+  hold `Shift` for a speed boost. Scroll adjusts fly speed. A swept sphere
+  collider prevents ground and building penetration.
+- `Walk`: click the viewport for pointer-lock mouse look, use `W/A/S/D` to
+  walk, hold `Shift` to run, and press `Space` for a small jump. Gravity,
+  human-scale collision, and safe Fly/Walk transitions keep the player on
+  roads, sidewalks, plazas, and open ground.
+- Search flies the camera to a Penn landmark, street, or intersection.
+- `Build`: select an existing 3D street and apply interventions.
+- `Simulate`: run, pause, reset, adjust demand, compare baseline/modified
+  results, and inspect localized analysis overlays.
+
+Append `?collisionDebug=1` to the local URL to show building collision boxes,
+the player collider, ground ray, current mode, and grounded state. Debug
+visualization is disabled by default.
+
+See [docs/architecture.md](docs/architecture.md) for subsystem boundaries.

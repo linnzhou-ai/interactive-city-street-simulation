@@ -23,9 +23,6 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "graphology": "^0.26.0",
-    "graphology-shortest-path": "^2.1.0",
-    "lucide": "^1.27.0",
     "three": "^0.185.1"
   }
 }

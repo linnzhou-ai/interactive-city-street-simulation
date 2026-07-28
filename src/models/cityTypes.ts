@@ -1,4 +1,8 @@
-import type { HouseholdExpenseLedger, UtilityKind, ZoneType } from "./types";
+import type {
+  HouseholdExpenseLedger,
+  UtilityKind,
+  ZoneType,
+} from "./cityEconomyTypes";
 
 export type TimeHorizon = "day" | "week" | "month" | "year";
 export type GoodType = "food" | "consumerGoods" | "industrialMaterials";

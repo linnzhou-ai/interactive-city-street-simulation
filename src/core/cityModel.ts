@@ -8,7 +8,7 @@ import type {
   ExternalMarketDefinition,
   GoodsBasket,
 } from "../models/cityTypes";
-import type { HouseholdExpenseLedger } from "../models/types";
+import type { HouseholdExpenseLedger } from "../models/cityEconomyTypes";
 import {
   advanceCityEconomy,
   createExternalMarketState,
@@ -111,18 +111,18 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
   const columns = [-72, -24, 24, 72];
   const rows = [-48, 0, 48];
   const templates: Array<Omit<CityDistrictDefinition, "x" | "z" | "width" | "depth">> = [
-    district("north-homes", "North Homes", "residential", 0.05, 360_000, 2_400, 18_000, 0, 4_000, 14_500, 5_200, 52_000, 210, 500),
-    district("university", "University", "civic", 0.03, 280_000, 800, 22_000, 0, 42_000, 7_800, 8_900, 61_000, 280, 300),
-    district("uptown-market", "Uptown Market", "commercial", 0.04, 320_000, 1_250, 68_000, 3_000, 8_000, 6_400, 12_500, 67_000, 330, 1_200),
-    district("tech-works", "Tech Works", "industrial", 0.07, 260_000, 350, 11_000, 82_000, 3_000, 2_100, 11_700, 72_000, 185, 4_800),
-    district("west-gardens", "West Gardens", "park", 0.09, 120_000, 720, 4_000, 0, 7_000, 3_600, 1_100, 48_000, 295, 120),
-    district("central", "Central Exchange", "commercial", 0.02, 440_000, 1_500, 112_000, 6_000, 12_000, 8_600, 20_500, 75_000, 440, 1_800),
-    district("civic-center", "Civic Center", "civic", 0.03, 300_000, 650, 28_000, 0, 68_000, 4_100, 9_800, 64_000, 360, 250),
-    district("east-heights", "East Heights", "residential", 0.11, 330_000, 2_050, 14_000, 0, 5_000, 12_300, 3_900, 56_000, 235, 420),
-    district("river-homes", "River Homes", "residential", 0.06, 300_000, 1_850, 9_000, 0, 3_000, 10_700, 2_800, 49_000, 195, 350),
-    district("south-market", "South Market", "commercial", 0.05, 320_000, 1_100, 76_000, 5_000, 5_000, 5_900, 14_600, 58_000, 270, 1_450),
-    district("freight-yard", "Freight Yard", "industrial", 0.08, 300_000, 240, 5_000, 112_000, 2_000, 1_400, 13_900, 69_000, 135, 6_500),
-    district("south-homes", "South Homes", "residential", 0.13, 350_000, 2_200, 12_000, 0, 3_000, 13_100, 3_200, 51_000, 175, 380),
+    district("powelton", "Powelton Village", "residential", 0.05, 360_000, 2_400, 18_000, 0, 4_000, 14_500, 5_200, 52_000, 210, 500),
+    district("drexel", "Drexel Campus", "civic", 0.03, 280_000, 800, 22_000, 0, 42_000, 7_800, 8_900, 61_000, 280, 300),
+    district("market-street", "Market Street", "commercial", 0.04, 320_000, 1_250, 68_000, 3_000, 8_000, 6_400, 12_500, 67_000, 330, 1_200),
+    district("innovation", "Innovation District", "industrial", 0.07, 260_000, 350, 11_000, 82_000, 3_000, 2_100, 11_700, 72_000, 185, 4_800),
+    district("spruce-hill", "Spruce Hill", "park", 0.09, 120_000, 720, 4_000, 0, 7_000, 3_600, 1_100, 48_000, 295, 120),
+    district("penn-campus", "Penn Campus", "commercial", 0.02, 440_000, 1_500, 112_000, 6_000, 12_000, 8_600, 20_500, 75_000, 440, 1_800),
+    district("civic-cultural", "Civic and Cultural", "civic", 0.03, 300_000, 650, 28_000, 0, 68_000, 4_100, 9_800, 64_000, 360, 250),
+    district("walnut-hill", "Walnut Hill", "residential", 0.11, 330_000, 2_050, 14_000, 0, 5_000, 12_300, 3_900, 56_000, 235, 420),
+    district("cedar-park", "Cedar Park", "residential", 0.06, 300_000, 1_850, 9_000, 0, 3_000, 10_700, 2_800, 49_000, 195, 350),
+    district("baltimore-avenue", "Baltimore Avenue", "commercial", 0.05, 320_000, 1_100, 76_000, 5_000, 5_000, 5_900, 14_600, 58_000, 270, 1_450),
+    district("schuylkill-freight", "Schuylkill Freight", "industrial", 0.08, 300_000, 240, 5_000, 112_000, 2_000, 1_400, 13_900, 69_000, 135, 6_500),
+    district("medical", "Medical District", "residential", 0.13, 350_000, 2_200, 12_000, 0, 3_000, 13_100, 3_200, 51_000, 175, 380),
   ];
   const districts = templates.map((template, index) => ({
     ...template,
@@ -148,8 +148,8 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
   ];
 
   return {
-    id: "market-river-section",
-    name: "Market-River City Section",
+    id: "university-city-section",
+    name: "University City Section",
     startYear: 2026,
     startingBudget: 18_000_000,
     taxRate: 0.082,
