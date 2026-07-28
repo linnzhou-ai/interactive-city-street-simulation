@@ -106,6 +106,7 @@ export interface VehicleSnapshot {
   kind: VehicleKind;
   color: string;
   complianceProbability: number;
+  violating: boolean;
 }
 
 export interface PedestrianSnapshot {
@@ -117,6 +118,7 @@ export interface PedestrianSnapshot {
   color: string;
   variant: number;
   complianceProbability: number;
+  violating: boolean;
 }
 
 export interface SimulationMetrics {

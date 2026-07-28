@@ -133,4 +133,23 @@ describe("LiveTrafficSystem", () => {
       traffic.getVehicles().some((vehicle) => vehicle.kind === "truck"),
     ).toBe(true);
   });
+
+  it("exposes active rule violations for renderer feedback", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    let sawActiveViolation = false;
+    for (let step = 0; step < 60; step += 1) {
+      traffic.update(0.5, {
+        vehicleVolume: 3,
+        pedestrianVolume: 2,
+        speedLimitMph: 25,
+      });
+      sawActiveViolation ||= [
+        ...traffic.getVehicles(),
+        ...traffic.getPedestrians(),
+      ].some((agent) => agent.violating);
+    }
+
+    expect(traffic.getMetrics().trafficViolations).toBeGreaterThan(0);
+    expect(sawActiveViolation).toBe(true);
+  });
 });

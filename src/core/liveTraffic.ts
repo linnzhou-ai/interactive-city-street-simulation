@@ -99,6 +99,7 @@ interface VehicleAgent {
   aggressiveYellow: boolean;
   mayRunRed: boolean;
   violationIntersectionId: string | null;
+  violatingUntilSeconds: number;
 }
 
 interface PedestrianAgent {
@@ -118,6 +119,7 @@ interface PedestrianAgent {
   complianceProbability: number;
   mayCrossAgainstSignal: boolean;
   signalViolationUsed: boolean;
+  violatingUntilSeconds: number;
 }
 
 interface PositionedAgent {
@@ -397,6 +399,7 @@ export class LiveTrafficSystem {
         kind: vehicle.kind,
         color: vehicle.color,
         complianceProbability: vehicle.complianceProbability,
+        violating: this.elapsedSeconds < vehicle.violatingUntilSeconds,
       };
     });
   }
@@ -411,6 +414,7 @@ export class LiveTrafficSystem {
         color: pedestrian.color,
         variant: pedestrian.variant,
         complianceProbability: pedestrian.complianceProbability,
+        violating: this.elapsedSeconds < pedestrian.violatingUntilSeconds,
       };
     });
   }
@@ -497,7 +501,8 @@ export class LiveTrafficSystem {
           this.random.next(),
         );
         const desiredSpeed = speedLimitMph * 0.44704 * speedFactor;
-        if (speedFactor > 1) this.trafficViolations += 1;
+        const speeding = speedFactor > 1;
+        if (speeding) this.trafficViolations += 1;
         this.vehicles.push({
           id: this.nextVehicleId,
           path: route.path,
@@ -517,6 +522,7 @@ export class LiveTrafficSystem {
           mayRunRed:
             this.random.next() > 0.985 + complianceProbability * 0.014,
           violationIntersectionId: null,
+          violatingUntilSeconds: speeding ? this.elapsedSeconds + 3 : 0,
         });
         this.nextVehicleId += 1;
       }
@@ -563,6 +569,7 @@ export class LiveTrafficSystem {
           mayCrossAgainstSignal:
             this.random.next() > 0.985 + complianceProbability * 0.014,
           signalViolationUsed: false,
+          violatingUntilSeconds: 0,
         });
         this.nextPedestrianId += 1;
       }
@@ -652,6 +659,7 @@ export class LiveTrafficSystem {
       ) {
         vehicle.violationIntersectionId = end.id;
         this.trafficViolations += 1;
+        vehicle.violatingUntilSeconds = this.elapsedSeconds + 3;
       }
       const nextKey = nextVehicleSegmentKey(vehicle, this.roadDesigns);
       const downstreamBlocked =
@@ -760,6 +768,7 @@ export class LiveTrafficSystem {
         pedestrian.committedIntersectionId = end.id;
         pedestrian.signalViolationUsed = true;
         this.trafficViolations += 1;
+        pedestrian.violatingUntilSeconds = this.elapsedSeconds + 3;
       }
       if (
         controller &&

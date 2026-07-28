@@ -476,8 +476,8 @@ export class ThreeRenderer {
     if (this.cameraMode === "fly") this.updateFlyCamera(frameSeconds);
     if (this.cameraMode === "walk") this.updateWalkCamera(frameSeconds);
 
-    this.syncVehicles(state.vehicles);
-    this.syncPedestrians(state.pedestrians);
+    this.syncVehicles(state.vehicles, state.elapsedSeconds);
+    this.syncPedestrians(state.pedestrians, state.elapsedSeconds);
     this.updateSignals(state.signals);
     this.updateEnvironmentEffects(frameSeconds, state.elapsedSeconds);
 
@@ -1966,7 +1966,10 @@ export class ThreeRenderer {
     }
   }
 
-  private syncVehicles(vehicles: readonly VehicleSnapshot[]): void {
+  private syncVehicles(
+    vehicles: readonly VehicleSnapshot[],
+    elapsedSeconds: number,
+  ): void {
     while (this.vehiclePool.length < vehicles.length) {
       const object = createCar("#ffffff", "sedan");
       this.vehiclePool.push(object);
@@ -1979,13 +1982,16 @@ export class ThreeRenderer {
       if (!vehicle) continue;
       object.position.set(vehicle.x, 0.25, vehicle.z);
       object.rotation.y = vehicle.heading;
-      updateCarAppearance(object, vehicle.color, vehicle.kind);
+      const violationFlash =
+        vehicle.violating && Math.floor(elapsedSeconds * 5) % 2 === 0;
+      updateCarAppearance(object, vehicle.color, vehicle.kind, violationFlash);
       setObjectMarkerVisibility(object, this.vehicleMarkersVisible);
     }
   }
 
   private syncPedestrians(
     pedestrians: readonly PedestrianSnapshot[],
+    elapsedSeconds: number,
   ): void {
     while (this.pedestrianPool.length < pedestrians.length) {
       const object = createPerson("#ffffff", 0);
@@ -2004,6 +2010,7 @@ export class ThreeRenderer {
         pedestrian.color,
         pedestrian.variant,
         pedestrian.waiting,
+        pedestrian.violating && Math.floor(elapsedSeconds * 5) % 2 === 0,
       );
       setObjectMarkerVisibility(object, this.pedestrianMarkersVisible);
     }
@@ -2559,6 +2566,7 @@ function createCar(color: string, kind: VehicleKind): THREE.Group {
   });
   group.userData.paint = paint;
   group.userData.marker = marker;
+  group.userData.markerMaterial = marker.material;
   updateCarAppearance(group, color, kind);
   return group;
 }
@@ -2614,9 +2622,18 @@ function updateCarAppearance(
   object: THREE.Group,
   color: string,
   kind: VehicleKind,
+  violationFlash = false,
 ): void {
   const paint = object.userData.paint as THREE.MeshStandardMaterial | undefined;
-  paint?.color.set(color);
+  const markerMaterial = object.userData.markerMaterial as
+    | THREE.SpriteMaterial
+    | undefined;
+  paint?.color.set(violationFlash ? "#ff2020" : color);
+  if (paint) {
+    paint.emissive.set(violationFlash ? "#ff0000" : "#000000");
+    paint.emissiveIntensity = violationFlash ? 1.8 : 0;
+  }
+  markerMaterial?.color.set(violationFlash ? "#ff2020" : "#72c8ff");
   const scale =
     kind === "compact"
       ? [0.92, 0.9, 0.86]
@@ -2637,6 +2654,7 @@ function updatePersonAppearance(
   color: string,
   variant: number,
   waiting: boolean,
+  violationFlash = false,
 ): void {
   const clothing = object.userData.clothing as
     | THREE.MeshStandardMaterial
@@ -2645,9 +2663,15 @@ function updatePersonAppearance(
   const markerMaterial = object.userData.markerMaterial as
     | THREE.SpriteMaterial
     | undefined;
-  clothing?.color.set(color);
+  clothing?.color.set(violationFlash ? "#ff2020" : color);
+  if (clothing) {
+    clothing.emissive.set(violationFlash ? "#ff0000" : "#000000");
+    clothing.emissiveIntensity = violationFlash ? 1.8 : 0;
+  }
   skin?.color.set(["#d9a477", "#8b5b3f", "#efc6a0", "#70442f"][variant % 4]);
-  markerMaterial?.color.set(waiting ? "#ffd166" : "#6ff3ce");
+  markerMaterial?.color.set(
+    violationFlash ? "#ff2020" : waiting ? "#ffd166" : "#6ff3ce",
+  );
 }
 
 let entityMarkerTexture: THREE.CanvasTexture | null = null;
