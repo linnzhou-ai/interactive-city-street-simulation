@@ -313,7 +313,10 @@ export class LiveTrafficSystem {
     settings: Pick<
       ScenarioSettings,
       "vehicleVolume" | "pedestrianVolume" | "speedLimitMph"
-    > & { violationRiskMultiplier?: number },
+    > & {
+      violationRiskMultiplier?: number;
+      pedestrianViolationRiskMultiplier?: number;
+    },
   ): void {
     if (deltaSeconds <= 0) return;
     let remaining = deltaSeconds;
@@ -330,7 +333,9 @@ export class LiveTrafficSystem {
       this.updatePedestrianSpawner(
         step,
         settings.pedestrianVolume,
-        settings.violationRiskMultiplier ?? 1,
+        settings.pedestrianViolationRiskMultiplier ??
+          settings.violationRiskMultiplier ??
+          1,
       );
       this.updateVehicles(step);
       this.updatePedestrians(step);

@@ -16,9 +16,9 @@ describe("time-of-day demand", () => {
     expect(getTimeDemandAdjustment(2).vehicle).toBeLessThan(0);
   });
 
-  it("raises traffic-law violation risk after dark", () => {
-    expect(getTimeViolationRiskMultiplier(13)).toBe(1);
-    expect(getTimeViolationRiskMultiplier(21)).toBeGreaterThan(1);
-    expect(getTimeViolationRiskMultiplier(2)).toBe(1.8);
+  it("uses the Philadelphia crash-derived traffic profile", () => {
+    expect(getTimeViolationRiskMultiplier(8)).toBeCloseTo(0.99);
+    expect(getTimeViolationRiskMultiplier(17)).toBeCloseTo(1.61);
+    expect(getTimeViolationRiskMultiplier(2)).toBeCloseTo(0.45);
   });
 });

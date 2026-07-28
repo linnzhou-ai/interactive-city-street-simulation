@@ -7,10 +7,8 @@ import {
   type EditorSnapshot,
   type ProjectSnapshot,
 } from "./core/projectState";
-import {
-  getTimeViolationRiskMultiplier,
-  Simulation,
-} from "./core/simulation";
+import { Simulation } from "./core/simulation";
+import { getPhillyCrashRiskProfile } from "./data/phillyCrashProfile";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
   AppMode,
@@ -1124,16 +1122,8 @@ function formatDemandPeriod(hourValue: number): string {
 }
 
 function formatViolationRisk(hourValue: number): string {
-  const multiplier = getTimeViolationRiskMultiplier(hourValue);
-  const label =
-    multiplier >= 1.8
-      ? "Elevated"
-      : multiplier > 1.15
-        ? "Moderate"
-        : multiplier > 1
-          ? "Slightly elevated"
-          : "Normal";
-  return `Traffic violation risk: ${label} · ${multiplier.toFixed(2)}×`;
+  const profile = getPhillyCrashRiskProfile(hourValue);
+  return `Philly crash index: traffic ${profile.trafficMultiplier.toFixed(2)}× · pedestrian ${profile.pedestrianMultiplier.toFixed(2)}×`;
 }
 
 function formatClockTime(date: Date): string {

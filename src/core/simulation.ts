@@ -16,6 +16,7 @@ import {
   summarizeBuildingActivity,
   type BuildingActivitySummary,
 } from "./buildingActivity";
+import { getPhillyCrashRiskProfile } from "../data/phillyCrashProfile";
 import { LiveTrafficSystem } from "./liveTraffic";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
@@ -211,9 +212,7 @@ export class Simulation {
       this.state.timeOfDayHours + simulationDelta / 60,
     );
     const timeDemand = getTimeDemandAdjustment(this.state.timeOfDayHours);
-    const violationRiskMultiplier = getTimeViolationRiskMultiplier(
-      this.state.timeOfDayHours,
-    );
+    const crashRisk = getPhillyCrashRiskProfile(this.state.timeOfDayHours);
     const weatherDemand =
       this.state.weather === "rain"
         ? { vehicle: 0.15, pedestrian: -0.65, speed: 0.78 }
@@ -239,7 +238,8 @@ export class Simulation {
         0,
         3,
       ),
-      violationRiskMultiplier,
+      violationRiskMultiplier: crashRisk.trafficMultiplier,
+      pedestrianViolationRiskMultiplier: crashRisk.pedestrianMultiplier,
     });
     this.syncTrafficState();
   }
@@ -283,16 +283,7 @@ export function getTimeDemandAdjustment(
 }
 
 export function getTimeViolationRiskMultiplier(hour: number): number {
-  const normalized = normalizeHour(hour);
-  if (normalized >= 23 || normalized < 5) return 1.8;
-  if (normalized >= 20 || normalized < 7) return 1.4;
-  if (
-    (normalized >= 7 && normalized < 9.5) ||
-    (normalized >= 16 && normalized < 19)
-  ) {
-    return 1.15;
-  }
-  return 1;
+  return getPhillyCrashRiskProfile(hour).trafficMultiplier;
 }
 
 export function calculateMetrics(
