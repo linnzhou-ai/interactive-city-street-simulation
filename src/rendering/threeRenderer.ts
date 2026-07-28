@@ -152,8 +152,8 @@ export class ThreeRenderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
 
-    this.scene.background = new THREE.Color("#9fc3d3");
-    this.scene.fog = new THREE.FogExp2("#a9c3c8", 0.00038);
+    this.scene.background = new THREE.Color("#b8cfd0");
+    this.scene.fog = new THREE.FogExp2("#b8cfd0", 0.00026);
 
     this.camera.position.set(720, 720, 920);
     this.controls = new OrbitControls(this.camera, this.canvas);
@@ -348,22 +348,6 @@ export class ThreeRenderer {
   }
 
   private buildLightingAndSky(): void {
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(4_800, 32, 18),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        uniforms: {
-          topColor: { value: new THREE.Color("#5f91b5") },
-          bottomColor: { value: new THREE.Color("#d8ddd0") },
-        },
-        vertexShader:
-          "varying vec3 vWorldPosition; void main(){ vec4 p=modelMatrix*vec4(position,1.0); vWorldPosition=p.xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
-        fragmentShader:
-          "uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vWorldPosition; void main(){ float h=normalize(vWorldPosition).y; float f=pow(max(h,0.0),0.55); gl_FragColor=vec4(mix(bottomColor,topColor,f),1.0); }",
-      }),
-    );
-    this.scene.add(sky);
-
     const hemisphere = new THREE.HemisphereLight("#dff3ff", "#536044", 2.35);
     this.scene.add(hemisphere);
 
@@ -574,8 +558,6 @@ export class ThreeRenderer {
         }
       }
     }
-
-    this.addDistantSkyline(rng);
   }
 
   private addArchetypeBuilding(
@@ -1927,29 +1909,6 @@ export class ThreeRenderer {
     });
   }
 
-  private addDistantSkyline(rng: () => number): void {
-    for (let index = 0; index < 170; index += 1) {
-      const angle = rng() * Math.PI * 2;
-      const radius = 1_250 + rng() * 1_150;
-      const width = 24 + rng() * 55;
-      const depth = 24 + rng() * 55;
-      const height = 28 + rng() * (radius < 1_650 ? 150 : 85);
-      const building = box(
-        width,
-        height,
-        depth,
-        rng() > 0.45 ? this.materials.distant : this.materials.distantGlass,
-      );
-      building.position.set(
-        Math.cos(angle) * radius,
-        height / 2,
-        Math.sin(angle) * radius,
-      );
-      building.rotation.y = rng() * Math.PI;
-      building.userData.collidable = true;
-      this.scene.add(building);
-    }
-  }
 }
 
 function createWorldMaterials() {
@@ -2035,8 +1994,6 @@ function createWorldMaterials() {
     darkRoof: new THREE.MeshStandardMaterial({ color: "#3f4547", roughness: 0.9 }),
     field: new THREE.MeshStandardMaterial({ color: "#4f8b5c", roughness: 1 }),
     stadiumConcrete: new THREE.MeshStandardMaterial({ color: "#928d83", roughness: 0.95 }),
-    distant: new THREE.MeshStandardMaterial({ color: "#7d8a88", roughness: 0.9 }),
-    distantGlass: new THREE.MeshStandardMaterial({ color: "#688493", roughness: 0.55, metalness: 0.1 }),
     trunk: new THREE.MeshStandardMaterial({ color: "#694c36", roughness: 1 }),
     leavesA: new THREE.MeshStandardMaterial({ color: "#3e7950", roughness: 1 }),
     leavesB: new THREE.MeshStandardMaterial({ color: "#527f48", roughness: 1 }),
