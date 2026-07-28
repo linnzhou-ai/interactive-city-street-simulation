@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Simulation, createInitialState } from "../src/core/simulation";
+import {
+  calculateCityActivity,
+  Simulation,
+  createInitialState,
+} from "../src/core/simulation";
 
 describe("Simulation", () => {
   it("does not advance while paused", () => {
@@ -58,18 +62,44 @@ describe("Simulation", () => {
     const simulation = new Simulation();
 
     simulation.setSimulationSpeed(10);
-    simulation.setVehicleVolume(10);
-    simulation.setPedestrianVolume(0);
     simulation.setSpeedLimit(100);
     simulation.setSignalCycle(1);
 
     expect(simulation.getSettings()).toMatchObject({
       simulationSpeed: 2,
-      vehicleVolume: 3,
-      pedestrianVolume: 1,
       speedLimitMph: 45,
       signalCycleSeconds: 30,
     });
+    expect(simulation.getSettings().vehicleVolume).toBeGreaterThanOrEqual(1);
+    expect(simulation.getSettings().vehicleVolume).toBeLessThanOrEqual(3);
+    expect(simulation.getSettings().pedestrianVolume).toBeGreaterThanOrEqual(1);
+    expect(simulation.getSettings().pedestrianVolume).toBeLessThanOrEqual(3);
+  });
+
+  it("derives visible demand from city trips and the time of day", () => {
+    const city = new Simulation().getState().city;
+    const morning = calculateCityActivity(city, 0);
+    const night = calculateCityActivity(city, 16 * 60);
+
+    expect(morning.vehicleDemandLevel).toBeGreaterThan(night.vehicleDemandLevel);
+    expect(morning.commuteSharePercent).toBeGreaterThan(0);
+    expect(morning.shoppingSharePercent).toBeGreaterThan(0);
+    expect(morning.freightSharePercent).toBeGreaterThan(0);
+  });
+
+  it("advances the city economy over long time horizons", () => {
+    const simulation = new Simulation();
+    const initial = simulation.getState().city;
+    simulation.setTimeHorizon("year");
+    simulation.start();
+
+    simulation.update(1);
+
+    expect(simulation.getState().city.elapsedDays).toBe(7);
+    expect(simulation.getState().city.metrics.population).not.toBe(
+      initial.metrics.population,
+    );
+    expect(simulation.getState().timeHorizon).toBe("year");
   });
 
   it("reflects street upgrades in live district metrics", () => {

@@ -234,27 +234,30 @@
         </label>
         <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
 
+        <div class="city-clock" aria-live="polite">
+          <span id="city-date">Jan 1, 2026</span>
+          <strong id="city-clock">07:00</strong>
+        </div>
+        <label class="analysis-control" for="time-horizon-control">
+          <span>Time scale</span>
+          <select id="time-horizon-control">
+            <option value="day">Day · 1 hour/sec</option>
+            <option value="week">Week · 6 hours/sec</option>
+            <option value="month">Month · 1 day/sec</option>
+            <option value="year">Year · 1 week/sec</option>
+          </select>
+        </label>
+
         <div class="scenario-control-list">
-          <div class="scenario-control">
-            <label for="vehicle-volume-control">
-              <span>Vehicle demand</span>
-              <output id="vehicle-volume-output" for="vehicle-volume-control">Medium</output>
-            </label>
-            <input id="vehicle-volume-control" type="range" min="1" max="3" step="1" value="2" />
+          <div class="scenario-control derived-demand">
+            <span>Vehicle activity</span>
+            <output id="vehicle-volume-output">Medium</output>
+            <small>Work, shopping, service, and freight trips</small>
           </div>
-          <div class="scenario-control">
-            <label for="pedestrian-volume-control">
-              <span>Pedestrian demand</span>
-              <output id="pedestrian-volume-output" for="pedestrian-volume-control">Medium</output>
-            </label>
-            <input
-              id="pedestrian-volume-control"
-              type="range"
-              min="1"
-              max="3"
-              step="1"
-              value="2"
-            />
+          <div class="scenario-control derived-demand">
+            <span>Pedestrian activity</span>
+            <output id="pedestrian-volume-output">Medium</output>
+            <small>Daily routines and local service visits</small>
           </div>
           <div class="scenario-control number-control">
             <label for="speed-limit-control">
@@ -293,9 +296,10 @@
           <span>Current phase</span>
           <strong id="signal-phase">East–west traffic</strong>
         </div>
-        <div class="scenario-presets" aria-label="Example campus scenarios">
-          <button id="rush-hour-button" type="button">PM rush</button>
-          <button id="class-change-button" type="button">Class change</button>
+        <div class="trip-cause-bar" aria-label="Causes of current city trips">
+          <span id="commute-trip-share">Work 0%</span>
+          <span id="shopping-trip-share">Shopping 0%</span>
+          <span id="freight-trip-share">Freight 0%</span>
         </div>
         <label class="analysis-control" for="analysis-overlay">
           <span>City overlay</span>
@@ -323,7 +327,37 @@
             </button>
           </div>
         </div>
-        <div class="metric-grid">
+        <div class="metrics-content">
+          <div class="city-system-grid" aria-label="City economy and infrastructure">
+            <article>
+              <span>Population</span>
+              <strong id="city-population">0</strong>
+            </article>
+            <article>
+              <span>Daily output</span>
+              <strong id="city-output">$0</strong>
+            </article>
+            <article>
+              <span>Unemployment</span>
+              <strong id="city-unemployment">0%</strong>
+            </article>
+            <article>
+              <span>Utilities</span>
+              <strong id="city-utilities">0%</strong>
+            </article>
+            <article>
+              <span>Imported goods</span>
+              <strong id="city-imports">0%</strong>
+            </article>
+            <article>
+              <span>Net migration</span>
+              <strong id="city-migration">0/yr</strong>
+            </article>
+          </div>
+          <p id="representation-note" class="representation-note">
+            Visible agents are a live sample of citywide activity.
+          </p>
+          <div class="metric-grid">
           <article class="metric-card">
             <span>Average vehicle trip</span>
             <strong id="vehicle-time">0.0 s</strong>
@@ -374,6 +408,7 @@
             <strong id="crossings-completed">0</strong>
             <small>Since reset</small>
           </article>
+          </div>
         </div>
       </section>
 

@@ -1,3 +1,9 @@
+import type {
+  CitySectionState,
+  CitySystemEvent,
+  TimeHorizon,
+} from "./cityTypes";
+
 export type AppMode = "build" | "simulate";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
@@ -60,11 +66,22 @@ export interface DesignImpact {
 
 export interface ScenarioSettings {
   simulationSpeed: number;
+  timeHorizon: TimeHorizon;
   speedLimitMph: number;
   signalCycleSeconds: number;
   vehicleVolume: number;
   pedestrianVolume: number;
   simulationSeed: number;
+}
+
+export interface CityActivitySnapshot {
+  dateLabel: string;
+  clockLabel: string;
+  vehicleDemandLevel: number;
+  pedestrianDemandLevel: number;
+  commuteSharePercent: number;
+  shoppingSharePercent: number;
+  freightSharePercent: number;
 }
 
 export interface SignalTiming {
@@ -124,9 +141,14 @@ export interface SimulationMetrics {
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
+  cityElapsedMinutes: number;
+  timeHorizon: TimeHorizon;
   signalPhase: SignalPhase;
   signals: readonly SignalSnapshot[];
   vehicles: readonly VehicleSnapshot[];
   pedestrians: readonly PedestrianSnapshot[];
   metrics: SimulationMetrics;
+  city: CitySectionState;
+  cityActivity: CityActivitySnapshot;
+  cityEvents: readonly CitySystemEvent[];
 }

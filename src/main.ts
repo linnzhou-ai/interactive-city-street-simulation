@@ -15,6 +15,7 @@ import type {
   SignalControlMode,
   SignalTiming,
 } from "./models/types";
+import type { TimeHorizon } from "./models/cityTypes";
 import { ThreeRenderer } from "./rendering/threeRenderer";
 
 const canvas = requireElement<HTMLCanvasElement>("simulation-canvas");
@@ -32,10 +33,14 @@ const resetButton = requireElement<HTMLButtonElement>("reset-button");
 const resetDesignButton = requireElement<HTMLButtonElement>("reset-design-button");
 const speedControl = requireElement<HTMLInputElement>("speed-control");
 const speedOutput = requireElement<HTMLOutputElement>("speed-output");
-const vehicleVolumeControl = requireElement<HTMLInputElement>("vehicle-volume-control");
 const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
-const pedestrianVolumeControl = requireElement<HTMLInputElement>("pedestrian-volume-control");
 const pedestrianVolumeOutput = requireElement<HTMLOutputElement>("pedestrian-volume-output");
+const cityDate = requireElement<HTMLElement>("city-date");
+const cityClock = requireElement<HTMLElement>("city-clock");
+const timeHorizonControl = requireElement<HTMLSelectElement>("time-horizon-control");
+const commuteTripShare = requireElement<HTMLElement>("commute-trip-share");
+const shoppingTripShare = requireElement<HTMLElement>("shopping-trip-share");
+const freightTripShare = requireElement<HTMLElement>("freight-trip-share");
 const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
 const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
 const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-control");
@@ -70,8 +75,13 @@ const activePedestrians = requireElement<HTMLElement>("active-pedestrians");
 const crossingsCompleted = requireElement<HTMLElement>("crossings-completed");
 const averageSpeed = requireElement<HTMLElement>("average-speed");
 const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
-const rushHourButton = requireElement<HTMLButtonElement>("rush-hour-button");
-const classChangeButton = requireElement<HTMLButtonElement>("class-change-button");
+const cityPopulation = requireElement<HTMLElement>("city-population");
+const cityOutput = requireElement<HTMLElement>("city-output");
+const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
+const cityUtilities = requireElement<HTMLElement>("city-utilities");
+const cityImports = requireElement<HTMLElement>("city-imports");
+const cityMigration = requireElement<HTMLElement>("city-migration");
+const representationNote = requireElement<HTMLElement>("representation-note");
 const baselineMetricsButton = requireElement<HTMLButtonElement>("baseline-metrics-button");
 const modifiedMetricsButton = requireElement<HTMLButtonElement>("modified-metrics-button");
 const metricsKicker = requireElement<HTMLElement>("metrics-kicker");
@@ -128,16 +138,9 @@ speedControl.addEventListener("input", () => {
   speedOutput.value = `${speed.toFixed(1)}×`;
 });
 
-vehicleVolumeControl.addEventListener("input", () => {
-  const volume = Number(vehicleVolumeControl.value);
-  simulation.setVehicleVolume(volume);
-  vehicleVolumeOutput.value = formatVolume(volume);
-});
-
-pedestrianVolumeControl.addEventListener("input", () => {
-  const volume = Number(pedestrianVolumeControl.value);
-  simulation.setPedestrianVolume(volume);
-  pedestrianVolumeOutput.value = formatVolume(volume);
+timeHorizonControl.addEventListener("change", () => {
+  simulation.setTimeHorizon(timeHorizonControl.value as TimeHorizon);
+  updateInterface();
 });
 
 speedLimitControl.addEventListener("change", () => {
@@ -193,14 +196,6 @@ for (const button of buildToolButtons) {
     if (isBuildTool(tool)) applyBuildTool(tool);
   });
 }
-
-rushHourButton.addEventListener("click", () => {
-  applyScenario({ vehicleVolume: 3, pedestrianVolume: 2, speedLimitMph: 25, signalCycle: 85 });
-});
-
-classChangeButton.addEventListener("click", () => {
-  applyScenario({ vehicleVolume: 1, pedestrianVolume: 3, speedLimitMph: 15, signalCycle: 55 });
-});
 
 baselineMetricsButton.addEventListener("click", () => setMetricView("baseline"));
 modifiedMetricsButton.addEventListener("click", () => setMetricView("modified"));
@@ -302,6 +297,31 @@ function updateMetrics(): void {
   activePedestrians.textContent = metrics.activePedestrians.toLocaleString();
   crossingsCompleted.textContent = metrics.crossingsCompleted.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
+  cityDate.textContent = state.cityActivity.dateLabel;
+  cityClock.textContent = state.cityActivity.clockLabel;
+  vehicleVolumeOutput.value = formatVolume(state.cityActivity.vehicleDemandLevel);
+  pedestrianVolumeOutput.value = formatVolume(
+    state.cityActivity.pedestrianDemandLevel,
+  );
+  commuteTripShare.textContent = `Work ${state.cityActivity.commuteSharePercent}%`;
+  shoppingTripShare.textContent = `Shopping ${state.cityActivity.shoppingSharePercent}%`;
+  freightTripShare.textContent = `Freight ${state.cityActivity.freightSharePercent}%`;
+  const cityMetrics = state.city.metrics;
+  cityPopulation.textContent = Math.round(cityMetrics.population).toLocaleString();
+  cityOutput.textContent = formatCurrency(cityMetrics.grossCityProductDaily);
+  cityUnemployment.textContent = `${cityMetrics.unemploymentPercent.toFixed(1)}%`;
+  cityUtilities.textContent = `${cityMetrics.utilityCoveragePercent.toFixed(0)}%`;
+  cityImports.textContent = `${state.city.market.importDependencePercent.toFixed(0)}%`;
+  cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
+  const visiblePeople = Math.max(
+    1,
+    metrics.activePedestrians + metrics.activeVehicles * 1.4,
+  );
+  const representedResidents = Math.max(
+    1,
+    Math.round(cityMetrics.population / visiblePeople / 10) * 10,
+  );
+  representationNote.textContent = `1 visible agent represents about ${representedResidents.toLocaleString()} residents; buildings represent district activity.`;
   updateSelectedSignalStatus();
 }
 
@@ -519,25 +539,6 @@ function streetDesignSummaries(
   ];
 }
 
-function applyScenario(settings: {
-  vehicleVolume: number;
-  pedestrianVolume: number;
-  speedLimitMph: number;
-  signalCycle: number;
-}): void {
-  simulation.setVehicleVolume(settings.vehicleVolume);
-  simulation.setPedestrianVolume(settings.pedestrianVolume);
-  simulation.setSpeedLimit(settings.speedLimitMph);
-  simulation.setSignalCycle(settings.signalCycle);
-  vehicleVolumeControl.value = String(settings.vehicleVolume);
-  vehicleVolumeOutput.value = formatVolume(settings.vehicleVolume);
-  pedestrianVolumeControl.value = String(settings.pedestrianVolume);
-  pedestrianVolumeOutput.value = formatVolume(settings.pedestrianVolume);
-  speedLimitControl.value = String(settings.speedLimitMph);
-  signalCycleControl.value = String(settings.signalCycle);
-  updateInterface();
-}
-
 function requireElement<T extends Element>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing required element: #${id}`);
@@ -570,6 +571,20 @@ function nextDirection(direction: LaneDirection): LaneDirection {
 
 function formatVolume(volume: number): string {
   return ["Low", "Medium", "High"][volume - 1] ?? "Medium";
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatSigned(value: number): string {
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? "+" : ""}${rounded.toLocaleString()}`;
 }
 
 function formatLaneChange(laneDelta: number): string {

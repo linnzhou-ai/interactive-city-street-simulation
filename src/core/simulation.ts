@@ -1,4 +1,5 @@
 import type {
+  CityActivitySnapshot,
   DesignImpact,
   ManualSignalTarget,
   ScenarioSettings,
@@ -9,17 +10,37 @@ import type {
   SimulationState,
   FeatureDesign,
 } from "../models/types";
+import type {
+  CityPolicySettings,
+  CitySectionDefinition,
+  CitySectionState,
+  TimeHorizon,
+} from "../models/cityTypes";
 import type { RoadSegmentModel } from "../data/roadLanes";
+import { advanceCitySection } from "./cityEngine";
+import {
+  createCitySectionState,
+  createDemoCitySectionDefinition,
+} from "./cityModel";
 import { LiveTrafficSystem } from "./liveTraffic";
+import {
+  cityMinutesPerSecond,
+  formatClockTime,
+  formatLongDate,
+} from "./timeScale";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSpeed: 1,
+  timeHorizon: "day",
   speedLimitMph: 25,
   signalCycleSeconds: 83,
   vehicleVolume: 2,
   pedestrianVolume: 2,
   simulationSeed: 20260728,
 };
+
+const START_MINUTE = 7 * 60;
+const MAX_CITY_EVENTS = 8;
 
 const EMPTY_DESIGN_IMPACT: DesignImpact = {
   laneCapacityDelta: 0,
@@ -40,24 +61,42 @@ export function createInitialState(
   traffic: TrafficSnapshotSource = new LiveTrafficSystem(
     DEFAULT_SETTINGS.simulationSeed,
   ),
+  city: CitySectionState = createCitySectionState(
+    createDemoCitySectionDefinition(),
+  ),
 ): SimulationState {
   const signals = traffic.getSignals();
   return {
     running: false,
     elapsedSeconds: 0,
+    cityElapsedMinutes: 0,
+    timeHorizon: DEFAULT_SETTINGS.timeHorizon,
     signalPhase: signals[0]?.phase ?? "ns-green",
     signals,
     vehicles: traffic.getVehicles(),
     pedestrians: traffic.getPedestrians(),
     metrics: traffic.getMetrics(),
+    city,
+    cityActivity: calculateCityActivity(city, 0),
+    cityEvents: [],
   };
 }
 
 export class Simulation {
   private settings: ScenarioSettings = { ...DEFAULT_SETTINGS };
   private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
-  private state: SimulationState = createInitialState(this.traffic);
+  private state: SimulationState;
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
+
+  constructor(
+    private readonly cityDefinition: CitySectionDefinition =
+      createDemoCitySectionDefinition(),
+  ) {
+    this.state = createInitialState(
+      this.traffic,
+      createCitySectionState(this.cityDefinition),
+    );
+  }
 
   getState(): Readonly<SimulationState> {
     return this.state;
@@ -88,12 +127,16 @@ export class Simulation {
   }
 
   reset(): void {
+    const city = createCitySectionState(this.cityDefinition);
+    const activity = calculateCityActivity(city, 0);
     this.traffic.reset(
       this.settings.simulationSeed,
-      this.settings.vehicleVolume,
-      this.settings.pedestrianVolume,
+      activity.vehicleDemandLevel,
+      activity.pedestrianDemandLevel,
     );
-    this.state = createInitialState(this.traffic);
+    this.state = createInitialState(this.traffic, city);
+    this.state.timeHorizon = this.settings.timeHorizon;
+    this.syncDemandFromCity();
   }
 
   setSimulationSpeed(speed: number): void {
@@ -103,20 +146,12 @@ export class Simulation {
     };
   }
 
-  setVehicleVolume(volume: number): void {
-    this.settings = {
-      ...this.settings,
-      vehicleVolume: Math.round(Math.min(3, Math.max(1, volume))),
-    };
-    this.updateMetrics();
-  }
-
-  setPedestrianVolume(volume: number): void {
-    this.settings = {
-      ...this.settings,
-      pedestrianVolume: Math.round(Math.min(3, Math.max(1, volume))),
-    };
-    this.updateMetrics();
+  setTimeHorizon(timeHorizon: TimeHorizon): void {
+    if (!(timeHorizon in { day: true, week: true, month: true, year: true })) {
+      return;
+    }
+    this.settings = { ...this.settings, timeHorizon };
+    this.state.timeHorizon = timeHorizon;
   }
 
   setSpeedLimit(speedLimitMph: number): void {
@@ -183,8 +218,58 @@ export class Simulation {
     if (!this.state.running || deltaSeconds <= 0) return;
     const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
     this.state.elapsedSeconds += simulationDelta;
+    const previousCompletedDays = Math.floor(
+      this.state.cityElapsedMinutes / 1440,
+    );
+    this.state.cityElapsedMinutes +=
+      simulationDelta * cityMinutesPerSecond(this.settings.timeHorizon);
+    const completedDays = Math.floor(this.state.cityElapsedMinutes / 1440);
+    if (completedDays > previousCompletedDays) {
+      const cityUpdate = advanceCitySection(
+        this.state.city,
+        completedDays - previousCompletedDays,
+        this.cityPolicy(),
+      );
+      this.state.city = cityUpdate.state;
+      this.state.cityEvents = [
+        ...cityUpdate.events,
+        ...this.state.cityEvents,
+      ].slice(0, MAX_CITY_EVENTS);
+    }
+    this.syncDemandFromCity();
     this.traffic.update(simulationDelta, this.settings);
     this.syncTrafficState();
+  }
+
+  private cityPolicy(): Partial<CityPolicySettings> {
+    const laneScale = 1 + this.designImpact.laneCapacityDelta * 0.025;
+    const signalScale = 1 - Math.min(
+      0.18,
+      Math.abs(this.settings.signalCycleSeconds - 75) / 500,
+    );
+    const speedScale = 1 - Math.min(
+      0.14,
+      Math.abs(this.settings.speedLimitMph - 25) / 120,
+    );
+    return {
+      roadCapacityScale: clamp(laneScale * signalScale * speedScale, 0.5, 1.5),
+      utilityCapacityScale: 1,
+      zoningStrictness: 1,
+      transitServiceScale: 1,
+    };
+  }
+
+  private syncDemandFromCity(): void {
+    const cityActivity = calculateCityActivity(
+      this.state.city,
+      this.state.cityElapsedMinutes,
+    );
+    this.state.cityActivity = cityActivity;
+    this.settings = {
+      ...this.settings,
+      vehicleVolume: cityActivity.vehicleDemandLevel,
+      pedestrianVolume: cityActivity.pedestrianDemandLevel,
+    };
   }
 
   private syncTrafficState(): void {
@@ -215,6 +300,71 @@ export class Simulation {
       ),
     };
   }
+}
+
+export function calculateCityActivity(
+  city: Readonly<CitySectionState>,
+  elapsedMinutes: number,
+): CityActivitySnapshot {
+  const clockMinutes = START_MINUTE + elapsedMinutes;
+  const hour = ((clockMinutes / 60) % 24 + 24) % 24;
+  const metrics = city.metrics;
+  const commute = Math.max(0, metrics.commuteTripsDaily);
+  const shopping = Math.max(0, metrics.shoppingTripsDaily);
+  const freight = Math.max(0, metrics.freightTripsDaily);
+  const totalTripCauses = Math.max(1, commute + shopping + freight);
+  const commuteProfile = profileForHour(hour, [7, 10], [16, 19], 2.25, 0.42);
+  const shoppingProfile = profileForHour(hour, [11, 14], [17, 21], 1.7, 0.3);
+  const freightProfile = hour >= 6 && hour < 17 ? 1.45 : 0.28;
+  const pedestrianProfile = profileForHour(hour, [8, 11], [12, 20], 1.85, 0.24);
+  const activityFactor =
+    commute / totalTripCauses * commuteProfile +
+    shopping / totalTripCauses * shoppingProfile +
+    freight / totalTripCauses * freightProfile;
+  const networkPressure = clamp(metrics.congestionPercent / 100, 0, 1);
+  const pedestrianIntensity =
+    metrics.pedestrianTripsDaily / Math.max(1, metrics.population * 0.25);
+
+  return {
+    dateLabel: formatLongDate(
+      city.startYear,
+      Math.floor(clockMinutes / 1440),
+    ),
+    clockLabel: formatClockTime(clockMinutes),
+    vehicleDemandLevel: clampDemandLevel(
+      0.65 + activityFactor * 0.9 + networkPressure * 0.7,
+    ),
+    pedestrianDemandLevel: clampDemandLevel(
+      0.65 + pedestrianProfile * 0.65 + pedestrianIntensity * 0.35,
+    ),
+    commuteSharePercent: roundPercent(commute / totalTripCauses),
+    shoppingSharePercent: roundPercent(shopping / totalTripCauses),
+    freightSharePercent: roundPercent(freight / totalTripCauses),
+  };
+}
+
+function profileForHour(
+  hour: number,
+  firstWindow: readonly [number, number],
+  secondWindow: readonly [number, number],
+  peak: number,
+  offPeak: number,
+): number {
+  const inWindow = (window: readonly [number, number]): boolean =>
+    hour >= window[0] && hour < window[1];
+  return inWindow(firstWindow) || inWindow(secondWindow) ? peak : offPeak;
+}
+
+function clampDemandLevel(value: number): number {
+  return Math.round(clamp(value, 1, 3));
+}
+
+function roundPercent(ratio: number): number {
+  return Math.round(clamp(ratio, 0, 1) * 100);
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 export function calculateMetrics(

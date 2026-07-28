@@ -278,6 +278,8 @@ body[data-app-mode="simulate"] .selection-panel {
   top: 6.7rem;
   right: 1rem;
   width: 250px;
+  max-height: calc(100vh - 7.7rem);
+  overflow: auto;
 }
 
 .panel-heading {
@@ -602,6 +604,42 @@ input[type="range"] {
   font-weight: 800;
 }
 
+.derived-demand {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.18rem 0.55rem;
+}
+
+.derived-demand small {
+  grid-column: 1 / -1;
+  color: #7f968c;
+  font-size: 0.55rem;
+  line-height: 1.35;
+}
+
+.city-clock {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.65rem;
+  border: 1px solid rgb(228 201 124 / 22%);
+  border-radius: 8px;
+  background: rgb(228 201 124 / 8%);
+}
+
+.city-clock span {
+  color: #c9d5cf;
+  font-size: 0.62rem;
+}
+
+.city-clock strong {
+  color: #f2d989;
+  font: 600 0.92rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .scenario-control input[type="range"] {
   display: block;
   margin: 0.55rem 0 0;
@@ -655,6 +693,25 @@ input[type="range"] {
 .scenario-presets button {
   padding: 0.5rem 0.35rem;
   font-size: 0.64rem;
+}
+
+.trip-cause-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.25rem;
+  margin-top: 0.65rem;
+}
+
+.trip-cause-bar span {
+  overflow: hidden;
+  border-radius: 5px;
+  padding: 0.35rem 0.2rem;
+  color: #c9d7d0;
+  background: rgb(255 255 255 / 6%);
+  font-size: 0.52rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .analysis-control {
@@ -781,6 +838,49 @@ body[data-camera-mode="walk"] .walk-hint {
   transform: translateX(-50%);
 }
 
+.metrics-content {
+  min-width: 0;
+}
+
+.city-system-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
+}
+
+.city-system-grid article {
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  border-left: 2px solid rgb(228 201 124 / 46%);
+  background: rgb(228 201 124 / 7%);
+}
+
+.city-system-grid span,
+.city-system-grid strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.city-system-grid span {
+  color: #a8bbb1;
+  font-size: 0.51rem;
+}
+
+.city-system-grid strong {
+  margin-top: 0.08rem;
+  color: #f1dc9f;
+  font-size: 0.68rem;
+}
+
+.representation-note {
+  margin: 0 0 0.35rem;
+  color: #91a79d;
+  font-size: 0.52rem;
+}
+
 .metrics-heading {
   align-self: center;
   min-width: 140px;
@@ -877,15 +977,17 @@ body[data-app-mode="simulate"] .camera-hint {
   .topbar {
     align-items: flex-start;
     min-height: 68px;
+    gap: 0.4rem;
+    padding: 0.55rem;
   }
 
-  .eyebrow {
+  .brand {
     display: none;
   }
 
-  h1 {
-    max-width: 145px;
-    font-size: 1.05rem;
+  .topbar-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .mode-switch button {
@@ -900,7 +1002,8 @@ body[data-app-mode="simulate"] .camera-hint {
   .simulation-actions {
     position: fixed;
     right: 0.75rem;
-    bottom: 5.6rem;
+    top: 4.6rem;
+    bottom: auto;
   }
 
   .tools-panel {
@@ -956,7 +1059,7 @@ body[data-app-mode="simulate"] .camera-hint {
   }
 
   .controls-panel {
-    top: 5.9rem;
+    top: 8.8rem;
     right: 0.75rem;
     width: 205px;
   }
@@ -967,7 +1070,7 @@ body[data-app-mode="simulate"] .camera-hint {
   }
 
   .scene-title {
-    top: 5.9rem;
+    top: 8.8rem;
     left: 0.75rem;
     min-width: 0;
     max-width: calc(100% - 225px);
@@ -987,6 +1090,11 @@ body[data-app-mode="simulate"] .camera-hint {
 
   .metrics-heading,
   .metric-card small {
+    display: none;
+  }
+
+  .city-system-grid,
+  .representation-note {
     display: none;
   }
 
