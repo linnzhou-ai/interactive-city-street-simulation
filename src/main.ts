@@ -306,6 +306,9 @@ function setAppMode(mode: AppMode): void {
   appMode = mode;
   document.body.dataset.appMode = mode;
   const building = mode === "build";
+  if (building && cameraMode !== "orbit") setCameraMode("orbit");
+  flyCameraButton.disabled = building;
+  walkCameraButton.disabled = building;
   buildModeButton.setAttribute("aria-pressed", String(building));
   simulateModeButton.setAttribute("aria-pressed", String(!building));
   renderer.setBuildMode(building);
@@ -446,6 +449,7 @@ function updateSelectionPanel(): void {
 }
 
 function selectBuildingTool(kind: BuildingKind): void {
+  if (cameraMode !== "orbit") setCameraMode("orbit");
   activeBuildingTool = kind;
   buildingColorControl.value = defaultBuildingColor(kind);
   renderer.setBuildingPlacementEnabled(appMode === "build" && cameraMode === "orbit");
