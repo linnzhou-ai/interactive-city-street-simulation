@@ -45,7 +45,6 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSeed: 20260728,
   transitHeadwayMinutes: 12,
   roadCapacity: 100,
-  utilityCapacityScale: 1,
   zoningStrictness: 1,
 };
 
@@ -63,7 +62,7 @@ const EMPTY_DESIGN_IMPACT: DesignImpact = {
 type TrafficSnapshotSource = Readonly<
   Pick<
     LiveTrafficSystem,
-    "getSignals" | "getVehicles" | "getPedestrians" | "getMetrics"
+    "getSignals" | "getVehicles" | "getPedestrians" | "getRoadTraffic" | "getMetrics"
   >
 >;
 
@@ -86,6 +85,7 @@ export function createInitialState(
     signals,
     vehicles: traffic.getVehicles(),
     pedestrians: traffic.getPedestrians(),
+    roadTraffic: traffic.getRoadTraffic(),
     metrics: traffic.getMetrics(),
     city,
     cityActivity: calculateCityActivity(city, 0),
@@ -212,13 +212,6 @@ export class Simulation {
     };
   }
 
-  setUtilityCapacityScale(scale: number): void {
-    this.settings = {
-      ...this.settings,
-      utilityCapacityScale: Math.min(1.5, Math.max(0.5, scale)),
-    };
-  }
-
   setZoningStrictness(strictness: number): void {
     this.settings = {
       ...this.settings,
@@ -291,9 +284,9 @@ export class Simulation {
         START_MINUTE + this.state.cityElapsedMinutes,
         {
           roadCapacityScale: this.cityPolicy().roadCapacityScale ?? 1,
-          utilityCapacityScale: this.settings.utilityCapacityScale,
           transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
           zoningStrictness: this.settings.zoningStrictness,
+          congestionPercent: this.state.city.metrics.congestionPercent,
         },
       );
     }
@@ -316,7 +309,6 @@ export class Simulation {
     );
     return {
       roadCapacityScale: clamp(laneScale * signalScale * speedScale, 0.5, 1.5),
-      utilityCapacityScale: this.settings.utilityCapacityScale,
       zoningStrictness: this.settings.zoningStrictness,
       transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
     };
@@ -340,6 +332,7 @@ export class Simulation {
     this.state.signalPhase = this.state.signals[0]?.phase ?? "all-red";
     this.state.vehicles = this.traffic.getVehicles();
     this.state.pedestrians = this.traffic.getPedestrians();
+    this.state.roadTraffic = this.traffic.getRoadTraffic();
     this.updateMetrics();
   }
 

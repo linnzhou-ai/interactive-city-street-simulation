@@ -1,4 +1,4 @@
-import type { UtilityKind, ZoneType } from "./cityEconomyTypes";
+import type { ZoneType } from "./cityEconomyTypes";
 
 export type BuildingFunction =
   | "housing"
@@ -51,7 +51,6 @@ export interface BuildingAccounting {
   supplyCost: number;
   transportCost: number;
   maintenanceCost: number;
-  utilityCost: number;
   operatingCost: number;
   profit: number;
   customers: number;
@@ -77,8 +76,6 @@ export interface DetailedBuilding extends EntityBuildingDefinition {
   goodsInventory: number;
   cashReserve: number;
   closedDaysRemaining: number;
-  utilityDemand: Record<UtilityKind, number>;
-  utilityService: Record<UtilityKind, number>;
   accounting: BuildingAccounting;
 }
 
@@ -123,7 +120,6 @@ export interface DetailedHousehold {
   dailyExpenses: {
     housing: number;
     goods: number;
-    utilities: number;
     transport: number;
     services: number;
     total: number;
@@ -143,7 +139,7 @@ export interface EntityConnection {
 export interface EntityEvent {
   id: string;
   day: number;
-  category: "business" | "labor" | "services" | "utilities" | "migration";
+  category: "business" | "labor" | "services" | "migration";
   severity: "info" | "warning";
   message: string;
   buildingId?: string;

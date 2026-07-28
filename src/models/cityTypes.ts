@@ -1,6 +1,5 @@
 import type {
   HouseholdExpenseLedger,
-  UtilityKind,
   ZoneType,
 } from "./cityEconomyTypes";
 
@@ -82,7 +81,6 @@ export interface CitySectionDefinition {
   startYear: number;
   startingBudget: number;
   taxRate: number;
-  utilityCapacity: Record<UtilityKind, number>;
   districts: CityDistrictDefinition[];
   links: CityLinkDefinition[];
   externalMarkets?: ExternalMarketDefinition[];
@@ -119,13 +117,10 @@ export interface CityDistrictState extends CityDistrictDefinition {
   businessProfitDaily: number;
   propertyRentIncomeDaily: number;
   propertyOperatingCostDaily: number;
-  utilityCostDaily: number;
   civicServiceDemand: number;
   civicServiceDelivered: number;
   civicServiceQualityPercent: number;
   civicOperatingCostDaily: number;
-  utilityDemand: Record<UtilityKind, number>;
-  utilityCoverage: Record<UtilityKind, number>;
   commuteTripsDaily: number;
   shoppingTripsDaily: number;
   pedestrianTripsDaily: number;
@@ -133,6 +128,8 @@ export interface CityDistrictState extends CityDistrictDefinition {
   externalCommutersDaily: number;
   dailyTrips: number;
   congestionPercent: number;
+  averageTrafficDelayMinutes: number;
+  congestionCostDaily: number;
   transitSharePercent: number;
   unemploymentPercent: number;
   housingOccupancyPercent: number;
@@ -157,7 +154,6 @@ export interface CityAggregateMetrics {
   businessProfitDaily: number;
   propertyRentIncomeDaily: number;
   propertyOperatingCostDaily: number;
-  utilityCostDaily: number;
   civicServiceCoveragePercent: number;
   civicOperatingCostDaily: number;
   goodsProducedDaily: number;
@@ -166,8 +162,6 @@ export interface CityAggregateMetrics {
   goodsExportedDaily: number;
   averageLandValue: number;
   averageRentIndex: number;
-  utilityCoveragePercent: number;
-  wasteCollectionPercent: number;
   commuteTripsDaily: number;
   shoppingTripsDaily: number;
   vehicleTripsDaily: number;
@@ -179,6 +173,8 @@ export interface CityAggregateMetrics {
   annualizedNetMigration: number;
   dailyTrips: number;
   congestionPercent: number;
+  averageTrafficDelayMinutes: number;
+  congestionCostDaily: number;
   transitSharePercent: number;
   taxRevenueDaily: number;
   maintenanceCostDaily: number;
@@ -194,7 +190,7 @@ export interface CityTimelinePoint {
   grossCityProductDaily: number;
   averageLandValue: number;
   congestionPercent: number;
-  utilityCoveragePercent: number;
+  congestionCostDaily: number;
   housingOccupancyPercent: number;
   municipalBalance: number;
   happiness: number;
@@ -208,7 +204,6 @@ export interface CitySectionState {
   year: number;
   month: number;
   taxRate: number;
-  utilityCapacity: Record<UtilityKind, number>;
   municipalBudget: number;
   districts: CityDistrictState[];
   links: CityLinkDefinition[];
@@ -220,13 +215,12 @@ export interface CitySectionState {
 
 export interface CityPolicySettings {
   roadCapacityScale: number;
-  utilityCapacityScale: number;
   zoningStrictness: number;
   transitServiceScale: number;
 }
 
 export interface CitySystemEvent {
-  category: "population" | "economy" | "land-use" | "utilities" | "mobility" | "finance";
+  category: "population" | "economy" | "land-use" | "mobility" | "finance";
   message: string;
   severity: "info" | "warning";
 }

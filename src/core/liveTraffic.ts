@@ -22,6 +22,7 @@ import type {
 import type {
   ManualSignalTarget,
   PedestrianSnapshot,
+  RoadTrafficSnapshot,
   ScenarioSettings,
   SignalControlMode,
   SignalPhase,
@@ -435,6 +436,47 @@ export class LiveTrafficSystem {
         waiting: pedestrian.waiting,
         color: pedestrian.color,
         variant: pedestrian.variant,
+      };
+    });
+  }
+
+  getRoadTraffic(): RoadTrafficSnapshot[] {
+    const vehiclesBySegment = new Map<string, typeof this.vehicles>();
+    for (const vehicle of this.vehicles) {
+      const vehicles = vehiclesBySegment.get(vehicle.segmentId) ?? [];
+      vehicles.push(vehicle);
+      vehiclesBySegment.set(vehicle.segmentId, vehicles);
+    }
+
+    return [...this.roadSegments.values()].map((segment) => {
+      const vehicles = vehiclesBySegment.get(segment.id) ?? [];
+      const queuedVehicles = vehicles.filter((vehicle) => vehicle.queued).length;
+      const averageSpeedMetersPerSecond = vehicles.length === 0
+        ? 0
+        : vehicles.reduce((total, vehicle) => total + vehicle.speed, 0) / vehicles.length;
+      const averageSpeedMph = averageSpeedMetersPerSecond * 2.23694;
+      const representativeCapacity = Math.max(1, segment.travelLaneCount * 6);
+      const loadRatio = clamp(vehicles.length / representativeCapacity, 0, 1.6);
+      const queueRatio = queuedVehicles / Math.max(1, vehicles.length);
+      const speedPenalty = vehicles.length === 0
+        ? 0
+        : 1 - clamp(averageSpeedMph / Math.max(1, segment.speedLimitMph), 0, 1);
+      const congestionPercent = clamp(
+        loadRatio * 50 + queueRatio * 35 + speedPenalty * 25,
+        0,
+        100,
+      );
+      const averageDelaySeconds = vehicles.length === 0
+        ? 0
+        : vehicles.reduce((total, vehicle) => total + vehicle.delaySeconds, 0) / vehicles.length;
+
+      return {
+        segmentId: segment.id,
+        activeVehicles: vehicles.length,
+        queuedVehicles,
+        averageSpeedMph: roundOne(averageSpeedMph),
+        congestionPercent: roundOne(congestionPercent),
+        averageDelaySeconds: roundOne(averageDelaySeconds),
       };
     });
   }

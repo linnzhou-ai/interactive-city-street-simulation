@@ -40,7 +40,7 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     grossCityProductDaily: metrics.grossCityProductDaily,
     averageLandValue: metrics.averageLandValue,
     congestionPercent: metrics.congestionPercent,
-    utilityCoveragePercent: metrics.utilityCoveragePercent,
+    congestionCostDaily: metrics.congestionCostDaily,
     housingOccupancyPercent: metrics.housingOccupancyPercent,
     municipalBalance: metrics.municipalBalance,
     happiness: metrics.happiness,
@@ -54,7 +54,6 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     year: definition.startYear,
     month: 1,
     taxRate: definition.taxRate,
-    utilityCapacity: { ...definition.utilityCapacity },
     municipalBudget: definition.startingBudget,
     districts: seededDistricts,
     links: definition.links.map((link) => ({ ...link })),
@@ -98,9 +97,6 @@ export function validateCitySectionDefinition(definition: CitySectionDefinition)
   if (!Number.isFinite(definition.taxRate) || definition.taxRate < 0 || definition.taxRate > 1) {
     throw new Error("Tax rate must be between 0 and 1");
   }
-  for (const capacity of Object.values(definition.utilityCapacity)) {
-    if (!Number.isFinite(capacity) || capacity < 0) throw new Error("Utility capacity must be non-negative");
-  }
   const externalIds = new Set<string>();
   for (const market of definition.externalMarkets ?? []) {
     validateExternalMarket(market, externalIds);
@@ -131,17 +127,6 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
     width: 42,
     depth: 38,
   }));
-  const utilityDemand = districts.reduce((total, districtDefinition) => {
-    const developedFloorArea = districtDefinition.housingUnits * 88 + districtDefinition.commercialFloorArea + districtDefinition.industrialFloorArea + districtDefinition.civicFloorArea;
-    return {
-      power: total.power + districtDefinition.population * 0.48 + developedFloorArea * 0.012,
-      water: total.water + districtDefinition.population * 0.39 + developedFloorArea * 0.008,
-      waste: total.waste + districtDefinition.population * 0.13
-        + districtDefinition.commercialFloorArea * 0.018
-        + districtDefinition.industrialFloorArea * 0.026
-        + districtDefinition.civicFloorArea * 0.012,
-    };
-  }, { power: 0, water: 0, waste: 0 });
   const links = [
     ...rows.flatMap((_, row) => [0, 1, 2].map((column) => link(`east-${row}-${column}`, districts[row * 4 + column]!.id, districts[row * 4 + column + 1]!.id, 1.2))),
     ...columns.flatMap((_, column) => [0, 1].map((row) => link(`south-${row}-${column}`, districts[row * 4 + column]!.id, districts[(row + 1) * 4 + column]!.id, 1.4))),
@@ -153,11 +138,6 @@ export function createDemoCitySectionDefinition(): CitySectionDefinition {
     startYear: 2026,
     startingBudget: 18_000_000,
     taxRate: 0.082,
-    utilityCapacity: {
-      power: Math.round(utilityDemand.power * 1.2),
-      water: Math.round(utilityDemand.water * 1.2),
-      waste: Math.round(utilityDemand.waste * 1.2),
-    },
     districts,
     links,
     externalMarkets: [
@@ -229,20 +209,14 @@ function createDistrictState(definition: CityDistrictDefinition): CityDistrictSt
     businessProfitDaily: 0,
     propertyRentIncomeDaily: 0,
     propertyOperatingCostDaily: 0,
-    utilityCostDaily: 0,
     civicServiceDemand: 0,
     civicServiceDelivered: 0,
     civicServiceQualityPercent: 100,
     civicOperatingCostDaily: 0,
-    utilityDemand: {
-      power: definition.population * 0.48 + developedFloorArea * 0.012,
-      water: definition.population * 0.39 + developedFloorArea * 0.008,
-      waste: definition.population * 0.13 + definition.commercialFloorArea * 0.018
-        + definition.industrialFloorArea * 0.026 + definition.civicFloorArea * 0.012,
-    },
-    utilityCoverage: { power: 1, water: 1, waste: 1 },
     dailyTrips: definition.population * 2.15,
     congestionPercent: 0,
+    averageTrafficDelayMinutes: 0,
+    congestionCostDaily: 0,
     transitSharePercent: 18,
     commuteTripsDaily: definition.population * 0.9,
     shoppingTripsDaily: households * 0.35,
@@ -282,7 +256,6 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     businessProfitDaily,
     propertyRentIncomeDaily: sum(districts.map((district) => district.propertyRentIncomeDaily)),
     propertyOperatingCostDaily: sum(districts.map((district) => district.propertyOperatingCostDaily)),
-    utilityCostDaily: sum(districts.map((district) => district.utilityCostDaily)),
     civicServiceCoveragePercent: weightedAverage(districts, "civicServiceQualityPercent"),
     civicOperatingCostDaily: sum(districts.map((district) => district.civicOperatingCostDaily)),
     goodsProducedDaily: sum(districts.map((district) => district.goodsProducedDaily)),
@@ -291,8 +264,6 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     goodsExportedDaily: sum(districts.map((district) => district.goodsExportedDaily)),
     averageLandValue: weightedAverage(districts, "landValue"),
     averageRentIndex: weightedAverage(districts, "rentIndex"),
-    utilityCoveragePercent: 100,
-    wasteCollectionPercent: 100,
     commuteTripsDaily: sum(districts.map((district) => district.commuteTripsDaily)),
     shoppingTripsDaily: sum(districts.map((district) => district.shoppingTripsDaily)),
     vehicleTripsDaily: sum(districts.map((district) => district.commuteTripsDaily * 0.55 + district.freightTripsDaily)),
@@ -304,6 +275,8 @@ function summarizeInitialCity(districts: readonly CityDistrictState[], budget: n
     annualizedNetMigration: 0,
     dailyTrips: sum(districts.map((district) => district.dailyTrips)),
     congestionPercent: 0,
+    averageTrafficDelayMinutes: 0,
+    congestionCostDaily: 0,
     transitSharePercent: weightedAverage(districts, "transitSharePercent"),
     taxRevenueDaily: 0,
     maintenanceCostDaily: 0,
@@ -316,7 +289,6 @@ function emptyExpenseLedger(): HouseholdExpenseLedger {
   return {
     housing: 0,
     goods: 0,
-    utilities: 0,
     transport: 0,
     healthcare: 0,
     education: 0,
@@ -331,20 +303,18 @@ function sumExpenseLedgers(expenses: readonly HouseholdExpenseLedger[]): Househo
   for (const entry of expenses) {
     result.housing += entry.housing;
     result.goods += entry.goods;
-    result.utilities += entry.utilities;
     result.transport += entry.transport;
     result.healthcare += entry.healthcare;
     result.education += entry.education;
     result.recreation += entry.recreation;
     result.taxes += entry.taxes;
   }
-  result.total = result.housing + result.goods + result.utilities + result.transport
+  result.total = result.housing + result.goods + result.transport
     + result.healthcare + result.education + result.recreation + result.taxes;
   return result;
 }
 
 function initializeDistrictIndicators(district: CityDistrictState): CityDistrictState {
-  const utilityReliability = sum(Object.values(district.utilityCoverage)) / 3;
   const unemploymentPercent = district.laborForce > 0
     ? Math.max(0, (district.laborForce - district.employedResidents) / district.laborForce * 100)
     : 0;
@@ -366,7 +336,7 @@ function initializeDistrictIndicators(district: CityDistrictState): CityDistrict
     1,
   );
   const happiness = clamp(
-    29 + utilityReliability * 22 + (1 - unemploymentPercent / 100) * 18
+    51 + (1 - unemploymentPercent / 100) * 18
       + goodsCoverage * 12 + (1 - district.congestionPercent / 100) * 7
       + (1 - rentBurden) * 5 + spendingRoom * 6
       + district.civicServiceQualityPercent / 100 * 5,

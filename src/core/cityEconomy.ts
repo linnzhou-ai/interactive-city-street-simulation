@@ -7,10 +7,7 @@ import type {
   GoodsBasket,
   GoodType,
 } from "../models/cityTypes";
-import type {
-  HouseholdExpenseLedger,
-  UtilityKind,
-} from "../models/cityEconomyTypes";
+import type { HouseholdExpenseLedger } from "../models/cityEconomyTypes";
 
 export const GOODS: GoodType[] = ["food", "consumerGoods", "industrialMaterials"];
 export const BASE_GOODS_PRICES: GoodsBasket = {
@@ -26,12 +23,6 @@ const GOODS_WEIGHT: GoodsBasket = {
 };
 const TRUCK_CAPACITY = 28;
 const CROSS_BORDER_WORK_SHARE = 0.12;
-const UTILITY_CUSTOMER_RATES: Record<UtilityKind, number> = {
-  power: 0.18,
-  water: 0.12,
-  waste: 0.16,
-};
-
 export interface DistrictTransportCapacity {
   road: number;
   transit: number;
@@ -64,7 +55,6 @@ interface WorkingDistrict {
   householdIncomeDaily: number;
   disposableIncomeDaily: number;
   rentPaidDaily: number;
-  utilityReliability: number;
   capacity: DistrictTransportCapacity;
 }
 
@@ -123,7 +113,7 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const totalLabor = sum(input.districts.map((district) => district.laborForce));
   const civicDemandTotal = sum(input.districts.map(civicServiceDemand));
   const civicCapacityAtFullStaff = sum(input.districts.map((district) =>
-    civicJobSlots(district) * average(Object.values(district.utilityCoverage)) * 18
+    civicJobSlots(district) * 18
   ));
   const civicLaborScale = civicCapacityAtFullStaff > 0
     ? clamp01(civicDemandTotal / civicCapacityAtFullStaff)
@@ -153,14 +143,13 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     : 1;
 
   const working = input.districts.map((district): WorkingDistrict => {
-    const utilityReliability = average(Object.values(district.utilityCoverage));
     const capacity = input.transportCapacity.get(district.id) ?? { road: 1, transit: 0, freight: 0 };
     const accessReliability = clamp(1 - district.congestionPercent / 450, 0.78, 1);
     const employedResidents = district.laborForce * residentEmploymentRatio * accessReliability;
     const districtJobs = effectiveJobSlots(district, civicLaborScale);
     const vacancyRate = districtJobs > 0 ? Math.max(0, districtJobs - district.laborForce) / districtJobs : 0;
     const averageWageDaily = (district.averageIncome / 260) * clamp(
-      0.88 + vacancyRate * 0.24 + utilityReliability * 0.08 - district.congestionPercent / 900,
+      0.96 + vacancyRate * 0.24 - district.congestionPercent / 900,
       0.72,
       1.35,
     );
@@ -176,18 +165,18 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
         district.population * 0.9,
         (availableCash * 0.32) / Math.max(1, previousPrices.food),
       ) * priceResponse(BASE_GOODS_PRICES.food, previousPrices.food)
-        * workplaceFillRatio * utilityReliability,
+        * workplaceFillRatio,
       consumerGoods: Math.min(
         district.population * 0.22 * clamp(district.averageIncome / 55_000, 0.65, 1.5),
         (availableCash * 0.18) / Math.max(1, previousPrices.consumerGoods),
       ) * priceResponse(BASE_GOODS_PRICES.consumerGoods, previousPrices.consumerGoods)
-        * workplaceFillRatio * utilityReliability,
+        * workplaceFillRatio,
       industrialMaterials: (
         district.commercialFloorArea / 90 + district.industrialFloorArea / 55
-      ) * workplaceFillRatio * utilityReliability,
+      ) * workplaceFillRatio,
     };
     const productionUtilization = privateJobSlots(district) > 0
-      ? clamp01(workplaceFillRatio * utilityReliability * accessReliability)
+      ? clamp01(workplaceFillRatio * accessReliability)
       : 0;
     const plannedConsumerGoods = district.productionCapacity.consumerGoods * productionUtilization * elapsedDays;
     const materialsNeeded = plannedConsumerGoods * 0.28;
@@ -218,7 +207,6 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       householdIncomeDaily,
       disposableIncomeDaily,
       rentPaidDaily,
-      utilityReliability,
       capacity,
     };
   });
@@ -308,7 +296,6 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
   const civicCapacityTotal = sum(working.map((entry) => civicServiceCapacity(
     entry.district,
     workplaceFillRatio,
-    entry.utilityReliability,
     civicLaborScale,
   )));
   const civicCoverage = civicDemandTotal > 0
@@ -344,7 +331,7 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const privateWageBill = privateWorkers * entry.averageWageDaily;
     const civicWageBill = civicWorkers * entry.averageWageDaily;
     const materialsCost = goodsConsumedByType.industrialMaterials * prices.industrialMaterials / Math.max(elapsedDays, 1e-9);
-    const outputRevenue = privateWageBill * (1.16 + entry.utilityReliability * 0.18);
+    const outputRevenue = privateWageBill * 1.34;
     const retailRevenue = cityHouseholdSalesDaily
       * privateActivityWeight(entry.district, "retail")
       / Math.max(1, retailActivityTotal);
@@ -356,16 +343,11 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const businessRevenueDaily = outputRevenue + retailRevenue + materialsRevenue + exportRevenue;
     const businessRent = (entry.district.commercialFloorArea + entry.district.industrialFloorArea) * entry.district.rentIndex * 0.035;
     const allocatedTransportCost = transportCostDaily * (demandShare + supplyShare) / 2;
-    const utilityCostDaily = utilityPayment(entry.district);
-    const useWeights = utilityUseWeights(entry.district);
-    const businessUtilityCost = utilityCostDaily * useWeights.business;
-    const propertyOperatingCostDaily = entry.district.housingUnits * 0.72
-      + utilityCostDaily * useWeights.housing;
+    const propertyOperatingCostDaily = entry.district.housingUnits * 0.72;
     const civicOperatingCostDaily = civicWageBill
-      + entry.district.civicFloorArea * 0.045
-      + utilityCostDaily * useWeights.civic;
+      + entry.district.civicFloorArea * 0.045;
     const businessCostsDaily = privateWageBill + materialsCost + businessRent
-      + allocatedTransportCost + businessUtilityCost;
+      + allocatedTransportCost;
     const businessProfitDaily = businessRevenueDaily - businessCostsDaily;
     const districtExternalCommuters = (
       outboundCommuters * entry.district.laborForce / Math.max(1, totalLabor) +
@@ -389,11 +371,9 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const serviceScale = desiredServiceTotal > 0
       ? clamp01(serviceBudget / desiredServiceTotal)
       : 0;
-    const housingUtilityCost = utilityCostDaily * useWeights.housing;
     const householdExpensesDaily: HouseholdExpenseLedger = finalizeExpenseLedger({
-      housing: Math.max(0, entry.rentPaidDaily - housingUtilityCost),
+      housing: Math.max(0, entry.rentPaidDaily),
       goods: goodsSpendingDaily,
-      utilities: Math.min(entry.rentPaidDaily, housingUtilityCost),
       transport: transportSpendingDaily,
       healthcare: desiredServices.healthcare * serviceScale,
       education: desiredServices.education * serviceScale,
@@ -427,7 +407,6 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
       businessProfitDaily: round(businessProfitDaily),
       propertyRentIncomeDaily: round(entry.rentPaidDaily),
       propertyOperatingCostDaily: round(propertyOperatingCostDaily),
-      utilityCostDaily: round(utilityCostDaily),
       civicServiceDemand: round(civicServiceDemand(entry.district)),
       civicServiceDelivered: round(civicServiceDemand(entry.district) * civicCoverage),
       civicServiceQualityPercent: round(civicCoverage * 100),
@@ -476,7 +455,7 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
 function finalizeExpenseLedger(expenses: HouseholdExpenseLedger): HouseholdExpenseLedger {
   return {
     ...expenses,
-    total: expenses.housing + expenses.goods + expenses.utilities + expenses.transport
+    total: expenses.housing + expenses.goods + expenses.transport
       + expenses.healthcare + expenses.education + expenses.recreation + expenses.taxes,
   };
 }
@@ -485,7 +464,6 @@ function roundExpenseLedger(expenses: HouseholdExpenseLedger): HouseholdExpenseL
   const rounded = {
     housing: round(expenses.housing),
     goods: round(expenses.goods),
-    utilities: round(expenses.utilities),
     transport: round(expenses.transport),
     healthcare: round(expenses.healthcare),
     education: round(expenses.education),
@@ -529,27 +507,10 @@ function civicServiceDemand(district: CityDistrictState): number {
 function civicServiceCapacity(
   district: CityDistrictState,
   workplaceFillRatio: number,
-  utilityReliability: number,
   civicLaborScale: number,
 ): number {
   const civicWorkers = civicJobSlots(district) * civicLaborScale * workplaceFillRatio;
-  return civicWorkers * utilityReliability * 18;
-}
-
-function utilityPayment(district: CityDistrictState): number {
-  return sum((Object.keys(UTILITY_CUSTOMER_RATES) as Array<keyof typeof UTILITY_CUSTOMER_RATES>).map((kind) =>
-    district.utilityDemand[kind] * district.utilityCoverage[kind] * UTILITY_CUSTOMER_RATES[kind]
-  ));
-}
-
-function utilityUseWeights(
-  district: CityDistrictState,
-): { housing: number; business: number; civic: number } {
-  const housing = district.population * 18;
-  const business = district.commercialFloorArea + district.industrialFloorArea;
-  const civic = district.civicFloorArea;
-  const total = Math.max(1, housing + business + civic);
-  return { housing: housing / total, business: business / total, civic: civic / total };
+  return civicWorkers * 18;
 }
 
 function allocateCommuters(

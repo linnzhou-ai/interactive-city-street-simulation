@@ -32,6 +32,7 @@ const simulateModeButton = requireElement<HTMLButtonElement>("simulate-mode-butt
 const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button");
 const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
 const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
+const walkStartMarker = requireElement<HTMLButtonElement>("walk-start-marker");
 const environmentMode = requireElement<HTMLElement>("environment-mode");
 const orbitCameraHint = requireElement<HTMLElement>("orbit-camera-hint");
 const runButton = requireElement<HTMLButtonElement>("run-button");
@@ -85,7 +86,7 @@ const intersectionDelay = requireElement<HTMLElement>("intersection-delay");
 const cityPopulation = requireElement<HTMLElement>("city-population");
 const cityOutput = requireElement<HTMLElement>("city-output");
 const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
-const cityUtilities = requireElement<HTMLElement>("city-utilities");
+const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
 const cityImports = requireElement<HTMLElement>("city-imports");
 const cityMigration = requireElement<HTMLElement>("city-migration");
 const representationNote = requireElement<HTMLElement>("representation-note");
@@ -109,8 +110,6 @@ const transitHeadwayControl = requireElement<HTMLInputElement>("transit-headway-
 const transitHeadwayOutput = requireElement<HTMLOutputElement>("transit-headway-output");
 const roadCapacityControl = requireElement<HTMLInputElement>("road-capacity-control");
 const roadCapacityOutput = requireElement<HTMLOutputElement>("road-capacity-output");
-const utilityCapacityControl = requireElement<HTMLInputElement>("utility-capacity-control");
-const utilityCapacityOutput = requireElement<HTMLOutputElement>("utility-capacity-output");
 const zoningControl = requireElement<HTMLInputElement>("zoning-control");
 const zoningOutput = requireElement<HTMLOutputElement>("zoning-output");
 const timeHorizonPreview = requireElement<HTMLElement>("time-horizon-preview");
@@ -118,7 +117,6 @@ const speedLimitPreview = requireElement<HTMLElement>("speed-limit-preview");
 const signalCyclePreview = requireElement<HTMLElement>("signal-cycle-preview");
 const transitHeadwayPreview = requireElement<HTMLElement>("transit-headway-preview");
 const roadCapacityPreview = requireElement<HTMLElement>("road-capacity-preview");
-const utilityCapacityPreview = requireElement<HTMLElement>("utility-capacity-preview");
 const zoningPreview = requireElement<HTMLElement>("zoning-preview");
 const locationSearch = requireElement<HTMLFormElement>("location-search");
 const locationSearchInput = requireElement<HTMLInputElement>("location-search-input");
@@ -138,14 +136,67 @@ let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
 let selectedEntity: EntitySelection | null = null;
+let selectedTrafficFeature: DistrictFeature | null = null;
 let entityInterfaceSignature = "";
+let walkPlacementActive = false;
+let walkMarkerPointerId: number | null = null;
+let walkMarkerMoved = false;
+let walkMarkerStart = { x: 0, y: 0 };
 let previousTimestamp = performance.now();
 
 buildModeButton.addEventListener("click", () => setAppMode("build"));
 simulateModeButton.addEventListener("click", () => setAppMode("simulate"));
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
-walkCameraButton.addEventListener("click", () => setCameraMode("walk"));
+walkCameraButton.addEventListener("click", beginWalkPlacement);
+
+walkStartMarker.addEventListener("pointerdown", (event) => {
+  if (!walkPlacementActive) return;
+  event.preventDefault();
+  walkMarkerPointerId = event.pointerId;
+  walkMarkerMoved = false;
+  walkMarkerStart = { x: event.clientX, y: event.clientY };
+  document.body.dataset.walkMarkerDragging = "true";
+});
+
+window.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== walkMarkerPointerId) return;
+  event.preventDefault();
+  walkMarkerMoved ||= Math.hypot(
+    event.clientX - walkMarkerStart.x,
+    event.clientY - walkMarkerStart.y,
+  ) > 4;
+  if (!walkMarkerMoved) return;
+  walkStartMarker.style.left = `${event.clientX}px`;
+  walkStartMarker.style.top = `${event.clientY - walkStartMarker.offsetHeight / 2}px`;
+});
+
+window.addEventListener("pointerup", (event) => {
+  if (event.pointerId !== walkMarkerPointerId) return;
+  event.preventDefault();
+  walkMarkerPointerId = null;
+  document.body.dataset.walkMarkerDragging = "false";
+  if (walkMarkerMoved) {
+    walkStartMarker.style.visibility = "hidden";
+    const dropTarget = document.elementFromPoint(event.clientX, event.clientY);
+    walkStartMarker.style.removeProperty("visibility");
+    if (dropTarget === canvas) {
+      completeWalkPlacement(event.clientX, event.clientY);
+      return;
+    }
+    resetWalkMarkerPosition();
+    return;
+  }
+  const bounds = canvas.getBoundingClientRect();
+  completeWalkPlacement(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+});
+
+window.addEventListener("pointercancel", (event) => {
+  if (event.pointerId !== walkMarkerPointerId) return;
+  walkMarkerPointerId = null;
+  document.body.dataset.walkMarkerDragging = "false";
+  resetWalkMarkerPosition();
+});
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -265,10 +316,6 @@ roadCapacityControl.addEventListener("input", () => {
   simulation.setRoadCapacity(Number(roadCapacityControl.value));
   updateControlPreviews();
 });
-utilityCapacityControl.addEventListener("input", () => {
-  simulation.setUtilityCapacityScale(Number(utilityCapacityControl.value) / 100);
-  updateControlPreviews();
-});
 zoningControl.addEventListener("input", () => {
   simulation.setZoningStrictness(Number(zoningControl.value) / 100);
   updateControlPreviews();
@@ -280,16 +327,30 @@ locationSearch.addEventListener("submit", (event) => {
 });
 
 renderer.setSelectionHandler((feature) => {
-  if (appMode !== "build") return;
+  if (appMode === "simulate") {
+    selectedTrafficFeature = feature;
+    selectedEntity = null;
+    renderer.setSelectedEntity(null);
+    renderer.setSelectedFeature(feature.id);
+    syncEntitySelectionState();
+    entityInterfaceSignature = "";
+    updateEntityInterface();
+    return;
+  }
+  selectedTrafficFeature = null;
+  selectedEntity = null;
+  renderer.setSelectedEntity(null);
+  syncEntitySelectionState();
   selectedFeature = feature;
   renderer.setSelectedFeature(feature.id);
   updateSelectionPanel();
 });
 
 renderer.setEntitySelectionHandler((selection) => {
-  if (appMode !== "simulate") return;
+  selectedTrafficFeature = null;
   selectedEntity = selection;
   renderer.setSelectedEntity(selection);
+  syncEntitySelectionState();
   entityInterfaceSignature = "";
   updateEntityInterface();
 });
@@ -317,6 +378,7 @@ function animationFrame(timestamp: number): void {
 }
 
 function setAppMode(mode: AppMode): void {
+  cancelWalkPlacement();
   appMode = mode;
   document.body.dataset.appMode = mode;
   const building = mode === "build";
@@ -326,12 +388,13 @@ function setAppMode(mode: AppMode): void {
   renderer.setMapOverlay(
     building ? "none" : (analysisOverlay.value as MapOverlayMode),
   );
-  renderer.setSelectedEntity(building ? null : selectedEntity);
+  renderer.setSelectedEntity(selectedEntity);
+  syncEntitySelectionState();
   if (building) {
-    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a highlighted street";
+    orbitCameraHint.textContent = "Drag to pan · Scroll to zoom · Click a road or building";
     updateSelectionPanel();
   } else {
-    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a building or person";
+    orbitCameraHint.textContent = "Drag to pan · Scroll to zoom · Click a building or person";
     simulationTitle.textContent = "Penn · University City";
     sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
   }
@@ -340,12 +403,48 @@ function setAppMode(mode: AppMode): void {
 }
 
 function setCameraMode(mode: CameraMode): void {
+  cancelWalkPlacement();
   cameraMode = mode;
   document.body.dataset.cameraMode = mode;
   orbitCameraButton.setAttribute("aria-pressed", String(mode === "orbit"));
   flyCameraButton.setAttribute("aria-pressed", String(mode === "fly"));
   walkCameraButton.setAttribute("aria-pressed", String(mode === "walk"));
   renderer.setCameraMode(mode);
+}
+
+function beginWalkPlacement(): void {
+  setCameraMode("orbit");
+  walkPlacementActive = true;
+  document.body.dataset.walkPlacement = "true";
+  orbitCameraButton.setAttribute("aria-pressed", "false");
+  flyCameraButton.setAttribute("aria-pressed", "false");
+  walkCameraButton.setAttribute("aria-pressed", "true");
+  orbitCameraHint.textContent = "Drag the person marker onto the map to choose a walk start";
+}
+
+function completeWalkPlacement(clientX: number, clientY: number): void {
+  if (!renderer.setWalkStartFromScreen(clientX, clientY)) return;
+  setCameraMode("walk");
+}
+
+function cancelWalkPlacement(): void {
+  walkPlacementActive = false;
+  walkMarkerPointerId = null;
+  resetWalkMarkerPosition();
+  document.body.dataset.walkPlacement = "false";
+  document.body.dataset.walkMarkerDragging = "false";
+  orbitCameraHint.textContent = appMode === "build"
+    ? "Drag to pan · Scroll to zoom · Click a road or building"
+    : "Drag to pan · Scroll to zoom · Click a building or person";
+}
+
+function resetWalkMarkerPosition(): void {
+  walkStartMarker.style.removeProperty("left");
+  walkStartMarker.style.removeProperty("top");
+}
+
+function syncEntitySelectionState(): void {
+  document.body.dataset.entitySelection = selectedEntity?.kind ?? "none";
 }
 
 function updateEnvironmentStatus(mode: EnvironmentMode, detail: string): void {
@@ -374,7 +473,7 @@ function updateMetrics(): void {
     metricView === "baseline" ? simulation.getBaselineMetrics() : state.metrics;
   vehicleTime.textContent = `${metrics.vehicleTravelSeconds.toFixed(1)} s`;
   averageSpeed.textContent = `${metrics.averageSpeedMph.toFixed(1)} mph`;
-  congestion.textContent = String(metrics.congestion);
+  congestion.textContent = `${state.city.metrics.congestionPercent.toFixed(0)}%`;
   intersectionDelay.textContent = `${metrics.intersectionDelaySeconds.toFixed(1)} s`;
   pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
   conflicts.textContent = String(metrics.potentialConflicts);
@@ -396,7 +495,7 @@ function updateMetrics(): void {
   cityPopulation.textContent = Math.round(cityMetrics.population).toLocaleString();
   cityOutput.textContent = formatCurrency(cityMetrics.grossCityProductDaily);
   cityUnemployment.textContent = `${cityMetrics.unemploymentPercent.toFixed(1)}%`;
-  cityUtilities.textContent = `${cityMetrics.utilityCoveragePercent.toFixed(0)}%`;
+  cityTrafficCost.textContent = `${formatCurrency(cityMetrics.congestionCostDaily)}/day`;
   cityImports.textContent = `${state.city.market.importDependencePercent.toFixed(0)}%`;
   cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
   const visiblePeople = Math.max(
@@ -627,7 +726,6 @@ function streetDesignSummaries(
 }
 
 function updateEntityInterface(): void {
-  if (appMode !== "simulate") return;
   const state = simulation.getState();
   const selectedPerson = selectedEntity?.kind === "person"
     ? state.entities.people.find((person) => person.id === selectedEntity?.id)
@@ -637,12 +735,20 @@ function updateEntityInterface(): void {
     selectedPerson?.currentActivity ?? "static",
     selectedEntity?.kind ?? "none",
     selectedEntity?.id ?? "none",
+    selectedTrafficFeature?.id ?? "no-road",
+    state.roadTraffic.find((road) => road.segmentId === selectedTrafficFeature?.id)?.congestionPercent ?? 0,
     analysisOverlay.value,
+    appMode,
   ].join(":");
   if (signature === entityInterfaceSignature) return;
   entityInterfaceSignature = signature;
   renderMapLegend(analysisOverlay.value as MapOverlayMode);
   renderGroupedAlerts();
+
+  if (!selectedEntity && selectedTrafficFeature) {
+    renderTrafficInspector(selectedTrafficFeature);
+    return;
+  }
 
   if (!selectedEntity) {
     const represented = Math.max(1, Math.round(state.city.metrics.population / Math.max(1, state.entities.people.length)));
@@ -664,7 +770,7 @@ function updateEntityInterface(): void {
           <ol>
             <li>Buildings request workers and supplies.</li>
             <li>Residents work, earn wages, and make service visits.</li>
-            <li>Labor and utilities gate production and sales.</li>
+            <li>Labor and delivered supplies gate production and sales.</li>
             <li>Revenue, costs, prices, wages, and rent adjust.</li>
             <li>Households evaluate needs, finances, and migration.</li>
           </ol>
@@ -700,15 +806,14 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   const revenueLabel = housing ? "Rent" : civic ? "Funding + fees" : "Revenue";
   const netLabel = civic ? "Balance" : "Net";
   const maxFlow = Math.max(1, accounting.operatingRevenue, accounting.operatingCost);
-  const utilityAverage = (
-    (building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3
-  ) * 100;
+  const cityTraffic = state.city.metrics;
+  const generatedTrips = connectionTotals.commute + connectionTotals.customer + connectionTotals.supply;
   const primaryStats = housing
     ? [
         ["Residents", `${residents} / ${building.residentCapacity}`],
         ["Daily rent", formatDetailedMoney(building.rentDaily)],
         ["Land value", formatDetailedMoney(building.landValue)],
-        ["Utilities", `${utilityAverage.toFixed(0)}%`],
+        ["Connected trips", Math.round(generatedTrips).toLocaleString()],
       ]
     : civic
       ? [
@@ -743,16 +848,18 @@ function renderBuildingInspector(building: DetailedBuilding): void {
           <span>Payroll <b>${formatDetailedMoney(accounting.dailyWages)}</b></span>
           <span>Supplies <b>${formatDetailedMoney(accounting.supplyCost)}</b></span>
           <span>Transport <b>${formatDetailedMoney(accounting.transportCost)}</b></span>
-          <span>Utilities <b>${formatDetailedMoney(accounting.utilityCost)}</b></span>
           <span>Maintenance <b>${formatDetailedMoney(accounting.maintenanceCost)}</b></span>
         </div>
         <p class="entity-diagnosis">${escapeHtml(accounting.diagnosis)}</p>
       </section>
-      <section class="utility-strip">
-        <h4>Utility service</h4>
-        ${utilityMeter("Power", building.utilityService.power, "Regional electric grid")}
-        ${utilityMeter("Water", building.utilityService.water, "Municipal water system")}
-        ${utilityMeter("Waste", building.utilityService.waste, "Sanitation collection")}
+      <section class="traffic-impact">
+        <h4>Traffic consequence</h4>
+        <div class="impact-chain">
+          <span><small>Generated</small><b>${Math.round(generatedTrips)} trips</b></span><i>→</i>
+          <span><small>Network</small><b>${cityTraffic.averageTrafficDelayMinutes.toFixed(1)} min delay</b></span><i>→</i>
+          <span><small>This building</small><b>${formatDetailedMoney(accounting.transportCost)} transport</b></span>
+        </div>
+        <p>Congestion delays employees, customers, and deliveries. It raises transport costs and can reduce staffing, sales, land value, and resident happiness.</p>
       </section>
       <section class="connection-summary">
         <h4>Daily connections</h4>
@@ -762,6 +869,56 @@ function renderBuildingInspector(building: DetailedBuilding): void {
           <span data-flow="supply"><b>${Math.round(connectionTotals.supply)}</b> supply units</span>
         </div>
         <details><summary>Connected buildings</summary>${renderConnectionDetails(connections, building.id)}</details>
+      </section>
+    </article>`;
+}
+
+function renderTrafficInspector(feature: DistrictFeature): void {
+  const state = simulation.getState();
+  const city = state.city.metrics;
+  const road = state.roadTraffic.find((candidate) => candidate.segmentId === feature.id);
+  const signal = state.signals.find((candidate) => candidate.intersectionId === feature.id);
+  const totalTrips = Math.max(1, city.commuteTripsDaily + city.shoppingTripsDaily + city.freightTripsDaily);
+  const causes = [
+    ["Work", city.commuteTripsDaily],
+    ["Shopping", city.shoppingTripsDaily],
+    ["Freight", city.freightTripsDaily],
+  ] as const;
+  const localStats = road
+    ? [
+        ["Live congestion", `${road.congestionPercent.toFixed(0)}%`],
+        ["Active vehicles", road.activeVehicles.toLocaleString()],
+        ["Queued vehicles", road.queuedVehicles.toLocaleString()],
+        ["Average speed", `${road.averageSpeedMph.toFixed(1)} mph`],
+      ]
+    : [
+        ["Signal phase", signal ? formatSignalPhase(signal.phase) : "Unsignalized"],
+        ["Network congestion", `${city.congestionPercent.toFixed(0)}%`],
+        ["Average delay", `${city.averageTrafficDelayMinutes.toFixed(1)} min`],
+        ["Daily traffic cost", formatDetailedMoney(city.congestionCostDaily)],
+      ];
+  entityInspector.innerHTML = `
+    <article class="entity-card traffic-card">
+      <header class="entity-heading">
+        <div><small>${feature.kind === "street" ? "Street segment" : "Intersection"}</small><h3>${escapeHtml(feature.name)}</h3></div>
+        <span>${road ? `${road.congestionPercent.toFixed(0)}% busy` : "Traffic control"}</span>
+      </header>
+      <div class="inspector-stat-grid">${localStats.map(([label, value]) => `<span><small>${label}</small><b>${value}</b></span>`).join("")}</div>
+      <section class="traffic-impact">
+        <h4>Why traffic exists</h4>
+        <div class="traffic-cause-bars">${causes.map(([label, trips]) => {
+          const share = trips / totalTrips * 100;
+          return `<label><span>${label}<b>${Math.round(trips).toLocaleString()} trips</b></span><meter min="0" max="100" value="${share}"></meter><small>${share.toFixed(0)}%</small></label>`;
+        }).join("")}</div>
+      </section>
+      <section class="traffic-impact">
+        <h4>Citywide consequence</h4>
+        <div class="impact-chain">
+          <span><small>Congestion</small><b>${city.congestionPercent.toFixed(0)}%</b></span><i>→</i>
+          <span><small>Extra travel</small><b>${city.averageTrafficDelayMinutes.toFixed(1)} min/trip</b></span><i>→</i>
+          <span><small>Lost time</small><b>${formatDetailedMoney(city.congestionCostDaily)}/day</b></span>
+        </div>
+        <p>Longer trips raise household commute spending and business delivery costs. Those costs feed into prices, profit, happiness, land value, and migration.</p>
       </section>
     </article>`;
 }
@@ -799,6 +956,7 @@ function renderPersonInspector(person: DetailedPerson): void {
         </div>
         <div class="cost-breakdown">
           <span>Commute <b>${formatDetailedMoney(person.commuteCost)}</b></span>
+          <span>Network delay <b>${state.city.metrics.averageTrafficDelayMinutes.toFixed(1)} min</b></span>
           <span>Cash <b>${formatDetailedMoney(person.money)}</b></span>
           <span>Household <b>${householdMembers.length} people</b></span>
           <span>Shared balance <b>${formatDetailedMoney(household?.money ?? 0)}</b></span>
@@ -840,10 +998,10 @@ function renderConnectionDetails(
 
 function renderMapLegend(mode: MapOverlayMode): void {
   const legends: Partial<Record<MapOverlayMode, readonly [string, string]>> = {
+    congestion: ["Free flowing", "Severe delay"],
     economy: ["Low activity", "High activity"],
     profitability: ["Operating loss", "Strong surplus"],
     "land-value": ["Lower value", "Higher value"],
-    utilities: ["Service shortage", "Fully served"],
     employment: ["Understaffed", "Fully staffed"],
     happiness: ["Low wellbeing", "High wellbeing"],
     migration: ["Leaving pressure", "Stable"],
@@ -883,7 +1041,7 @@ function updateEntityTooltip(
   clientX: number,
   clientY: number,
 ): void {
-  if (!selection || appMode !== "simulate") {
+  if (!selection) {
     entityTooltip.hidden = true;
     return;
   }
@@ -905,9 +1063,9 @@ function updateEntityTooltip(
 
 function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): string {
   const accounting = building.accounting;
-  const utility = Math.round((building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3 * 100);
-  const residents = simulation.getState().entities.people.filter((person) => person.homeBuildingId === building.id);
-  const trips = simulation.getState().entities.connections
+  const state = simulation.getState();
+  const residents = state.entities.people.filter((person) => person.homeBuildingId === building.id);
+  const trips = state.entities.connections
     .filter((connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id);
   let value = `${formatBuildingFunction(building.function)} · ${formatEntityStatus(accounting.status)}`;
   let why = accounting.diagnosis;
@@ -915,10 +1073,7 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
   else if (mode === "economy") value = `${formatDetailedMoney(accounting.operatingRevenue)} daily activity · ${accounting.customers} customers`;
   else if (mode === "land-value") {
     value = `${formatDetailedMoney(building.landValue)} land value`;
-    why = `Utility service ${utility}%, staffing ${Math.round(accounting.staffingRatio * 100)}%, and district congestion ${simulation.getState().city.metrics.congestionPercent.toFixed(0)}% drive this value.`;
-  } else if (mode === "utilities") {
-    value = `${utility}% utility service`;
-    why = `Power comes from the regional grid, water from the municipal system, and waste from sanitation collection.`;
+    why = `Staffing ${Math.round(accounting.staffingRatio * 100)}%, local wellbeing, accessibility, and ${state.city.metrics.congestionPercent.toFixed(0)}% congestion drive this value.`;
   } else if (mode === "employment") value = `${building.employeeIds.length} of ${accounting.requiredWorkers} required positions filled`;
   else if (mode === "happiness") {
     const happiness = residents.length > 0 ? sumNumbers(residents.map((person) => person.happiness)) / residents.length : accounting.serviceQuality * 100;
@@ -930,8 +1085,11 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
     why = leaving > 0 ? "Unemployment, negative finances, or unmet needs are the modeled causes." : "Residents currently have no strong pressure to leave.";
   } else if (mode === "goods") value = `${building.goodsInventory.toFixed(0)} units in stock · ${accounting.importedSupplies.toFixed(0)} imported`;
   else if (["congestion", "pedestrians", "conflicts"].includes(mode)) {
-    value = `${Math.round(sumNumbers(trips.map((connection) => connection.volume)))} connected daily trips`;
-    why = `Commutes, customer visits, and supply deliveries are the building's traffic causes.`;
+    const commuteTrips = sumNumbers(trips.filter((trip) => trip.kind === "commute").map((trip) => trip.volume));
+    const customerTrips = sumNumbers(trips.filter((trip) => trip.kind === "customer").map((trip) => trip.volume));
+    const supplyTrips = sumNumbers(trips.filter((trip) => trip.kind === "supply").map((trip) => trip.volume));
+    value = `${Math.round(commuteTrips + customerTrips + supplyTrips)} connected daily trips`;
+    why = `${Math.round(commuteTrips)} commute, ${Math.round(customerTrips)} customer, and ${Math.round(supplyTrips)} supply trips; network delay is ${state.city.metrics.averageTrafficDelayMinutes.toFixed(1)} minutes and transport costs this building ${formatDetailedMoney(accounting.transportCost)} daily.`;
   }
   return `<strong>${escapeHtml(building.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(why)}</small>`;
 }
@@ -948,7 +1106,6 @@ function updateControlPreviews(): void {
   signalCycleOutput.value = `${settings.signalCycleSeconds} sec`;
   transitHeadwayOutput.value = `${settings.transitHeadwayMinutes} min`;
   roadCapacityOutput.value = `${settings.roadCapacity}%`;
-  utilityCapacityOutput.value = `${Math.round(settings.utilityCapacityScale * 100)}%`;
   zoningOutput.value = `${Math.round(settings.zoningStrictness * 100)}%`;
   timeHorizonPreview.textContent = {
     day: "Each real second advances one simulated hour.",
@@ -970,9 +1127,6 @@ function updateControlPreviews(): void {
   roadCapacityPreview.textContent = settings.roadCapacity === 100
     ? "Baseline vehicle and delivery capacity."
     : `${Math.abs(settings.roadCapacity - 100)}% ${settings.roadCapacity > 100 ? "more" : "less"} capacity for commutes and freight.`;
-  utilityCapacityPreview.textContent = settings.utilityCapacityScale >= 1
-    ? "Current supply should meet modeled demand unless the city grows."
-    : "Shortfalls directly reduce production and civic-service delivery.";
   zoningPreview.textContent = settings.zoningStrictness > 1
     ? "Tighter limits slow floor-area and housing growth."
     : settings.zoningStrictness < 1
@@ -983,10 +1137,6 @@ function updateControlPreviews(): void {
 function accountingNode(label: string, value: number, max: number, tone: string): string {
   const width = Math.max(8, Math.min(100, Math.abs(value) / max * 100));
   return `<span class="accounting-node" data-tone="${tone}"><small>${label}</small><b>${formatDetailedMoney(value)}</b><i style="width:${width}%"></i></span>`;
-}
-
-function utilityMeter(label: string, value: number, source: string): string {
-  return `<label><span>${label}<small>${source}</small></span><meter min="0" max="1" value="${value}"></meter><b>${Math.round(value * 100)}%</b></label>`;
 }
 
 function isCivicFunction(buildingFunction: DetailedBuilding["function"]): boolean {

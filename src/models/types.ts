@@ -16,7 +16,6 @@ export type MapOverlayMode =
   | "economy"
   | "profitability"
   | "land-value"
-  | "utilities"
   | "employment"
   | "happiness"
   | "migration"
@@ -87,7 +86,6 @@ export interface ScenarioSettings {
   simulationSeed: number;
   transitHeadwayMinutes: number;
   roadCapacity: number;
-  utilityCapacityScale: number;
   zoningStrictness: number;
 }
 
@@ -155,6 +153,15 @@ export interface SimulationMetrics {
   crossingsCompleted: number;
 }
 
+export interface RoadTrafficSnapshot {
+  segmentId: string;
+  activeVehicles: number;
+  queuedVehicles: number;
+  averageSpeedMph: number;
+  congestionPercent: number;
+  averageDelaySeconds: number;
+}
+
 export interface SimulationState {
   running: boolean;
   elapsedSeconds: number;
@@ -164,6 +171,7 @@ export interface SimulationState {
   signals: readonly SignalSnapshot[];
   vehicles: readonly VehicleSnapshot[];
   pedestrians: readonly PedestrianSnapshot[];
+  roadTraffic: readonly RoadTrafficSnapshot[];
   metrics: SimulationMetrics;
   city: CitySectionState;
   cityActivity: CityActivitySnapshot;

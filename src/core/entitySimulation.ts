@@ -22,10 +22,10 @@ const OUTSIDE_MARKET = "outside-market";
 const MAX_EVENTS = 36;
 
 export interface EntityPolicy {
-  utilityCapacityScale: number;
   roadCapacityScale: number;
   transitServiceScale: number;
   zoningStrictness: number;
+  congestionPercent: number;
 }
 
 export function createDetailedEntityState(
@@ -33,7 +33,7 @@ export function createDetailedEntityState(
   city: Readonly<CitySectionState>,
 ): DetailedEntityState {
   const buildings = definitions.map(createBuilding);
-  const population = createPopulation(buildings);
+  const population = createPopulation(buildings, city.metrics.congestionPercent);
   let state: DetailedEntityState = {
     buildings: population.buildings,
     people: population.people,
@@ -150,13 +150,11 @@ function createBuilding(definition: EntityBuildingDefinition): DetailedBuilding 
     goodsInventory: requiresSupplies(definition.function) ? 24 + Math.round(hashUnit(`${definition.id}:stock`) * 80) : 0,
     cashReserve: 2_000 + Math.round(hashUnit(`${definition.id}:cash`) * 14_000),
     closedDaysRemaining: 0,
-    utilityDemand: utilityDemandFor(definition.function, floorArea),
-    utilityService: { power: 1, water: 1, waste: 1 },
     accounting: emptyAccounting(requiredWorkers),
   };
 }
 
-function createPopulation(buildings: DetailedBuilding[]): {
+function createPopulation(buildings: DetailedBuilding[], congestionPercent: number): {
   buildings: DetailedBuilding[];
   people: DetailedPerson[];
   households: DetailedHousehold[];
@@ -214,7 +212,16 @@ function createPopulation(buildings: DetailedBuilding[]): {
           migrationReason: "Employment, housing, and services are currently stable.",
           unemployedDays: employment === "unemployed" ? 1 : 0,
         };
-        person.schedule = createSchedule(person, home, work, school, services, buildings, 0);
+        person.schedule = createSchedule(
+          person,
+          home,
+          work,
+          school,
+          services,
+          buildings,
+          0,
+          congestionPercent,
+        );
         people.push(person);
         home.residentIds.push(personId);
         memberIds.push(personId);
@@ -253,13 +260,10 @@ function advanceDetailedDay(
     ...building,
     residentIds: [...building.residentIds],
     employeeIds: [],
-    utilityDemand: { ...building.utilityDemand },
-    utilityService: { ...building.utilityService },
     accounting: { ...building.accounting },
   }));
 
   const buildingById = new Map(buildings.map((building) => [building.id, building]));
-  allocateUtilities(buildings, city, policy);
   allocateLabor(people, buildings, buildingById, day, events, recordEvents);
   const services = serviceBuildings(buildings);
   for (const person of people) {
@@ -267,7 +271,16 @@ function advanceDetailedDay(
     if (!home) continue;
     const work = person.workBuildingId ? buildingById.get(person.workBuildingId) : undefined;
     const school = person.schoolBuildingId ? buildingById.get(person.schoolBuildingId) : undefined;
-    person.schedule = createSchedule(person, home, work, school, services, buildings, day);
+    person.schedule = createSchedule(
+      person,
+      home,
+      work,
+      school,
+      services,
+      buildings,
+      day,
+      city.metrics.congestionPercent,
+    );
   }
   const customerCounts = countScheduledVisits(people);
   buildings = buildings.map((building) => advanceBuilding(
@@ -313,17 +326,15 @@ function advanceDetailedDay(
     const housing = home?.rentDaily ?? 0;
     const income = sum(members.map((person) => person.dailyWage));
     const goods = sum(members.map((person) => 11 + person.needs.goods * 0.1));
-    const utilities = housing * (1 - averageUtility(home)) * 0.08 + housing * 0.12;
     const transport = sum(members.map((person) => person.commuteCost));
     const services = sum(members.map((person) => person.dailySpending)) - housing - goods - transport;
     household.dailyIncome = round(income);
     household.dailyExpenses = {
       housing: round(housing),
       goods: round(goods),
-      utilities: round(Math.max(0, utilities)),
       transport: round(transport),
       services: round(Math.max(0, services)),
-      total: round(housing + goods + utilities + transport + Math.max(0, services)),
+      total: round(housing + goods + transport + Math.max(0, services)),
     };
     household.money = round(household.money + income - household.dailyExpenses.total);
     household.rentArrears = household.money < 0
@@ -395,29 +406,33 @@ function advanceBuilding(
   const requiredWorkers = Math.max(0, Math.round(building.jobCapacity * (0.68 + hashUnit(`${building.id}:${Math.floor(day / 14)}`) * 0.25)));
   const employees = closed ? 0 : building.employeeIds.length;
   const staffingRatio = requiredWorkers > 0 ? clamp(employees / requiredWorkers, 0, 1) : 1;
-  const utility = averageUtility(building);
+  const congestionRatio = clamp(city.metrics.congestionPercent / 100, 0, 1);
+  const deliveryReliability = clamp(1 - congestionRatio * 0.55, 0.45, 1);
   const wagePressure = requiredWorkers > employees ? 1.012 : 0.998;
   const averageWage = round(clamp((previous.averageWage || baseWage(building.function)) * wagePressure, 78, 320));
   const dailyWages = round(employees * averageWage);
   const maintenanceCost = round(building.width * building.depth * building.floors * maintenanceRate(building.function));
-  const utilityCost = round(sum(Object.values(building.utilityDemand)) * (0.12 + (1 - utility) * 0.04));
   const unitPrice = round(dynamicPrice(building, previous));
   const customers = closed ? 0 : Math.round(scheduledCustomers * (0.75 + hashUnit(`${building.id}:customers:${day}`) * 0.5));
   const laborCapacity = closed ? 0 : staffingRatio;
   const goodsReceived = requiresSupplies(building.function)
-    ? round((8 + building.jobCapacity * 1.7) * laborCapacity * utility)
+    ? round((8 + building.jobCapacity * 1.7) * laborCapacity * deliveryReliability)
     : 0;
   const localShare = clamp(city.market.localSupplyPercent / 100, 0.18, 0.82);
   const localSupplies = round(goodsReceived * localShare);
   const importedSupplies = round(goodsReceived - localSupplies);
   const importedUnitCost = 6.8 * clamp(city.market.consumerPriceIndex / 20, 0.8, 1.6);
   const supplyCost = round(localSupplies * 5.2 + importedSupplies * importedUnitCost);
-  const transportCost = round(importedSupplies * (1.4 + (1 / Math.max(0.55, policy.roadCapacityScale))));
+  const transportCost = round(
+    importedSupplies
+      * (1.4 + (1 / Math.max(0.55, policy.roadCapacityScale)))
+      * (1 + congestionRatio * 1.5),
+  );
   const civic = isCivic(building.function);
   const housing = building.function === "housing";
   const serviceDemand = civic ? scheduledCustomers + building.residentIds.length * 0.05 : 0;
-  const serviceDelivered = civic ? round(serviceDemand * staffingRatio * utility) : 0;
-  const serviceQuality = civic && serviceDemand > 0 ? clamp(serviceDelivered / serviceDemand, 0, 1) : civic ? staffingRatio * utility : 0;
+  const serviceDelivered = civic ? round(serviceDemand * staffingRatio) : 0;
+  const serviceQuality = civic && serviceDemand > 0 ? clamp(serviceDelivered / serviceDemand, 0, 1) : civic ? staffingRatio : 0;
   const rentIncome = housing ? round(building.residentIds.length * building.rentDaily / Math.max(1, building.residentCapacity / 2.4)) : 0;
   const municipalFunding = civic
     ? round(requiredWorkers * averageWage * (0.92 + city.metrics.civicServiceCoveragePercent / 500))
@@ -426,13 +441,13 @@ function advanceBuilding(
   let salesRevenue = 0;
   if (!closed && staffingRatio > 0) {
     if (building.function === "retail") {
-      goodsSold = round(Math.min(building.goodsInventory + goodsReceived, customers * (1.4 + utility)));
+      goodsSold = round(Math.min(building.goodsInventory + goodsReceived, customers * 2.4));
       salesRevenue = round(goodsSold * unitPrice);
     } else if (building.function === "office") {
-      goodsSold = round((employees * 3.8 + customers * 0.35) * utility);
+      goodsSold = round(employees * 3.8 + customers * 0.35);
       salesRevenue = round(goodsSold * unitPrice);
     } else if (building.function === "industrial") {
-      goodsSold = round((employees * 9 + customers * 0.35) * utility);
+      goodsSold = round(employees * 9 + customers * 0.35);
       salesRevenue = round(goodsSold * unitPrice);
     } else if (building.function === "parking") {
       goodsSold = round(employees * 8 + 18);
@@ -442,7 +457,7 @@ function advanceBuilding(
     }
   }
   const operatingRevenue = round(rentIncome + municipalFunding + salesRevenue);
-  const operatingCost = round(dailyWages + supplyCost + transportCost + maintenanceCost + utilityCost);
+  const operatingCost = round(dailyWages + supplyCost + transportCost + maintenanceCost);
   const profit = round(operatingRevenue - operatingCost);
   const cashReserve = round(building.cashReserve + profit);
   const lossStreak = profit < 0 && !civic && !housing ? previous.lossStreak + 1 : 0;
@@ -462,7 +477,7 @@ function advanceBuilding(
   if (recordEvents && civic && serviceQuality < 0.65) {
     events.push(event(day, "services", "warning", `${building.name} met only ${Math.round(serviceQuality * 100)}% of scheduled service demand.`, building.id));
   }
-  const targetLandValue = 125 + utility * 110 + staffingRatio * 45
+  const targetLandValue = 235 + staffingRatio * 45
     + clamp((city.metrics.happiness - 50) / 50, 0, 1) * 65
     - city.metrics.congestionPercent * 0.8;
   const landValue = round(clamp(building.landValue + (targetLandValue - building.landValue) * 0.025, 80, 520));
@@ -470,7 +485,15 @@ function advanceBuilding(
   const rentDaily = housing
     ? round(clamp(building.rentDaily * (occupancy > 0.88 ? 1.003 : occupancy < 0.65 ? 0.996 : 1), 22, 95))
     : 0;
-  const diagnosis = diagnoseBuilding(building.function, status, profit, staffingRatio, utility, importedSupplies, serviceQuality);
+  const diagnosis = diagnoseBuilding(
+    building.function,
+    status,
+    profit,
+    staffingRatio,
+    congestionRatio,
+    importedSupplies,
+    serviceQuality,
+  );
 
   return {
     ...building,
@@ -493,7 +516,6 @@ function advanceBuilding(
       supplyCost,
       transportCost,
       maintenanceCost,
-      utilityCost,
       operatingCost,
       profit,
       customers,
@@ -509,23 +531,6 @@ function advanceBuilding(
       diagnosis,
     },
   };
-}
-
-function allocateUtilities(
-  buildings: DetailedBuilding[],
-  city: Readonly<CitySectionState>,
-  policy: Readonly<EntityPolicy>,
-): void {
-  for (const kind of ["power", "water", "waste"] as const) {
-    const demand = sum(buildings.map((building) => building.utilityDemand[kind]));
-    const cityCoverage = clamp(city.metrics.utilityCoveragePercent / 100, 0.35, 1);
-    const capacity = demand * cityCoverage * policy.utilityCapacityScale;
-    const baseCoverage = clamp(capacity / Math.max(1, demand), 0, 1);
-    for (const building of buildings) {
-      const priority = isCivic(building.function) ? 1.04 : building.function === "housing" ? 1.01 : 0.98;
-      building.utilityService[kind] = round(clamp(baseCoverage * priority, 0, 1));
-    }
-  }
 }
 
 function updateNeedsAndMigration(
@@ -574,12 +579,13 @@ function createSchedule(
   services: ReturnType<typeof serviceBuildings>,
   buildings: readonly DetailedBuilding[],
   day: number,
+  congestionPercent: number,
 ): PersonScheduleItem[] {
   const schedule: PersonScheduleItem[] = [item("home", 0, 420, home, "walk", 0)];
   const destination = person.employment === "student" ? school : work;
   if (destination) {
-    const mode = chooseMode(home, destination);
-    const travelMinutes = travelTime(home, destination, mode);
+    const mode = chooseMode(home, destination, congestionPercent);
+    const travelMinutes = travelTime(home, destination, mode, congestionPercent);
     schedule.push(item(person.employment === "student" ? "school" : "work", 480, 1_020, destination, mode, travelMinutes));
   } else if (person.employment === "external") {
     schedule.push({ activity: "work", startMinute: 450, endMinute: 1_030, buildingId: OUTSIDE_WORK, mode: "transit", travelMinutes: 34 });
@@ -600,10 +606,24 @@ function createSchedule(
         : services.recreation;
   const service = nearestBuilding(home, candidates) ?? nearestBuilding(home, buildings);
   if (service) {
-    const mode = chooseMode(destination ?? home, service);
-    schedule.push(item(activity, 1_050, 1_140, service, mode, travelTime(destination ?? home, service, mode)));
+    const mode = chooseMode(destination ?? home, service, congestionPercent);
+    schedule.push(item(
+      activity,
+      1_050,
+      1_140,
+      service,
+      mode,
+      travelTime(destination ?? home, service, mode, congestionPercent),
+    ));
   }
-  schedule.push(item("home", 1_180, 1_440, home, "walk", service ? travelTime(service, home, "walk") : 0));
+  schedule.push(item(
+    "home",
+    1_180,
+    1_440,
+    home,
+    "walk",
+    service ? travelTime(service, home, "walk", congestionPercent) : 0,
+  ));
   return schedule;
 }
 
@@ -660,7 +680,12 @@ function commuteCost(
   const work = person.workBuildingId ? buildings.get(person.workBuildingId) : undefined;
   if (!home || !work) return 0;
   const kilometers = distance(home, work) / 1000;
-  return round(kilometers < 0.8 ? 0 : kilometers * 3.6 / Math.max(0.6, policy.roadCapacityScale));
+  const congestionMultiplier = 1 + clamp(policy.congestionPercent / 100, 0, 1) * 1.35;
+  return round(
+    kilometers < 0.8
+      ? 0
+      : kilometers * 3.6 * congestionMultiplier / Math.max(0.6, policy.roadCapacityScale),
+  );
 }
 
 function dynamicPrice(building: DetailedBuilding, previous: BuildingAccounting): number {
@@ -680,24 +705,26 @@ function diagnoseBuilding(
   status: BuildingAccounting["status"],
   profit: number,
   staffing: number,
-  utility: number,
+  congestionRatio: number,
   imports: number,
   serviceQuality: number,
 ): string {
   if (status === "closed") return "Operations are suspended after sustained losses; employees and customers are being redirected.";
   if (staffing < 0.7) return `Only ${Math.round(staffing * 100)}% of required positions are filled, limiting output and service capacity.`;
-  if (utility < 0.85) return `Utility delivery is ${Math.round(utility * 100)}%, reducing usable capacity and increasing operating costs.`;
+  if (congestionRatio > 0.65 && imports > 0) {
+    return `Network congestion is delaying deliveries and raising transport costs by about ${Math.round(congestionRatio * 150)}%.`;
+  }
   if (isCivic(buildingFunction)) {
     return serviceQuality >= 0.9
       ? "Municipal funding and staffing are meeting most scheduled service visits."
       : `Funding covers operations, but only ${Math.round(serviceQuality * 100)}% of service demand is being met.`;
   }
   if (buildingFunction === "housing") return profit >= 0
-    ? "Rent receipts cover maintenance and utility costs; occupancy is supporting stable rent."
-    : "Maintenance and utility costs exceed current rent receipts.";
+    ? "Rent receipts cover maintenance costs; occupancy is supporting stable rent."
+    : "Maintenance costs exceed current rent receipts.";
   if (profit < 0 && imports > 0) return "Imported supplies, transport costs, and payroll exceed current sales revenue.";
   return profit >= 0
-    ? "Sales and service revenue cover payroll, supplies, utilities, and maintenance."
+    ? "Sales and service revenue cover payroll, supplies, transport, and maintenance."
     : "Demand is too low to cover current operating costs.";
 }
 
@@ -712,14 +739,31 @@ function item(
   return { activity, startMinute, endMinute, buildingId: building.id, mode, travelMinutes };
 }
 
-function chooseMode(from: Pick<DetailedBuilding, "x" | "z">, to: Pick<DetailedBuilding, "x" | "z">): TravelMode {
+function chooseMode(
+  from: Pick<DetailedBuilding, "x" | "z">,
+  to: Pick<DetailedBuilding, "x" | "z">,
+  congestionPercent: number,
+): TravelMode {
   const meters = distance(from, to);
-  return meters < 650 ? "walk" : meters < 1_450 ? "transit" : "car";
+  const transitRange = 1_450 + clamp(congestionPercent / 100, 0, 1) * 900;
+  return meters < 650 ? "walk" : meters < transitRange ? "transit" : "car";
 }
 
-function travelTime(from: Pick<DetailedBuilding, "x" | "z">, to: Pick<DetailedBuilding, "x" | "z">, mode: TravelMode): number {
+function travelTime(
+  from: Pick<DetailedBuilding, "x" | "z">,
+  to: Pick<DetailedBuilding, "x" | "z">,
+  mode: TravelMode,
+  congestionPercent: number,
+): number {
   const speed = mode === "walk" ? 78 : mode === "transit" ? 280 : 420;
-  return Math.max(2, Math.round(distance(from, to) / speed + (mode === "transit" ? 6 : 1)));
+  const baseMinutes = distance(from, to) / speed + (mode === "transit" ? 6 : 1);
+  const congestionRatio = clamp(congestionPercent / 100, 0, 1);
+  const delayMultiplier = mode === "walk"
+    ? 1
+    : mode === "transit"
+      ? 1 + congestionRatio * 0.35
+      : 1 + congestionRatio * 1.4;
+  return Math.max(2, Math.round(baseMinutes * delayMultiplier));
 }
 
 function jobCapacityFor(buildingFunction: BuildingFunction, floorArea: number, source: "block" | "landmark"): number {
@@ -731,14 +775,6 @@ function jobCapacityFor(buildingFunction: BuildingFunction, floorArea: number, s
         : buildingFunction === "recreation" ? 2_500
           : 1_450;
   return clamp(Math.round(floorArea / divisor), source === "landmark" ? 6 : 2, source === "landmark" ? 20 : 7);
-}
-
-function utilityDemandFor(buildingFunction: BuildingFunction, floorArea: number) {
-  const scale = floorArea / 1_000;
-  const powerRate = buildingFunction === "industrial" ? 2.4 : buildingFunction === "clinic" ? 2 : 1.1;
-  const waterRate = buildingFunction === "housing" || buildingFunction === "clinic" ? 1.8 : 0.8;
-  const wasteRate = buildingFunction === "retail" || buildingFunction === "industrial" ? 1.5 : 0.65;
-  return { power: round(scale * powerRate), water: round(scale * waterRate), waste: round(scale * wasteRate) };
 }
 
 function baseWage(buildingFunction: BuildingFunction): number {
@@ -764,10 +800,6 @@ function isCivic(buildingFunction: BuildingFunction): boolean {
   return ["university", "library", "school", "clinic", "culture", "recreation"].includes(buildingFunction);
 }
 
-function averageUtility(building: DetailedBuilding | undefined): number {
-  return building ? sum(Object.values(building.utilityService)) / 3 : 1;
-}
-
 function emptyAccounting(requiredWorkers: number): BuildingAccounting {
   return {
     status: requiredWorkers > 0 ? "understaffed" : "occupied",
@@ -783,7 +815,6 @@ function emptyAccounting(requiredWorkers: number): BuildingAccounting {
     supplyCost: 0,
     transportCost: 0,
     maintenanceCost: 0,
-    utilityCost: 0,
     operatingCost: 0,
     profit: 0,
     customers: 0,
@@ -801,7 +832,7 @@ function emptyAccounting(requiredWorkers: number): BuildingAccounting {
 }
 
 function emptyExpenses() {
-  return { housing: 0, goods: 0, utilities: 0, transport: 0, services: 0, total: 0 };
+  return { housing: 0, goods: 0, transport: 0, services: 0, total: 0 };
 }
 
 function initialNeeds(index: number): DetailedPerson["needs"] {
@@ -838,7 +869,12 @@ function event(
 }
 
 function defaultPolicy(): EntityPolicy {
-  return { utilityCapacityScale: 1, roadCapacityScale: 1, transitServiceScale: 1, zoningStrictness: 1 };
+  return {
+    roadCapacityScale: 1,
+    transitServiceScale: 1,
+    zoningStrictness: 1,
+    congestionPercent: 0,
+  };
 }
 
 function distance(a: { x: number; z: number }, b: { x: number; z: number }): number {

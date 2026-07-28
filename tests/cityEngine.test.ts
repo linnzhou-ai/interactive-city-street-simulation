@@ -58,21 +58,20 @@ describe("city section model", () => {
     expect(batch.metrics.averageLandValue).not.toBe(initial.metrics.averageLandValue);
   });
 
-  it("propagates small infrastructure and transport differences over a year", () => {
+  it("propagates transport differences over a year", () => {
     const initial = createCitySectionState(createDemoCitySectionDefinition());
     const constrained = advanceCitySection(initial, 365, {
-      utilityCapacityScale: 0.65,
       roadCapacityScale: 0.55,
       transitServiceScale: 0.6,
     }).state;
     const supported = advanceCitySection(initial, 365, {
-      utilityCapacityScale: 1.35,
       roadCapacityScale: 1.35,
       transitServiceScale: 1.4,
     }).state;
 
-    expect(constrained.metrics.utilityCoveragePercent).toBeLessThan(supported.metrics.utilityCoveragePercent);
     expect(constrained.metrics.congestionPercent).toBeGreaterThan(supported.metrics.congestionPercent);
+    expect(constrained.metrics.averageTrafficDelayMinutes).toBeGreaterThan(supported.metrics.averageTrafficDelayMinutes);
+    expect(constrained.metrics.congestionCostDaily).toBeGreaterThan(supported.metrics.congestionCostDaily);
     expect(constrained.metrics.happiness).toBeLessThan(supported.metrics.happiness);
     expect(constrained.metrics.population).toBeLessThan(supported.metrics.population);
   });
@@ -136,15 +135,11 @@ describe("city section model", () => {
     expect(state.districts.every((district) => district.civicServiceDelivered === 0)).toBe(true);
   });
 
-  it("reconciles city rent, utility, and civic-service accounts", () => {
+  it("reconciles city rent, civic-service, and municipal accounts", () => {
     const initial = createCitySectionState(createDemoCitySectionDefinition());
     const state = advanceCitySection(initial, 1).state;
     const rentIncome = state.districts.reduce(
       (total, district) => total + district.propertyRentIncomeDaily,
-      0,
-    );
-    const utilityPayments = state.districts.reduce(
-      (total, district) => total + district.utilityCostDaily,
       0,
     );
     const civicCost = state.districts.reduce(
@@ -153,13 +148,12 @@ describe("city section model", () => {
     );
 
     expect(state.metrics.propertyRentIncomeDaily).toBeCloseTo(rentIncome, 2);
-    expect(state.metrics.utilityCostDaily).toBeCloseTo(utilityPayments, 2);
     expect(state.metrics.civicOperatingCostDaily).toBeCloseTo(civicCost, 2);
     expect(state.metrics.civicServiceCoveragePercent).toBeGreaterThan(0);
     expect(state.metrics.civicServiceCoveragePercent).toBeLessThanOrEqual(100);
     expect(state.municipalBudget).toBeCloseTo(
       initial.municipalBudget + state.metrics.taxRevenueDaily
-        + state.metrics.utilityCostDaily - state.metrics.maintenanceCostDaily,
+        - state.metrics.maintenanceCostDaily,
       2,
     );
   });
@@ -169,26 +163,24 @@ describe("city section model", () => {
     const state = advanceCitySection(initial, 730).state;
 
     expect(state.metrics.civicOperatingCostDaily).toBeLessThan(
-      state.metrics.taxRevenueDaily + state.metrics.utilityCostDaily,
+      state.metrics.taxRevenueDaily,
     );
     expect(state.municipalBudget).toBeGreaterThan(0);
     expect(state.municipalBudget).toBeLessThan(500_000_000);
     expect(state.metrics.civicServiceCoveragePercent).toBeGreaterThan(50);
   });
 
-  it("conserves city utility delivery after network losses", () => {
+  it("turns constrained road capacity into delay and economic cost", () => {
     const initial = createCitySectionState(createDemoCitySectionDefinition());
-    const state = advanceCitySection(initial, 1, { utilityCapacityScale: 0.5 }).state;
-    const lossRate = { power: 0.06, water: 0.08, waste: 0.04 } as const;
-    for (const kind of ["power", "water", "waste"] as const) {
-      const delivered = state.districts.reduce(
-        (total, district) => total + district.utilityDemand[kind] * district.utilityCoverage[kind],
-        0,
-      );
-      expect(delivered).toBeLessThanOrEqual(
-        initial.utilityCapacity[kind] * 0.5 * (1 - lossRate[kind]) + 1,
-      );
-    }
+    const constrained = advanceCitySection(initial, 2, { roadCapacityScale: 0.5 }).state;
+    const expanded = advanceCitySection(initial, 2, { roadCapacityScale: 1.5 }).state;
+
+    expect(constrained.metrics.congestionPercent).toBeGreaterThan(expanded.metrics.congestionPercent);
+    expect(constrained.metrics.averageTrafficDelayMinutes).toBeGreaterThan(expanded.metrics.averageTrafficDelayMinutes);
+    expect(constrained.metrics.congestionCostDaily).toBeGreaterThan(expanded.metrics.congestionCostDaily);
+    expect(constrained.metrics.householdExpensesDaily.transport).toBeGreaterThan(
+      expanded.metrics.householdExpensesDaily.transport,
+    );
   });
 
   it("reports migration in, migration out, and net migration separately", () => {
@@ -271,7 +263,6 @@ function customDefinition(): CitySectionDefinition {
     startYear: 2030,
     startingBudget: 2_000_000,
     taxRate: 0.08,
-    utilityCapacity: { power: 1_800, water: 1_600, waste: 620 },
     districts: [
       {
         id: "homes",

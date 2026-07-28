@@ -113,6 +113,25 @@ describe("LiveTrafficSystem", () => {
     expect(traffic.getMetrics().potentialConflicts).toBeGreaterThanOrEqual(0);
   });
 
+  it("reports measured traffic conditions for each road segment", () => {
+    const traffic = new LiveTrafficSystem(2027);
+
+    traffic.update(60, {
+      vehicleVolume: 3,
+      pedestrianVolume: 2,
+      speedLimitMph: 25,
+    });
+
+    const roads = traffic.getRoadTraffic();
+    expect(roads.length).toBeGreaterThan(70);
+    expect(roads.reduce((total, road) => total + road.activeVehicles, 0)).toBe(
+      traffic.getVehicles().length,
+    );
+    expect(roads.some((road) => road.activeVehicles > 0)).toBe(true);
+    expect(roads.some((road) => road.congestionPercent > 0)).toBe(true);
+    expect(roads.every((road) => road.congestionPercent >= 0 && road.congestionPercent <= 100)).toBe(true);
+  });
+
   it("distributes lane-assigned agents throughout the district", () => {
     const traffic = new LiveTrafficSystem(3401);
 

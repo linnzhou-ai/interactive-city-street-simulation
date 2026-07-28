@@ -9,7 +9,12 @@
     />
     <title>Penn Campus Street Lab</title>
   </head>
-  <body data-app-mode="build">
+  <body
+    data-app-mode="build"
+    data-camera-mode="orbit"
+    data-entity-selection="none"
+    data-walk-placement="false"
+  >
     <div id="app">
       <main class="simulation-viewport" aria-labelledby="simulation-title">
         <canvas
@@ -41,6 +46,18 @@
         <p class="camera-hint walk-hint">
           Click scene for mouse look · W A S D walk · Shift run · ESC release
         </p>
+        <button
+          id="walk-start-marker"
+          class="walk-start-marker"
+          type="button"
+          aria-label="Drag onto the map to choose where walking starts"
+          title="Drag onto the map to choose where walking starts"
+        >
+          <span class="walk-marker-head"></span>
+          <span class="walk-marker-body"></span>
+          <span class="walk-marker-leg walk-marker-leg-left"></span>
+          <span class="walk-marker-leg walk-marker-leg-right"></span>
+        </button>
       </main>
 
       <header class="topbar hud-panel">
@@ -237,7 +254,6 @@
             <option value="economy">Economic activity</option>
             <option value="profitability">Profitability</option>
             <option value="land-value">Land value</option>
-            <option value="utilities">Utility service</option>
             <option value="employment">Staffing</option>
             <option value="happiness">Happiness</option>
             <option value="migration">Migration pressure</option>
@@ -312,11 +328,6 @@
           <input id="road-capacity-control" type="range" min="60" max="160" value="100" />
           <small id="road-capacity-preview">Baseline vehicle and delivery capacity.</small>
         </label>
-        <label class="drawer-control" for="utility-capacity-control">
-          <span>Utility capacity <output id="utility-capacity-output">100%</output></span>
-          <input id="utility-capacity-control" type="range" min="50" max="150" value="100" />
-          <small id="utility-capacity-preview">Current supply meets modeled demand.</small>
-        </label>
         <label class="drawer-control" for="zoning-control">
           <span>Zoning strictness <output id="zoning-output">100%</output></span>
           <input id="zoning-control" type="range" min="50" max="150" value="100" />
@@ -371,8 +382,8 @@
               <strong id="city-unemployment">0%</strong>
             </article>
             <article>
-              <span>Utilities</span>
-              <strong id="city-utilities">0%</strong>
+              <span>Traffic cost</span>
+              <strong id="city-traffic-cost">$0/day</strong>
             </article>
             <article>
               <span>Imported goods</span>
@@ -399,8 +410,8 @@
           </article>
           <article class="metric-card">
             <span>Congestion</span>
-            <strong id="congestion">0</strong>
-            <small>Queued vehicles</small>
+            <strong id="congestion">0%</strong>
+            <small>Citywide road pressure</small>
           </article>
           <article class="metric-card">
             <span>Intersection delay</span>
