@@ -591,17 +591,17 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
     setExpansionRoadToolActive(true);
     buildWorkspaceHelp.textContent =
-      "Roads auto-connect on the 20 m grid. Crosswalks and signals are placed manually.";
+      "The build grid starts outside the locked city. Green ports connect new roads to it.";
     selectionTitle.textContent = "Expansion zone";
     selectionDescription.textContent =
-      "Drag 90° roads together, then choose a crosswalk or signal placement tool.";
+      "Start at a green city port, drag outward, then extend on the 20 m grid.";
     featureKind.textContent = "Build area";
     featureKind.dataset.kind = "building";
     buildingEditor.hidden = true;
     signalEditor.hidden = true;
     designSummary.replaceChildren();
     selectionStatus.textContent =
-      "Road intersections generate automatically; sidewalks are not added.";
+      "The original world stays locked while expansion roads connect at marked street ends.";
   } else {
     setExpansionRoadToolActive(false);
     clearExpansionStreetObjectTool();

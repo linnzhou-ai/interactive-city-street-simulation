@@ -55,9 +55,10 @@ const RENDER_HEIGHTS = {
 const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
 const ROAD_MARKING_END_INSET = 15;
 const EXPANSION_WORLD_LIMIT = 2_400;
-const CORE_PROTECTION_PADDING = 34;
+const CORE_PROTECTION_PADDING = 10;
 const EXPANSION_GRID_SIZE = 20;
 const CORE_BOUNDS = createProtectedCoreBounds();
+const ORIGINAL_ROAD_CONNECTORS = createOriginalRoadConnectors();
 const FLY_COLLIDER_RADIUS = 0.45;
 const WALK_COLLIDER_RADIUS = 0.38;
 const WALK_PLAYER_HEIGHT = 1.78;
@@ -124,6 +125,12 @@ interface ExpansionJunction {
   x: number;
   z: number;
   roadIds: Set<string>;
+}
+
+interface OriginalRoadConnector {
+  x: number;
+  z: number;
+  side: "min-x" | "max-x" | "min-z" | "max-z";
 }
 
 interface BuildingPlacementResult {
@@ -463,7 +470,10 @@ export class ThreeRenderer {
     ) {
       return { valid: false, reason: "That road extends beyond the buildable world." };
     }
-    if (segmentIntersectsProtectedCore(startX, startZ, endX, endZ)) {
+    if (
+      segmentIntersectsProtectedCore(startX, startZ, endX, endZ) &&
+      !isValidOriginalRoadConnection(startX, startZ, endX, endZ)
+    ) {
       return {
         valid: false,
         reason: "New roads cannot enter or cross the protected original city.",
@@ -837,19 +847,7 @@ export class ThreeRenderer {
   }
 
   private buildExpansionProtectionGuide(): void {
-    const grid = new THREE.GridHelper(
-      EXPANSION_WORLD_LIMIT * 2,
-      (EXPANSION_WORLD_LIMIT * 2) / EXPANSION_GRID_SIZE,
-      "#8de5ca",
-      "#557c73",
-    );
-    const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
-    for (const gridMaterial of gridMaterials) {
-      gridMaterial.transparent = true;
-      gridMaterial.opacity = 0.22;
-      gridMaterial.depthWrite = false;
-    }
-    grid.position.y = 0.32;
+    const grid = createExpansionGridOutsideCore();
     this.expansionGuideGroup.add(grid);
 
     const material = new THREE.MeshBasicMaterial({
@@ -872,6 +870,35 @@ export class ThreeRenderer {
     const east = west.clone();
     east.position.x = CORE_BOUNDS.maxX;
     this.expansionGuideGroup.add(north, south, west, east);
+
+    const connectorMaterial = new THREE.MeshBasicMaterial({
+      color: "#7df3cc",
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    for (const connector of ORIGINAL_ROAD_CONNECTORS) {
+      const marker = new THREE.Mesh(
+        new THREE.CircleGeometry(4.2, 24),
+        connectorMaterial,
+      );
+      marker.rotation.x = -Math.PI / 2;
+      marker.position.set(connector.x, 0.42, connector.z);
+      this.expansionGuideGroup.add(marker);
+      const outward = connectorOutwardVector(connector);
+      const guide = createWorldSegmentMesh(
+        connector.x,
+        connector.z,
+        connector.x + outward.x * (CORE_PROTECTION_PADDING + 16),
+        connector.z + outward.z * (CORE_PROTECTION_PADDING + 16),
+        1.4,
+        0.03,
+        connectorMaterial,
+      );
+      guide.position.y = 0.39;
+      this.expansionGuideGroup.add(guide);
+    }
     this.expansionGuideGroup.visible = false;
   }
 
@@ -1041,8 +1068,20 @@ export class ThreeRenderer {
 
   private snapExpansionPoint(point: THREE.Vector3): THREE.Vector3 {
     const snapped = point.clone();
-    let closestDistance = 12;
+    let closestDistance = 18;
     let snappedToEndpoint = false;
+    for (const connector of ORIGINAL_ROAD_CONNECTORS) {
+      const distance = Math.hypot(
+        snapped.x - connector.x,
+        snapped.z - connector.z,
+      );
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        snapped.x = connector.x;
+        snapped.z = connector.z;
+        snappedToEndpoint = true;
+      }
+    }
     for (const road of this.expansionRoadData.values()) {
       for (const candidate of [
         [road.startX, road.startZ],
@@ -2007,7 +2046,10 @@ export class ThreeRenderer {
         this.updatePointerRay(event);
         if (this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
           const start = this.snapExpansionPoint(this.placementPoint);
-          if (pointInsideBounds(start.x, start.z, CORE_BOUNDS)) {
+          if (
+            pointInsideBounds(start.x, start.z, CORE_BOUNDS) &&
+            findOriginalRoadConnector(start.x, start.z) === null
+          ) {
             this.expansionRoadInteractionHandlers?.onRejected(
               "Start the road outside the protected original city.",
             );
@@ -2959,6 +3001,139 @@ function createProtectedCoreBounds(): SpatialBounds {
     minZ: Math.min(...zs) - CORE_PROTECTION_PADDING,
     maxZ: Math.max(...zs) + CORE_PROTECTION_PADDING,
   };
+}
+
+function createOriginalRoadConnectors(): OriginalRoadConnector[] {
+  const avenueWorldX = PENN_AVENUES.map((avenue) =>
+    geoToWorld({
+      longitude: avenue.longitude,
+      latitude: PENN_CENTER.latitude,
+    }).x,
+  );
+  const streetWorldZ = PENN_STREETS.map((street) =>
+    geoToWorld({
+      longitude: PENN_CENTER.longitude,
+      latitude: street.latitude,
+    }).z,
+  );
+  const minX = Math.min(...avenueWorldX);
+  const maxX = Math.max(...avenueWorldX);
+  const minZ = Math.min(...streetWorldZ);
+  const maxZ = Math.max(...streetWorldZ);
+  const connectors: OriginalRoadConnector[] = [];
+  for (const z of streetWorldZ) {
+    connectors.push(
+      { x: minX, z, side: "min-x" },
+      { x: maxX, z, side: "max-x" },
+    );
+  }
+  for (const x of avenueWorldX) {
+    connectors.push(
+      { x, z: minZ, side: "min-z" },
+      { x, z: maxZ, side: "max-z" },
+    );
+  }
+  return connectors;
+}
+
+function createExpansionGridOutsideCore(): THREE.LineSegments {
+  const positions: number[] = [];
+  const addLine = (startX: number, startZ: number, endX: number, endZ: number) => {
+    positions.push(startX, 0.32, startZ, endX, 0.32, endZ);
+  };
+  for (
+    let x = -EXPANSION_WORLD_LIMIT;
+    x <= EXPANSION_WORLD_LIMIT;
+    x += EXPANSION_GRID_SIZE
+  ) {
+    if (x > CORE_BOUNDS.minX && x < CORE_BOUNDS.maxX) {
+      addLine(x, -EXPANSION_WORLD_LIMIT, x, CORE_BOUNDS.minZ);
+      addLine(x, CORE_BOUNDS.maxZ, x, EXPANSION_WORLD_LIMIT);
+    } else {
+      addLine(x, -EXPANSION_WORLD_LIMIT, x, EXPANSION_WORLD_LIMIT);
+    }
+  }
+  for (
+    let z = -EXPANSION_WORLD_LIMIT;
+    z <= EXPANSION_WORLD_LIMIT;
+    z += EXPANSION_GRID_SIZE
+  ) {
+    if (z > CORE_BOUNDS.minZ && z < CORE_BOUNDS.maxZ) {
+      addLine(-EXPANSION_WORLD_LIMIT, z, CORE_BOUNDS.minX, z);
+      addLine(CORE_BOUNDS.maxX, z, EXPANSION_WORLD_LIMIT, z);
+    } else {
+      addLine(-EXPANSION_WORLD_LIMIT, z, EXPANSION_WORLD_LIMIT, z);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  const material = new THREE.LineBasicMaterial({
+    color: "#6ea99a",
+    transparent: true,
+    opacity: 0.24,
+    depthWrite: false,
+  });
+  return new THREE.LineSegments(geometry, material);
+}
+
+function connectorOutwardVector(
+  connector: OriginalRoadConnector,
+): { x: number; z: number } {
+  if (connector.side === "min-x") return { x: -1, z: 0 };
+  if (connector.side === "max-x") return { x: 1, z: 0 };
+  if (connector.side === "min-z") return { x: 0, z: -1 };
+  return { x: 0, z: 1 };
+}
+
+function findOriginalRoadConnector(
+  x: number,
+  z: number,
+): OriginalRoadConnector | null {
+  return (
+    ORIGINAL_ROAD_CONNECTORS.find(
+      (connector) => Math.hypot(x - connector.x, z - connector.z) <= 0.75,
+    ) ?? null
+  );
+}
+
+function isValidOriginalRoadConnection(
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+): boolean {
+  return ORIGINAL_ROAD_CONNECTORS.some((connector) => {
+    const startMatches =
+      Math.hypot(startX - connector.x, startZ - connector.z) <= 0.75;
+    const endMatches =
+      Math.hypot(endX - connector.x, endZ - connector.z) <= 0.75;
+    return (
+      (startMatches &&
+        connectorAcceptsOutwardPoint(connector, endX, endZ)) ||
+      (endMatches &&
+        connectorAcceptsOutwardPoint(connector, startX, startZ))
+    );
+  });
+}
+
+function connectorAcceptsOutwardPoint(
+  connector: OriginalRoadConnector,
+  x: number,
+  z: number,
+): boolean {
+  if (connector.side === "min-x") {
+    return x < connector.x - 0.5 && Math.abs(z - connector.z) <= 0.75;
+  }
+  if (connector.side === "max-x") {
+    return x > connector.x + 0.5 && Math.abs(z - connector.z) <= 0.75;
+  }
+  if (connector.side === "min-z") {
+    return z < connector.z - 0.5 && Math.abs(x - connector.x) <= 0.75;
+  }
+  return z > connector.z + 0.5 && Math.abs(x - connector.x) <= 0.75;
 }
 
 function pointInsideBounds(x: number, z: number, bounds: SpatialBounds): boolean {
