@@ -365,6 +365,19 @@ body[data-app-mode="simulate"] .selection-panel {
   box-shadow: inset 0 0 0 1px rgb(121 224 194 / 18%);
 }
 
+.building-tool-button small {
+  grid-column: 2;
+  margin-top: -0.38rem;
+  color: #7f978d;
+  font-size: 0.48rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.building-tool-button[aria-pressed="true"] small {
+  color: #a9d8ca;
+}
+
 .building-swatch {
   position: relative;
   width: 23px;
@@ -420,7 +433,8 @@ body[data-app-mode="simulate"] .selection-panel {
 }
 
 .building-placement-settings input,
-.building-editor-grid input {
+.building-editor-grid input,
+.building-editor-grid select {
   width: 100%;
   min-width: 0;
   height: 34px;
@@ -429,6 +443,11 @@ body[data-app-mode="simulate"] .selection-panel {
   padding: 0.35rem;
   color: #f4f7f4;
   background: rgb(5 15 18 / 58%);
+}
+
+.building-editor-grid select {
+  padding: 0.35rem;
+  font: inherit;
 }
 
 .building-placement-settings input[type="color"],

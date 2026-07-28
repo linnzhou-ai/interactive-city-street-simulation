@@ -80,25 +80,29 @@
           <span class="live-badge">Live</span>
         </div>
         <p class="panel-help">
-          Place buildings anywhere in the district, then drag them into position.
+          Place functional buildings on clear lots, then drag them into position.
         </p>
         <p class="tool-section-label">Buildings</p>
         <div class="building-tool-grid" aria-label="Building placement tools">
           <button class="building-tool-button" type="button" data-building-tool="residential" aria-pressed="true">
             <span class="building-swatch residential-swatch"></span>
             <span>Residential</span>
+            <small>Residents + commute trips</small>
           </button>
           <button class="building-tool-button" type="button" data-building-tool="commercial" aria-pressed="false">
             <span class="building-swatch commercial-swatch"></span>
             <span>Commercial</span>
+            <small>Jobs + visitors</small>
           </button>
           <button class="building-tool-button" type="button" data-building-tool="industrial" aria-pressed="false">
             <span class="building-swatch industrial-swatch"></span>
             <span>Industrial</span>
+            <small>Jobs + freight trucks</small>
           </button>
           <button class="building-tool-button" type="button" data-building-tool="civic" aria-pressed="false">
             <span class="building-swatch civic-swatch"></span>
             <span>Civic</span>
+            <small>Services + visitors</small>
           </button>
         </div>
         <div class="building-placement-settings">
@@ -191,6 +195,15 @@
             <span id="building-position-output">X 0 · Z 0</span>
           </div>
           <div class="building-editor-grid">
+            <label for="selected-building-kind">
+              <span>Use</span>
+              <select id="selected-building-kind">
+                <option value="residential">Residential</option>
+                <option value="commercial">Commercial</option>
+                <option value="industrial">Industrial</option>
+                <option value="civic">Civic</option>
+              </select>
+            </label>
             <label for="selected-building-floors">
               <span>Floors</span>
               <input id="selected-building-floors" type="number" min="1" max="20" value="5" />

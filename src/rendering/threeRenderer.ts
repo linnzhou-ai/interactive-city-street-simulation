@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   resolveSubsteppedMovement,
 } from "../core/collision";
+import { deriveBuildingRole } from "../core/buildingActivity";
 import {
   PENN_AVENUES,
   PENN_CENTER,
@@ -11,6 +12,7 @@ import {
   PENN_STREETS,
 } from "../data/pennRoadGraph";
 import type {
+  BuildingKind,
   CameraMode,
   DistrictFeature,
   EnvironmentMode,
@@ -84,6 +86,12 @@ interface BuildingInteractionHandlers {
   onPlace: (x: number, z: number) => void;
   onSelect: (id: string | null) => void;
   onMove: (id: string, x: number, z: number) => void;
+  onPlacementRejected: (reason: string) => void;
+}
+
+interface BuildingPlacementResult {
+  valid: boolean;
+  reason: string;
 }
 
 export class ThreeRenderer {
@@ -103,6 +111,7 @@ export class ThreeRenderer {
   private readonly pedestrianGroup = new THREE.Group();
   private readonly placedBuildingGroup = new THREE.Group();
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
+  private readonly placedBuildingData = new Map<string, PlacedBuilding>();
   private readonly placementPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly placementPoint = new THREE.Vector3();
   private readonly dragOffset = new THREE.Vector3();
@@ -236,12 +245,78 @@ export class ThreeRenderer {
   setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
     clearGroup(this.placedBuildingGroup);
     this.placedBuildingMeshes.clear();
+    this.placedBuildingData.clear();
     for (const building of buildings) {
       const group = this.createPlacedBuilding(building);
+      this.placedBuildingData.set(building.id, building);
       this.placedBuildingMeshes.set(building.id, group);
       this.placedBuildingGroup.add(group);
     }
     this.updatePlacedBuildingSelection();
+  }
+
+  validateBuildingPlacement(
+    building: PlacedBuilding,
+    ignoreBuildingId: string | null = null,
+  ): BuildingPlacementResult {
+    const footprint = getBuildingFootprint(building);
+    const clearance = 2.5;
+    const minX = building.x - footprint.halfX - clearance;
+    const maxX = building.x + footprint.halfX + clearance;
+    const minZ = building.z - footprint.halfZ - clearance;
+    const maxZ = building.z + footprint.halfZ + clearance;
+
+    for (const feature of this.features) {
+      if (feature.kind !== "street") continue;
+      const roadClearance = roadWidth(feature) / 2;
+      for (let index = 0; index < feature.path.length - 1; index += 1) {
+        const start = geoToWorld(feature.path[index]);
+        const end = geoToWorld(feature.path[index + 1]);
+        if (
+          maxX >= Math.min(start.x, end.x) - roadClearance &&
+          minX <= Math.max(start.x, end.x) + roadClearance &&
+          maxZ >= Math.min(start.z, end.z) - roadClearance &&
+          minZ <= Math.max(start.z, end.z) + roadClearance
+        ) {
+          return {
+            valid: false,
+            reason: "Buildings need clear ground and cannot overlap a street.",
+          };
+        }
+      }
+    }
+
+    for (const volume of this.collisionIndex.query(minX, maxX, minZ, maxZ)) {
+      if (
+        maxX > volume.box.min.x &&
+        minX < volume.box.max.x &&
+        maxZ > volume.box.min.z &&
+        minZ < volume.box.max.z
+      ) {
+        return {
+          valid: false,
+          reason: "That space is occupied by an existing building or streetscape object.",
+        };
+      }
+    }
+
+    for (const other of this.placedBuildingData.values()) {
+      if (other.id === ignoreBuildingId) continue;
+      const otherFootprint = getBuildingFootprint(other);
+      if (
+        maxX > other.x - otherFootprint.halfX &&
+        minX < other.x + otherFootprint.halfX &&
+        maxZ > other.z - otherFootprint.halfZ &&
+        minZ < other.z + otherFootprint.halfZ
+      ) {
+        return {
+          valid: false,
+          reason: "Buildings need space between them and cannot overlap.",
+        };
+      }
+    }
+
+    return { valid: true, reason: "" };
   }
 
   setSelectedPlacedBuilding(id: string | null): void {
@@ -255,6 +330,10 @@ export class ThreeRenderer {
 
   setBuildMode(enabled: boolean): void {
     this.buildMode = enabled;
+    for (const group of this.placedBuildingMeshes.values()) {
+      const marker = group.getObjectByName("building-activity-marker");
+      if (marker) marker.visible = !enabled;
+    }
     this.updateFeatureHighlights();
   }
 
@@ -1218,8 +1297,7 @@ export class ThreeRenderer {
     const industrial = building.kind === "industrial";
     const commercial = building.kind === "commercial";
     const civic = building.kind === "civic";
-    const width = industrial ? 24 : civic ? 18 : commercial ? 17 : 15;
-    const depth = industrial ? 19 : civic ? 17 : commercial ? 15 : 14;
+    const { width, depth } = getBuildingDimensions(building.kind);
     const floorHeight = industrial ? 2.6 : 3.2;
     const height = Math.max(6, floors * floorHeight);
     const bodyMaterial = new THREE.MeshStandardMaterial({
@@ -1283,7 +1361,11 @@ export class ThreeRenderer {
     selectionRing.rotation.x = -Math.PI / 2;
     selectionRing.position.y = 0.38;
     selectionRing.visible = false;
-    group.add(selectionRing);
+    const activityMarker = createBuildingActivityMarker(building);
+    activityMarker.name = "building-activity-marker";
+    activityMarker.position.y = height + (civic ? 4.8 : 4.2);
+    activityMarker.visible = !this.buildMode;
+    group.add(selectionRing, activityMarker);
     return group;
   }
 
@@ -1352,13 +1434,33 @@ export class ThreeRenderer {
         this.updatePointerRay(event);
         const group = this.placedBuildingMeshes.get(this.draggingBuildingId);
         if (group && this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
-          group.position.copy(this.placementPoint).add(this.dragOffset);
-          group.position.x = THREE.MathUtils.clamp(group.position.x, -1_150, 1_150);
-          group.position.z = THREE.MathUtils.clamp(group.position.z, -1_150, 1_150);
+          const current = this.placedBuildingData.get(this.draggingBuildingId);
+          if (!current) return;
+          const x = THREE.MathUtils.clamp(
+            this.placementPoint.x + this.dragOffset.x,
+            -1_150,
+            1_150,
+          );
+          const z = THREE.MathUtils.clamp(
+            this.placementPoint.z + this.dragOffset.z,
+            -1_150,
+            1_150,
+          );
+          const candidate = { ...current, x, z };
+          const placement = this.validateBuildingPlacement(
+            candidate,
+            this.draggingBuildingId,
+          );
+          if (!placement.valid) {
+            this.buildingInteractionHandlers?.onPlacementRejected(placement.reason);
+            return;
+          }
+          group.position.set(x, 0, z);
+          this.placedBuildingData.set(candidate.id, candidate);
           this.buildingInteractionHandlers?.onMove(
             this.draggingBuildingId,
-            group.position.x,
-            group.position.z,
+            x,
+            z,
           );
         }
         return;
@@ -2178,6 +2280,72 @@ function createGabledRoofGeometry(
   ]);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+function getBuildingDimensions(kind: BuildingKind): { width: number; depth: number } {
+  if (kind === "industrial") return { width: 24, depth: 19 };
+  if (kind === "civic") return { width: 18, depth: 17 };
+  if (kind === "commercial") return { width: 17, depth: 15 };
+  return { width: 15, depth: 14 };
+}
+
+function getBuildingFootprint(
+  building: Pick<PlacedBuilding, "kind" | "rotation">,
+): { halfX: number; halfZ: number } {
+  const { width, depth } = getBuildingDimensions(building.kind);
+  const cosine = Math.abs(Math.cos(building.rotation));
+  const sine = Math.abs(Math.sin(building.rotation));
+  return {
+    halfX: (width * cosine + depth * sine) / 2,
+    halfZ: (width * sine + depth * cosine) / 2,
+  };
+}
+
+function createBuildingActivityMarker(building: PlacedBuilding): THREE.Sprite {
+  const role = deriveBuildingRole(building);
+  const labels: Record<BuildingKind, string> = {
+    residential: `${role.residents} residents`,
+    commercial: `${role.jobs} jobs · ${role.dailyVisitors} visits`,
+    industrial: `${role.jobs} jobs · ${role.dailyFreightTrips} freight`,
+    civic: `${role.jobs} jobs · ${role.dailyVisitors} visits`,
+  };
+  const colors: Record<BuildingKind, string> = {
+    residential: "#df8b70",
+    commercial: "#75bdd8",
+    industrial: "#c8845c",
+    civic: "#a69ce2",
+  };
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas textures are unavailable.");
+  context.fillStyle = "rgba(12, 27, 30, 0.9)";
+  context.beginPath();
+  context.roundRect(8, 8, 496, 112, 28);
+  context.fill();
+  context.fillStyle = colors[building.kind];
+  context.beginPath();
+  context.arc(48, 64, 18, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#f4fbf8";
+  context.font = "700 30px system-ui, sans-serif";
+  context.textBaseline = "middle";
+  context.fillText(labels[building.kind], 82, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const marker = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      sizeAttenuation: false,
+    }),
+  );
+  marker.scale.set(0.16, 0.04, 1);
+  marker.renderOrder = 9;
+  return marker;
 }
 
 function createCar(color: string, kind: VehicleKind): THREE.Group {

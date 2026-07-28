@@ -37,6 +37,7 @@ const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const buildingEditor = requireElement<HTMLElement>("building-editor");
 const buildingPositionOutput = requireElement<HTMLElement>("building-position-output");
+const selectedBuildingKind = requireElement<HTMLSelectElement>("selected-building-kind");
 const selectedBuildingFloors = requireElement<HTMLInputElement>("selected-building-floors");
 const selectedBuildingColor = requireElement<HTMLInputElement>("selected-building-color");
 const rotateBuildingButton = requireElement<HTMLButtonElement>("rotate-building-button");
@@ -169,6 +170,7 @@ buildingFloorsControl.addEventListener("change", () => {
 });
 selectedBuildingFloors.addEventListener("input", updateSelectedBuilding);
 selectedBuildingColor.addEventListener("input", updateSelectedBuilding);
+selectedBuildingKind.addEventListener("change", updateSelectedBuilding);
 rotateBuildingButton.addEventListener("click", rotateSelectedBuilding);
 deleteBuildingButton.addEventListener("click", deleteSelectedBuilding);
 
@@ -290,6 +292,9 @@ renderer.setBuildingInteractionHandlers({
   onPlace: (x, z) => placeBuilding(x, z),
   onSelect: (id) => selectPlacedBuilding(id),
   onMove: (id, x, z) => movePlacedBuilding(id, x, z),
+  onPlacementRejected: (reason) => {
+    selectionStatus.textContent = reason;
+  },
 });
 
 renderer.setEnvironmentStatusHandler((mode, detail) => {
@@ -493,6 +498,11 @@ function placeBuilding(x: number, z: number): void {
     floors: clampFloors(Number(buildingFloorsControl.value)),
     color: buildingColorControl.value,
   };
+  const placement = renderer.validateBuildingPlacement(building);
+  if (!placement.valid) {
+    selectionStatus.textContent = placement.reason;
+    return;
+  }
   placedBuildings.set(building.id, building);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   syncBuildingActivity();
@@ -523,9 +533,17 @@ function updateSelectedBuilding(): void {
   if (!current) return;
   const updated: PlacedBuilding = {
     ...current,
+    kind: selectedBuildingKind.value as BuildingKind,
     floors: clampFloors(Number(selectedBuildingFloors.value)),
     color: selectedBuildingColor.value,
   };
+  const placement = renderer.validateBuildingPlacement(updated, updated.id);
+  if (!placement.valid) {
+    selectedBuildingKind.value = current.kind;
+    selectedBuildingFloors.value = String(current.floors);
+    selectionStatus.textContent = placement.reason;
+    return;
+  }
   selectedBuildingFloors.value = String(updated.floors);
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
@@ -542,6 +560,11 @@ function rotateSelectedBuilding(): void {
     ...current,
     rotation: (current.rotation + Math.PI / 2) % (Math.PI * 2),
   };
+  const placement = renderer.validateBuildingPlacement(updated, updated.id);
+  if (!placement.valid) {
+    selectionStatus.textContent = placement.reason;
+    return;
+  }
   placedBuildings.set(updated.id, updated);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
   syncBuildingActivity();
@@ -564,11 +587,12 @@ function renderPlacedBuildingSelection(building: PlacedBuilding): void {
   buildingEditor.hidden = false;
   signalEditor.hidden = true;
   selectionTitle.textContent = `${formatBuildingKind(building.kind)} building`;
-  selectionDescription.textContent = `${building.floors} floors · freely positioned in the campus district`;
+  selectionDescription.textContent = `${building.floors} floors · ${formatBuildingFunction(building.kind)}`;
   featureKind.textContent = "Building";
   featureKind.dataset.kind = "building";
   simulationTitle.textContent = `${formatBuildingKind(building.kind)} building`;
   sceneSubtitle.textContent = "Drag to move · R to rotate";
+  selectedBuildingKind.value = building.kind;
   selectedBuildingFloors.value = String(building.floors);
   selectedBuildingColor.value = building.color;
   buildingPositionOutput.textContent = formatBuildingPosition(building.x, building.z);
@@ -585,7 +609,8 @@ function renderPlacedBuildingSelection(building: PlacedBuilding): void {
     createSummaryTag(`${Math.round(THREE_RADIANS_TO_DEGREES * building.rotation)}° rotation`, true),
     createSummaryTag(formatBuildingKind(building.kind), true),
   );
-  selectionStatus.textContent = "Edit the building here, drag it in the 3D view, or press R to rotate.";
+  selectionStatus.textContent =
+    "This building generates live trips in Simulate mode. Edit its use or size to change demand.";
 }
 
 function syncBuildingActivity(): void {
@@ -613,6 +638,13 @@ const THREE_RADIANS_TO_DEGREES = 180 / Math.PI;
 
 function formatBuildingPosition(x: number, z: number): string {
   return `X ${x.toFixed(1)} · Z ${z.toFixed(1)}`;
+}
+
+function formatBuildingFunction(kind: BuildingKind): string {
+  if (kind === "residential") return "homes generate residents and commute trips";
+  if (kind === "commercial") return "workplaces generate jobs and visitor trips";
+  if (kind === "industrial") return "industry generates jobs and freight trucks";
+  return "public services generate jobs and visitor trips";
 }
 
 function updateSelectedSignalTiming(): void {
