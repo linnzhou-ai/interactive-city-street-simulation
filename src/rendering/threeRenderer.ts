@@ -54,6 +54,7 @@ const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
 const ROAD_MARKING_END_INSET = 15;
 const EXPANSION_WORLD_LIMIT = 2_400;
 const CORE_PROTECTION_PADDING = 34;
+const EXPANSION_GRID_SIZE = 20;
 const CORE_BOUNDS = createProtectedCoreBounds();
 const FLY_COLLIDER_RADIUS = 0.45;
 const WALK_COLLIDER_RADIUS = 0.38;
@@ -205,6 +206,7 @@ export class ThreeRenderer {
     this.controls.target.set(-90, 0, 70);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.055;
+    this.controls.rotateSpeed = -0.72;
     this.controls.minDistance = 24;
     this.controls.maxDistance = 2_700;
     this.controls.maxPolarAngle = Math.PI / 2.04;
@@ -712,6 +714,21 @@ export class ThreeRenderer {
   }
 
   private buildExpansionProtectionGuide(): void {
+    const grid = new THREE.GridHelper(
+      EXPANSION_WORLD_LIMIT * 2,
+      (EXPANSION_WORLD_LIMIT * 2) / EXPANSION_GRID_SIZE,
+      "#8de5ca",
+      "#557c73",
+    );
+    const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
+    for (const gridMaterial of gridMaterials) {
+      gridMaterial.transparent = true;
+      gridMaterial.opacity = 0.22;
+      gridMaterial.depthWrite = false;
+    }
+    grid.position.y = 0.32;
+    this.expansionGuideGroup.add(grid);
+
     const material = new THREE.MeshBasicMaterial({
       color: "#ffb45f",
       transparent: true,
@@ -825,7 +842,8 @@ export class ThreeRenderer {
 
   private snapExpansionPoint(point: THREE.Vector3): THREE.Vector3 {
     const snapped = point.clone();
-    let closestDistance = 9;
+    let closestDistance = 12;
+    let snappedToEndpoint = false;
     for (const road of this.expansionRoadData.values()) {
       for (const candidate of [
         [road.startX, road.startZ],
@@ -836,11 +854,29 @@ export class ThreeRenderer {
           closestDistance = distance;
           snapped.x = candidate[0];
           snapped.z = candidate[1];
+          snappedToEndpoint = true;
         }
       }
     }
+    if (!snappedToEndpoint) {
+      snapped.x = Math.round(snapped.x / EXPANSION_GRID_SIZE) * EXPANSION_GRID_SIZE;
+      snapped.z = Math.round(snapped.z / EXPANSION_GRID_SIZE) * EXPANSION_GRID_SIZE;
+    }
     snapped.x = THREE.MathUtils.clamp(snapped.x, -EXPANSION_WORLD_LIMIT, EXPANSION_WORLD_LIMIT);
     snapped.z = THREE.MathUtils.clamp(snapped.z, -EXPANSION_WORLD_LIMIT, EXPANSION_WORLD_LIMIT);
+    return snapped;
+  }
+
+  private snapOrthogonalExpansionEnd(
+    start: THREE.Vector3,
+    point: THREE.Vector3,
+  ): THREE.Vector3 {
+    const snapped = this.snapExpansionPoint(point);
+    if (Math.abs(snapped.x - start.x) >= Math.abs(snapped.z - start.z)) {
+      snapped.z = start.z;
+    } else {
+      snapped.x = start.x;
+    }
     return snapped;
   }
 
@@ -1821,7 +1857,10 @@ export class ThreeRenderer {
       if (this.drawingExpansionRoadStart) {
         this.updatePointerRay(event);
         if (this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
-          const end = this.snapExpansionPoint(this.placementPoint);
+          const end = this.snapOrthogonalExpansionEnd(
+            this.drawingExpansionRoadStart,
+            this.placementPoint,
+          );
           this.updateExpansionRoadPreview(this.drawingExpansionRoadStart, end);
         }
         return;
@@ -1881,7 +1920,9 @@ export class ThreeRenderer {
           this.placementPlane,
           this.placementPoint,
         );
-        const end = hitGround ? this.snapExpansionPoint(this.placementPoint) : start;
+        const end = hitGround
+          ? this.snapOrthogonalExpansionEnd(start, this.placementPoint)
+          : start;
         this.drawingExpansionRoadStart = null;
         this.clearExpansionRoadPreview();
         this.controls.enabled = true;
