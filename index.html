@@ -32,7 +32,7 @@
             <button type="submit">Go</button>
           </form>
         </div>
-        <p class="camera-hint orbit-hint">
+        <p id="orbit-camera-hint" class="camera-hint orbit-hint">
           Drag to orbit · Scroll to zoom · Click a highlighted street
         </p>
         <p class="camera-hint fly-hint">
@@ -223,22 +223,66 @@
         <div class="panel-heading">
           <div>
             <p class="panel-kicker">Simulate mode</p>
-            <h2 id="scenario-title">District conditions</h2>
+            <h2 id="scenario-title">City inspector</h2>
           </div>
           <span id="status-pill" class="status-pill" data-status="running">Running</span>
         </div>
+        <div class="inspector-toolbar">
+          <label for="analysis-overlay">Map mode</label>
+          <select id="analysis-overlay">
+            <option value="none">None</option>
+            <option value="congestion">Traffic congestion</option>
+            <option value="pedestrians">Pedestrian density</option>
+            <option value="conflicts">Potential conflicts</option>
+            <option value="economy">Economic activity</option>
+            <option value="profitability">Profitability</option>
+            <option value="land-value">Land value</option>
+            <option value="utilities">Utility service</option>
+            <option value="employment">Staffing</option>
+            <option value="happiness">Happiness</option>
+            <option value="migration">Migration pressure</option>
+            <option value="goods">Goods availability</option>
+          </select>
+          <button id="settings-button" type="button" aria-label="Open simulation settings">Settings</button>
+        </div>
+        <div id="map-legend" class="map-legend" aria-live="polite"></div>
+        <div class="city-clock inspector-clock" aria-live="polite">
+          <span id="city-date">Jan 1, 2026</span>
+          <strong id="city-clock">07:00</strong>
+        </div>
+        <fieldset id="flow-controls" class="flow-controls">
+          <legend>Selected flows</legend>
+          <label><input type="checkbox" value="commute" checked /> Commutes</label>
+          <label><input type="checkbox" value="customer" checked /> Customers</label>
+          <label><input type="checkbox" value="supply" checked /> Supplies</label>
+        </fieldset>
+        <div id="entity-inspector" class="entity-inspector" aria-live="polite">
+          <div class="inspector-empty">
+            <strong>Select a building or person</strong>
+            <p>Click the city to inspect schedules, finances, services, and connected trips.</p>
+          </div>
+        </div>
+        <details class="alert-summary">
+          <summary>District alerts <span id="alert-count">0</span></summary>
+          <div id="grouped-alerts" class="grouped-alerts"></div>
+        </details>
+      </aside>
 
+      <button id="settings-scrim" class="settings-scrim" type="button" aria-label="Close simulation settings" hidden></button>
+      <aside id="settings-drawer" class="settings-drawer hud-panel" aria-labelledby="settings-title" hidden>
+        <div class="panel-heading">
+          <div>
+            <p class="panel-kicker">Simulation</p>
+            <h2 id="settings-title">Settings and effects</h2>
+          </div>
+          <button id="settings-close-button" class="icon-button" type="button" aria-label="Close simulation settings">×</button>
+        </div>
         <label class="control-row" for="speed-control">
           <span>Simulation speed</span>
           <output id="speed-output" for="speed-control">1.0×</output>
         </label>
         <input id="speed-control" type="range" min="0.5" max="2" step="0.5" value="1" />
-
-        <div class="city-clock" aria-live="polite">
-          <span id="city-date">Jan 1, 2026</span>
-          <strong id="city-clock">07:00</strong>
-        </div>
-        <label class="analysis-control" for="time-horizon-control">
+        <label class="drawer-control" for="time-horizon-control">
           <span>Time scale</span>
           <select id="time-horizon-control">
             <option value="day">Day · 1 hour/sec</option>
@@ -246,71 +290,56 @@
             <option value="month">Month · 1 day/sec</option>
             <option value="year">Year · 1 week/sec</option>
           </select>
+          <small id="time-horizon-preview">Each real second advances one simulated hour.</small>
         </label>
-
-        <div class="scenario-control-list">
-          <div class="scenario-control derived-demand">
-            <span>Vehicle activity</span>
-            <output id="vehicle-volume-output">Medium</output>
-            <small>Work, shopping, service, and freight trips</small>
-          </div>
-          <div class="scenario-control derived-demand">
-            <span>Pedestrian activity</span>
-            <output id="pedestrian-volume-output">Medium</output>
-            <small>Daily routines and local service visits</small>
-          </div>
-          <div class="scenario-control number-control">
-            <label for="speed-limit-control">
-              <span>District speed limit</span>
-              <span class="number-input-wrap">
-                <input id="speed-limit-control" type="number" min="10" max="45" value="25" />
-                <span>mph</span>
-              </span>
-            </label>
-          </div>
-          <div class="scenario-control number-control">
-            <label for="signal-cycle-control">
-              <span>Signal cycle</span>
-              <span class="number-input-wrap">
-                <input id="signal-cycle-control" type="number" min="30" max="180" value="83" />
-                <span>sec</span>
-              </span>
-            </label>
-          </div>
-          <div class="scenario-control number-control">
-            <label for="simulation-seed-control">
-              <span>Simulation seed</span>
-              <span class="number-input-wrap">
-                <input
-                  id="simulation-seed-control"
-                  type="number"
-                  min="1"
-                  max="2147483647"
-                  value="20260728"
-                />
-              </span>
-            </label>
-          </div>
-        </div>
-        <div class="signal-phase">
-          <span>Current phase</span>
-          <strong id="signal-phase">East–west traffic</strong>
+        <label class="drawer-control" for="speed-limit-control">
+          <span>Speed limit <output id="speed-limit-output">25 mph</output></span>
+          <input id="speed-limit-control" type="range" min="10" max="45" value="25" />
+          <small id="speed-limit-preview">Balanced travel time and crossing risk.</small>
+        </label>
+        <label class="drawer-control" for="signal-cycle-control">
+          <span>Signal cycle <output id="signal-cycle-output">83 sec</output></span>
+          <input id="signal-cycle-control" type="range" min="30" max="180" value="83" />
+          <small id="signal-cycle-preview">Near the district's balanced cycle.</small>
+        </label>
+        <label class="drawer-control" for="transit-headway-control">
+          <span>Transit headway <output id="transit-headway-output">12 min</output></span>
+          <input id="transit-headway-control" type="range" min="4" max="30" value="12" />
+          <small id="transit-headway-preview">About 5 departures per hour.</small>
+        </label>
+        <label class="drawer-control" for="road-capacity-control">
+          <span>Road capacity <output id="road-capacity-output">100%</output></span>
+          <input id="road-capacity-control" type="range" min="60" max="160" value="100" />
+          <small id="road-capacity-preview">Baseline vehicle and delivery capacity.</small>
+        </label>
+        <label class="drawer-control" for="utility-capacity-control">
+          <span>Utility capacity <output id="utility-capacity-output">100%</output></span>
+          <input id="utility-capacity-control" type="range" min="50" max="150" value="100" />
+          <small id="utility-capacity-preview">Current supply meets modeled demand.</small>
+        </label>
+        <label class="drawer-control" for="zoning-control">
+          <span>Zoning strictness <output id="zoning-output">100%</output></span>
+          <input id="zoning-control" type="range" min="50" max="150" value="100" />
+          <small id="zoning-preview">Baseline limits on long-term development.</small>
+        </label>
+        <label class="drawer-control" for="simulation-seed-control">
+          <span>Simulation seed</span>
+          <input id="simulation-seed-control" type="number" min="1" max="2147483647" value="20260728" />
+          <small>Reset after changing the seed to compare a repeatable population.</small>
+        </label>
+        <div class="drawer-derived">
+          <span>Vehicle activity <output id="vehicle-volume-output">Medium</output></span>
+          <span>Pedestrian activity <output id="pedestrian-volume-output">Medium</output></span>
+          <span>Current signal <strong id="signal-phase">East–west traffic</strong></span>
         </div>
         <div class="trip-cause-bar" aria-label="Causes of current city trips">
           <span id="commute-trip-share">Work 0%</span>
           <span id="shopping-trip-share">Shopping 0%</span>
           <span id="freight-trip-share">Freight 0%</span>
         </div>
-        <label class="analysis-control" for="analysis-overlay">
-          <span>City overlay</span>
-          <select id="analysis-overlay">
-            <option value="none">None</option>
-            <option value="congestion">Traffic congestion</option>
-            <option value="pedestrians">Pedestrian density</option>
-            <option value="conflicts">Potential conflicts</option>
-          </select>
-        </label>
       </aside>
+
+      <div id="entity-tooltip" class="entity-tooltip" role="tooltip" hidden></div>
 
       <section class="metrics hud-panel" aria-labelledby="metrics-title">
         <div class="metrics-heading">

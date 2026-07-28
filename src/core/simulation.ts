@@ -16,6 +16,8 @@ import type {
   CitySectionState,
   TimeHorizon,
 } from "../models/cityTypes";
+import type { EntityBuildingDefinition } from "../models/entityTypes";
+import { PENN_BUILDINGS } from "../data/pennBuildings";
 import type { RoadSegmentModel } from "../data/roadLanes";
 import { advanceCitySection } from "./cityEngine";
 import {
@@ -23,6 +25,10 @@ import {
   createDemoCitySectionDefinition,
 } from "./cityModel";
 import { LiveTrafficSystem } from "./liveTraffic";
+import {
+  advanceDetailedTime,
+  createDetailedEntityState,
+} from "./entitySimulation";
 import {
   cityMinutesPerSecond,
   formatClockTime,
@@ -37,6 +43,10 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
   vehicleVolume: 2,
   pedestrianVolume: 2,
   simulationSeed: 20260728,
+  transitHeadwayMinutes: 12,
+  roadCapacity: 100,
+  utilityCapacityScale: 1,
+  zoningStrictness: 1,
 };
 
 const START_MINUTE = 7 * 60;
@@ -64,6 +74,7 @@ export function createInitialState(
   city: CitySectionState = createCitySectionState(
     createDemoCitySectionDefinition(),
   ),
+  buildingDefinitions: readonly EntityBuildingDefinition[] = PENN_BUILDINGS,
 ): SimulationState {
   const signals = traffic.getSignals();
   return {
@@ -79,6 +90,7 @@ export function createInitialState(
     city,
     cityActivity: calculateCityActivity(city, 0),
     cityEvents: [],
+    entities: createDetailedEntityState(buildingDefinitions, city),
   };
 }
 
@@ -87,14 +99,18 @@ export class Simulation {
   private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
   private state: SimulationState;
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
+  private lastDetailedTimeSlot = 0;
 
   constructor(
     private readonly cityDefinition: CitySectionDefinition =
       createDemoCitySectionDefinition(),
+    private readonly buildingDefinitions: readonly EntityBuildingDefinition[] =
+      PENN_BUILDINGS,
   ) {
     this.state = createInitialState(
       this.traffic,
       createCitySectionState(this.cityDefinition),
+      this.buildingDefinitions,
     );
   }
 
@@ -134,8 +150,9 @@ export class Simulation {
       activity.vehicleDemandLevel,
       activity.pedestrianDemandLevel,
     );
-    this.state = createInitialState(this.traffic, city);
+    this.state = createInitialState(this.traffic, city, this.buildingDefinitions);
     this.state.timeHorizon = this.settings.timeHorizon;
+    this.lastDetailedTimeSlot = 0;
     this.syncDemandFromCity();
   }
 
@@ -179,6 +196,34 @@ export class Simulation {
     );
     this.settings = { ...this.settings, simulationSeed };
     this.reset();
+  }
+
+  setTransitHeadway(minutes: number): void {
+    this.settings = {
+      ...this.settings,
+      transitHeadwayMinutes: Math.min(30, Math.max(4, Math.round(minutes))),
+    };
+  }
+
+  setRoadCapacity(percent: number): void {
+    this.settings = {
+      ...this.settings,
+      roadCapacity: Math.min(160, Math.max(60, Math.round(percent))),
+    };
+  }
+
+  setUtilityCapacityScale(scale: number): void {
+    this.settings = {
+      ...this.settings,
+      utilityCapacityScale: Math.min(1.5, Math.max(0.5, scale)),
+    };
+  }
+
+  setZoningStrictness(strictness: number): void {
+    this.settings = {
+      ...this.settings,
+      zoningStrictness: Math.min(1.5, Math.max(0.5, strictness)),
+    };
   }
 
   setSignalTiming(
@@ -236,13 +281,31 @@ export class Simulation {
         ...this.state.cityEvents,
       ].slice(0, MAX_CITY_EVENTS);
     }
+    const detailedTimeSlot = Math.floor(this.state.cityElapsedMinutes / 5);
+    if (detailedTimeSlot !== this.lastDetailedTimeSlot) {
+      this.lastDetailedTimeSlot = detailedTimeSlot;
+      this.state.entities = advanceDetailedTime(
+        this.state.entities,
+        this.state.city,
+        completedDays,
+        START_MINUTE + this.state.cityElapsedMinutes,
+        {
+          roadCapacityScale: this.cityPolicy().roadCapacityScale ?? 1,
+          utilityCapacityScale: this.settings.utilityCapacityScale,
+          transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
+          zoningStrictness: this.settings.zoningStrictness,
+        },
+      );
+    }
     this.syncDemandFromCity();
     this.traffic.update(simulationDelta, this.settings);
     this.syncTrafficState();
   }
 
   private cityPolicy(): Partial<CityPolicySettings> {
-    const laneScale = 1 + this.designImpact.laneCapacityDelta * 0.025;
+    const laneScale =
+      (this.settings.roadCapacity / 100) *
+      (1 + this.designImpact.laneCapacityDelta * 0.025);
     const signalScale = 1 - Math.min(
       0.18,
       Math.abs(this.settings.signalCycleSeconds - 75) / 500,
@@ -253,9 +316,9 @@ export class Simulation {
     );
     return {
       roadCapacityScale: clamp(laneScale * signalScale * speedScale, 0.5, 1.5),
-      utilityCapacityScale: 1,
-      zoningStrictness: 1,
-      transitServiceScale: 1,
+      utilityCapacityScale: this.settings.utilityCapacityScale,
+      zoningStrictness: this.settings.zoningStrictness,
+      transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
     };
   }
 

@@ -3,11 +3,24 @@ import type {
   CitySystemEvent,
   TimeHorizon,
 } from "./cityTypes";
+import type { DetailedEntityState } from "./entityTypes";
 
 export type AppMode = "build" | "simulate";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
-export type MapOverlayMode = "none" | "congestion" | "pedestrians" | "conflicts";
+export type MapOverlayMode =
+  | "none"
+  | "congestion"
+  | "pedestrians"
+  | "conflicts"
+  | "economy"
+  | "profitability"
+  | "land-value"
+  | "utilities"
+  | "employment"
+  | "happiness"
+  | "migration"
+  | "goods";
 export type SignalPhase =
   | "ns-green"
   | "ns-yellow"
@@ -72,6 +85,10 @@ export interface ScenarioSettings {
   vehicleVolume: number;
   pedestrianVolume: number;
   simulationSeed: number;
+  transitHeadwayMinutes: number;
+  roadCapacity: number;
+  utilityCapacityScale: number;
+  zoningStrictness: number;
 }
 
 export interface CityActivitySnapshot {
@@ -151,4 +168,5 @@ export interface SimulationState {
   city: CitySectionState;
   cityActivity: CityActivitySnapshot;
   cityEvents: readonly CitySystemEvent[];
+  entities: DetailedEntityState;
 }

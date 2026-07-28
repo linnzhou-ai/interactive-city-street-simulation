@@ -15,6 +15,12 @@ import type {
   SignalControlMode,
   SignalTiming,
 } from "./models/types";
+import type {
+  BuildingConnectionKind,
+  DetailedBuilding,
+  DetailedPerson,
+  EntitySelection,
+} from "./models/entityTypes";
 import type { TimeHorizon } from "./models/cityTypes";
 import { ThreeRenderer } from "./rendering/threeRenderer";
 
@@ -27,6 +33,7 @@ const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button
 const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
 const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
 const environmentMode = requireElement<HTMLElement>("environment-mode");
+const orbitCameraHint = requireElement<HTMLElement>("orbit-camera-hint");
 const runButton = requireElement<HTMLButtonElement>("run-button");
 const pauseButton = requireElement<HTMLButtonElement>("pause-button");
 const resetButton = requireElement<HTMLButtonElement>("reset-button");
@@ -86,6 +93,33 @@ const baselineMetricsButton = requireElement<HTMLButtonElement>("baseline-metric
 const modifiedMetricsButton = requireElement<HTMLButtonElement>("modified-metrics-button");
 const metricsKicker = requireElement<HTMLElement>("metrics-kicker");
 const analysisOverlay = requireElement<HTMLSelectElement>("analysis-overlay");
+const entityInspector = requireElement<HTMLElement>("entity-inspector");
+const mapLegend = requireElement<HTMLElement>("map-legend");
+const alertCount = requireElement<HTMLElement>("alert-count");
+const groupedAlerts = requireElement<HTMLElement>("grouped-alerts");
+const entityTooltip = requireElement<HTMLElement>("entity-tooltip");
+const flowControls = requireElement<HTMLFieldSetElement>("flow-controls");
+const settingsButton = requireElement<HTMLButtonElement>("settings-button");
+const settingsCloseButton = requireElement<HTMLButtonElement>("settings-close-button");
+const settingsDrawer = requireElement<HTMLElement>("settings-drawer");
+const settingsScrim = requireElement<HTMLButtonElement>("settings-scrim");
+const speedLimitOutput = requireElement<HTMLOutputElement>("speed-limit-output");
+const signalCycleOutput = requireElement<HTMLOutputElement>("signal-cycle-output");
+const transitHeadwayControl = requireElement<HTMLInputElement>("transit-headway-control");
+const transitHeadwayOutput = requireElement<HTMLOutputElement>("transit-headway-output");
+const roadCapacityControl = requireElement<HTMLInputElement>("road-capacity-control");
+const roadCapacityOutput = requireElement<HTMLOutputElement>("road-capacity-output");
+const utilityCapacityControl = requireElement<HTMLInputElement>("utility-capacity-control");
+const utilityCapacityOutput = requireElement<HTMLOutputElement>("utility-capacity-output");
+const zoningControl = requireElement<HTMLInputElement>("zoning-control");
+const zoningOutput = requireElement<HTMLOutputElement>("zoning-output");
+const timeHorizonPreview = requireElement<HTMLElement>("time-horizon-preview");
+const speedLimitPreview = requireElement<HTMLElement>("speed-limit-preview");
+const signalCyclePreview = requireElement<HTMLElement>("signal-cycle-preview");
+const transitHeadwayPreview = requireElement<HTMLElement>("transit-headway-preview");
+const roadCapacityPreview = requireElement<HTMLElement>("road-capacity-preview");
+const utilityCapacityPreview = requireElement<HTMLElement>("utility-capacity-preview");
+const zoningPreview = requireElement<HTMLElement>("zoning-preview");
 const locationSearch = requireElement<HTMLFormElement>("location-search");
 const locationSearchInput = requireElement<HTMLInputElement>("location-search-input");
 const locationOptions = requireElement<HTMLDataListElement>("location-options");
@@ -103,6 +137,8 @@ let appMode: AppMode = "build";
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
+let selectedEntity: EntitySelection | null = null;
+let entityInterfaceSignature = "";
 let previousTimestamp = performance.now();
 
 buildModeButton.addEventListener("click", () => setAppMode("build"));
@@ -140,17 +176,20 @@ speedControl.addEventListener("input", () => {
 
 timeHorizonControl.addEventListener("change", () => {
   simulation.setTimeHorizon(timeHorizonControl.value as TimeHorizon);
+  updateControlPreviews();
   updateInterface();
 });
 
 speedLimitControl.addEventListener("change", () => {
   simulation.setSpeedLimit(Number(speedLimitControl.value));
   speedLimitControl.value = String(simulation.getSettings().speedLimitMph);
+  updateControlPreviews();
 });
 
 signalCycleControl.addEventListener("change", () => {
   simulation.setSignalCycle(Number(signalCycleControl.value));
   signalCycleControl.value = String(simulation.getSettings().signalCycleSeconds);
+  updateControlPreviews();
   updateSelectionPanel();
 });
 
@@ -202,6 +241,37 @@ modifiedMetricsButton.addEventListener("click", () => setMetricView("modified"))
 
 analysisOverlay.addEventListener("change", () => {
   renderer.setMapOverlay(analysisOverlay.value as MapOverlayMode);
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+});
+
+flowControls.addEventListener("change", () => {
+  const visible = new Set(
+    Array.from(flowControls.querySelectorAll<HTMLInputElement>("input:checked"))
+      .map((input) => input.value as BuildingConnectionKind),
+  );
+  renderer.setVisibleFlowKinds(visible);
+});
+
+settingsButton.addEventListener("click", () => setSettingsOpen(true));
+settingsCloseButton.addEventListener("click", () => setSettingsOpen(false));
+settingsScrim.addEventListener("click", () => setSettingsOpen(false));
+
+transitHeadwayControl.addEventListener("input", () => {
+  simulation.setTransitHeadway(Number(transitHeadwayControl.value));
+  updateControlPreviews();
+});
+roadCapacityControl.addEventListener("input", () => {
+  simulation.setRoadCapacity(Number(roadCapacityControl.value));
+  updateControlPreviews();
+});
+utilityCapacityControl.addEventListener("input", () => {
+  simulation.setUtilityCapacityScale(Number(utilityCapacityControl.value) / 100);
+  updateControlPreviews();
+});
+zoningControl.addEventListener("input", () => {
+  simulation.setZoningStrictness(Number(zoningControl.value) / 100);
+  updateControlPreviews();
 });
 
 locationSearch.addEventListener("submit", (event) => {
@@ -214,6 +284,18 @@ renderer.setSelectionHandler((feature) => {
   selectedFeature = feature;
   renderer.setSelectedFeature(feature.id);
   updateSelectionPanel();
+});
+
+renderer.setEntitySelectionHandler((selection) => {
+  if (appMode !== "simulate") return;
+  selectedEntity = selection;
+  renderer.setSelectedEntity(selection);
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+});
+
+renderer.setEntityHoverHandler((selection, clientX, clientY) => {
+  updateEntityTooltip(selection, clientX, clientY);
 });
 
 renderer.setEnvironmentStatusHandler((mode, detail) => {
@@ -244,12 +326,16 @@ function setAppMode(mode: AppMode): void {
   renderer.setMapOverlay(
     building ? "none" : (analysisOverlay.value as MapOverlayMode),
   );
+  renderer.setSelectedEntity(building ? null : selectedEntity);
   if (building) {
+    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a highlighted street";
     updateSelectionPanel();
   } else {
+    orbitCameraHint.textContent = "Drag to orbit · Scroll to zoom · Click a building or person";
     simulationTitle.textContent = "Penn · University City";
     sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
   }
+  entityInterfaceSignature = "";
   updateInterface();
 }
 
@@ -323,6 +409,7 @@ function updateMetrics(): void {
   );
   representationNote.textContent = `1 visible agent represents about ${representedResidents.toLocaleString()} residents; buildings represent district activity.`;
   updateSelectedSignalStatus();
+  updateEntityInterface();
 }
 
 function setMetricView(view: "baseline" | "modified"): void {
@@ -539,6 +626,444 @@ function streetDesignSummaries(
   ];
 }
 
+function updateEntityInterface(): void {
+  if (appMode !== "simulate") return;
+  const state = simulation.getState();
+  const selectedPerson = selectedEntity?.kind === "person"
+    ? state.entities.people.find((person) => person.id === selectedEntity?.id)
+    : undefined;
+  const signature = [
+    state.entities.lastUpdatedDay,
+    selectedPerson?.currentActivity ?? "static",
+    selectedEntity?.kind ?? "none",
+    selectedEntity?.id ?? "none",
+    analysisOverlay.value,
+  ].join(":");
+  if (signature === entityInterfaceSignature) return;
+  entityInterfaceSignature = signature;
+  renderMapLegend(analysisOverlay.value as MapOverlayMode);
+  renderGroupedAlerts();
+
+  if (!selectedEntity) {
+    const represented = Math.max(1, Math.round(state.city.metrics.population / Math.max(1, state.entities.people.length)));
+    const localWorkers = state.entities.people.filter((person) => person.employment === "local").length;
+    const externalWorkers = state.entities.people.filter((person) => person.employment === "external").length;
+    entityInspector.innerHTML = `
+      <div class="inspector-empty district-overview">
+        <strong>University City model</strong>
+        <p>Click any building or visible person to inspect the decisions behind the citywide totals.</p>
+        <div class="inspector-stat-grid">
+          <span><small>Modeled buildings</small><b>${state.entities.buildings.length}</b></span>
+          <span><small>Sample residents</small><b>${state.entities.people.length}</b></span>
+          <span><small>Local workers</small><b>${localWorkers}</b></span>
+          <span><small>Outside workers</small><b>${externalWorkers}</b></span>
+        </div>
+        <p class="representation-callout">1 visible resident represents about ${represented.toLocaleString()} city residents. Every modeled building has its own function and accounting.</p>
+        <details class="simulation-order">
+          <summary>Today's simulation steps</summary>
+          <ol>
+            <li>Buildings request workers and supplies.</li>
+            <li>Residents work, earn wages, and make service visits.</li>
+            <li>Labor and utilities gate production and sales.</li>
+            <li>Revenue, costs, prices, wages, and rent adjust.</li>
+            <li>Households evaluate needs, finances, and migration.</li>
+          </ol>
+        </details>
+      </div>`;
+    return;
+  }
+
+  if (selectedEntity.kind === "building") {
+    const building = state.entities.buildings.find((candidate) => candidate.id === selectedEntity?.id);
+    if (building) renderBuildingInspector(building);
+  } else {
+    const person = state.entities.people.find((candidate) => candidate.id === selectedEntity?.id);
+    if (person) renderPersonInspector(person);
+  }
+}
+
+function renderBuildingInspector(building: DetailedBuilding): void {
+  const state = simulation.getState();
+  const accounting = building.accounting;
+  const residents = building.residentIds.length;
+  const employees = building.employeeIds.length;
+  const connections = state.entities.connections.filter(
+    (connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id,
+  );
+  const connectionTotals = {
+    commute: sumNumbers(connections.filter((connection) => connection.kind === "commute").map((connection) => connection.volume)),
+    customer: sumNumbers(connections.filter((connection) => connection.kind === "customer").map((connection) => connection.volume)),
+    supply: sumNumbers(connections.filter((connection) => connection.kind === "supply").map((connection) => connection.volume)),
+  };
+  const civic = isCivicFunction(building.function);
+  const housing = building.function === "housing";
+  const revenueLabel = housing ? "Rent" : civic ? "Funding + fees" : "Revenue";
+  const netLabel = civic ? "Balance" : "Net";
+  const maxFlow = Math.max(1, accounting.operatingRevenue, accounting.operatingCost);
+  const utilityAverage = (
+    (building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3
+  ) * 100;
+  const primaryStats = housing
+    ? [
+        ["Residents", `${residents} / ${building.residentCapacity}`],
+        ["Daily rent", formatDetailedMoney(building.rentDaily)],
+        ["Land value", formatDetailedMoney(building.landValue)],
+        ["Utilities", `${utilityAverage.toFixed(0)}%`],
+      ]
+    : civic
+      ? [
+          ["Staff", `${employees} / ${accounting.requiredWorkers}`],
+          ["Service visits", `${Math.round(accounting.serviceDelivered)} / ${Math.round(accounting.serviceDemand)}`],
+          ["Service quality", `${Math.round(accounting.serviceQuality * 100)}%`],
+          ["Daily wage", formatDetailedMoney(accounting.averageWage)],
+        ]
+      : [
+          ["Employees", `${employees} / ${accounting.requiredWorkers}`],
+          ["Customers", accounting.customers.toLocaleString()],
+          ["Goods sold", accounting.goodsSold.toLocaleString()],
+          ["Daily wage", formatDetailedMoney(accounting.averageWage)],
+        ];
+  entityInspector.innerHTML = `
+    <article class="entity-card">
+      <header class="entity-heading">
+        <div><small>${formatBuildingFunction(building.function)} · ${escapeHtml(building.address)}</small><h3>${escapeHtml(building.name)}</h3></div>
+        <span data-entity-status="${accounting.status}">${formatEntityStatus(accounting.status)}</span>
+      </header>
+      <div class="inspector-stat-grid">${primaryStats.map(([label, value]) => `<span><small>${label}</small><b>${value}</b></span>`).join("")}</div>
+      <section class="accounting-section">
+        <h4>${civic ? "Service accounting" : housing ? "Housing accounting" : "Business accounting"}</h4>
+        <div class="accounting-flow">
+          ${accountingNode(revenueLabel, accounting.operatingRevenue, maxFlow, "income")}
+          <i>→</i>
+          ${accountingNode("Costs", accounting.operatingCost, maxFlow, "cost")}
+          <i>→</i>
+          ${accountingNode(netLabel, accounting.profit, maxFlow, accounting.profit >= 0 ? "income" : "loss")}
+        </div>
+        <div class="cost-breakdown">
+          <span>Payroll <b>${formatDetailedMoney(accounting.dailyWages)}</b></span>
+          <span>Supplies <b>${formatDetailedMoney(accounting.supplyCost)}</b></span>
+          <span>Transport <b>${formatDetailedMoney(accounting.transportCost)}</b></span>
+          <span>Utilities <b>${formatDetailedMoney(accounting.utilityCost)}</b></span>
+          <span>Maintenance <b>${formatDetailedMoney(accounting.maintenanceCost)}</b></span>
+        </div>
+        <p class="entity-diagnosis">${escapeHtml(accounting.diagnosis)}</p>
+      </section>
+      <section class="utility-strip">
+        <h4>Utility service</h4>
+        ${utilityMeter("Power", building.utilityService.power, "Regional electric grid")}
+        ${utilityMeter("Water", building.utilityService.water, "Municipal water system")}
+        ${utilityMeter("Waste", building.utilityService.waste, "Sanitation collection")}
+      </section>
+      <section class="connection-summary">
+        <h4>Daily connections</h4>
+        <div class="connection-totals">
+          <span data-flow="commute"><b>${Math.round(connectionTotals.commute)}</b> commuters</span>
+          <span data-flow="customer"><b>${Math.round(connectionTotals.customer)}</b> visits</span>
+          <span data-flow="supply"><b>${Math.round(connectionTotals.supply)}</b> supply units</span>
+        </div>
+        <details><summary>Connected buildings</summary>${renderConnectionDetails(connections, building.id)}</details>
+      </section>
+    </article>`;
+}
+
+function renderPersonInspector(person: DetailedPerson): void {
+  const state = simulation.getState();
+  const buildingById = new Map(state.entities.buildings.map((building) => [building.id, building]));
+  const household = state.entities.households.find((candidate) => candidate.id === person.householdId);
+  const householdMembers = household?.memberIds
+    .map((id) => state.entities.people.find((candidate) => candidate.id === id)?.name)
+    .filter((name): name is string => Boolean(name)) ?? [];
+  const net = person.dailyWage - person.dailySpending;
+  const maxFlow = Math.max(1, person.dailyWage, person.dailySpending);
+  entityInspector.innerHTML = `
+    <article class="entity-card person-card">
+      <header class="entity-heading">
+        <div><small>${person.age} years old · ${formatEmployment(person.employment)}</small><h3>${escapeHtml(person.name)}</h3></div>
+        <span data-migration="${person.migrationStatus}">${formatActivity(person.currentActivity)}</span>
+      </header>
+      <section class="schedule-section">
+        <h4>Daily route</h4>
+        <div class="schedule-timeline">${person.schedule.map((item) => {
+          const buildingName = buildingById.get(item.buildingId)?.name ?? "Outside University City";
+          return `<div><time>${formatMinute(item.startMinute)}</time><span data-activity="${item.activity}"></span><p><b>${formatActivity(item.activity)}</b><small>${escapeHtml(buildingName)} · ${formatMode(item.mode)} · ${item.travelMinutes} min</small></p></div>`;
+        }).join("")}</div>
+      </section>
+      <section class="accounting-section">
+        <h4>Daily finances</h4>
+        <div class="accounting-flow">
+          ${accountingNode("Wage", person.dailyWage, maxFlow, "income")}
+          <i>→</i>
+          ${accountingNode("Spending", person.dailySpending, maxFlow, "cost")}
+          <i>→</i>
+          ${accountingNode("Net", net, maxFlow, net >= 0 ? "income" : "loss")}
+        </div>
+        <div class="cost-breakdown">
+          <span>Commute <b>${formatDetailedMoney(person.commuteCost)}</b></span>
+          <span>Cash <b>${formatDetailedMoney(person.money)}</b></span>
+          <span>Household <b>${householdMembers.length} people</b></span>
+          <span>Shared balance <b>${formatDetailedMoney(household?.money ?? 0)}</b></span>
+        </div>
+      </section>
+      <section class="needs-section">
+        <h4>Needs and happiness <strong>${person.happiness.toFixed(0)}%</strong></h4>
+        ${Object.entries(person.needs).map(([need, value]) => `<label><span>${capitalize(need)}</span><meter min="0" max="100" value="${value}"></meter><b>${value.toFixed(0)}</b></label>`).join("")}
+      </section>
+      <section class="household-section">
+        <h4>Household</h4>
+        <p>${householdMembers.map(escapeHtml).join(", ")}</p>
+        <div class="cost-breakdown">
+          <span>Income <b>${formatDetailedMoney(household?.dailyIncome ?? 0)}</b></span>
+          <span>Housing <b>${formatDetailedMoney(household?.dailyExpenses.housing ?? 0)}</b></span>
+          <span>Goods <b>${formatDetailedMoney(household?.dailyExpenses.goods ?? 0)}</b></span>
+          <span>Transport <b>${formatDetailedMoney(household?.dailyExpenses.transport ?? 0)}</b></span>
+        </div>
+      </section>
+      <p class="migration-callout" data-migration="${person.migrationStatus}"><b>${formatMigration(person.migrationStatus)}</b>${escapeHtml(person.migrationReason)}</p>
+    </article>`;
+}
+
+function renderConnectionDetails(
+  connections: ReturnType<Simulation["getState"]>["entities"]["connections"],
+  selectedBuildingId: string,
+): string {
+  const buildingById = new Map(simulation.getState().entities.buildings.map((building) => [building.id, building.name]));
+  const rows = connections.slice(0, 12).map((connection) => {
+    const otherId = connection.fromBuildingId === selectedBuildingId
+      ? connection.toBuildingId
+      : connection.fromBuildingId;
+    const name = buildingById.get(otherId)
+      ?? (otherId === "outside-work" ? "Jobs outside the section" : "Regional suppliers");
+    return `<li><span data-flow="${connection.kind}">${capitalize(connection.kind)}</span><b>${Math.round(connection.volume)}</b><small>${escapeHtml(name)}</small></li>`;
+  }).join("");
+  return `<ul class="connection-list">${rows || "<li>No active connections in this category.</li>"}</ul>`;
+}
+
+function renderMapLegend(mode: MapOverlayMode): void {
+  const legends: Partial<Record<MapOverlayMode, readonly [string, string]>> = {
+    economy: ["Low activity", "High activity"],
+    profitability: ["Operating loss", "Strong surplus"],
+    "land-value": ["Lower value", "Higher value"],
+    utilities: ["Service shortage", "Fully served"],
+    employment: ["Understaffed", "Fully staffed"],
+    happiness: ["Low wellbeing", "High wellbeing"],
+    migration: ["Leaving pressure", "Stable"],
+    goods: ["Shortage", "Well stocked"],
+  };
+  const labels = legends[mode];
+  mapLegend.innerHTML = labels
+    ? `<span>${labels[0]}</span><i></i><span>${labels[1]}</span>`
+    : mode === "none"
+      ? "<span>Building rings show assigned functions.</span>"
+      : `<span>${capitalize(mode.replace("-", " "))} is drawn on streets and intersections.</span>`;
+}
+
+function renderGroupedAlerts(): void {
+  const state = simulation.getState();
+  const events = state.entities.events;
+  alertCount.textContent = String(events.length + state.cityEvents.length);
+  const groups = new Map<string, string[]>();
+  for (const entry of events) {
+    const list = groups.get(entry.category) ?? [];
+    list.push(entry.message);
+    groups.set(entry.category, list);
+  }
+  for (const entry of state.cityEvents) {
+    const list = groups.get(entry.category) ?? [];
+    list.push(entry.message);
+    groups.set(entry.category, list);
+  }
+  groupedAlerts.innerHTML = [...groups.entries()].map(([category, messages]) => `
+    <section><h4>${capitalize(category.replace("-", " "))} <span>${messages.length}</span></h4>
+    <ul>${messages.slice(0, 4).map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></section>`).join("")
+    || "<p>No active warnings.</p>";
+}
+
+function updateEntityTooltip(
+  selection: EntitySelection | null,
+  clientX: number,
+  clientY: number,
+): void {
+  if (!selection || appMode !== "simulate") {
+    entityTooltip.hidden = true;
+    return;
+  }
+  const state = simulation.getState();
+  const mode = analysisOverlay.value as MapOverlayMode;
+  if (selection.kind === "person") {
+    const person = state.entities.people.find((candidate) => candidate.id === selection.id);
+    if (!person) return;
+    entityTooltip.innerHTML = `<strong>${escapeHtml(person.name)}</strong><span>${formatActivity(person.currentActivity)} · ${person.happiness.toFixed(0)}% happiness</span><small>${escapeHtml(person.migrationReason)}</small>`;
+  } else {
+    const building = state.entities.buildings.find((candidate) => candidate.id === selection.id);
+    if (!building) return;
+    entityTooltip.innerHTML = buildingTooltip(building, mode);
+  }
+  entityTooltip.hidden = false;
+  entityTooltip.style.left = `${Math.min(window.innerWidth - 260, clientX + 14)}px`;
+  entityTooltip.style.top = `${Math.min(window.innerHeight - 130, clientY + 14)}px`;
+}
+
+function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): string {
+  const accounting = building.accounting;
+  const utility = Math.round((building.utilityService.power + building.utilityService.water + building.utilityService.waste) / 3 * 100);
+  const residents = simulation.getState().entities.people.filter((person) => person.homeBuildingId === building.id);
+  const trips = simulation.getState().entities.connections
+    .filter((connection) => connection.fromBuildingId === building.id || connection.toBuildingId === building.id);
+  let value = `${formatBuildingFunction(building.function)} · ${formatEntityStatus(accounting.status)}`;
+  let why = accounting.diagnosis;
+  if (mode === "profitability") value = `${formatDetailedMoney(accounting.operatingRevenue)} revenue − ${formatDetailedMoney(accounting.operatingCost)} costs = ${formatDetailedMoney(accounting.profit)}`;
+  else if (mode === "economy") value = `${formatDetailedMoney(accounting.operatingRevenue)} daily activity · ${accounting.customers} customers`;
+  else if (mode === "land-value") {
+    value = `${formatDetailedMoney(building.landValue)} land value`;
+    why = `Utility service ${utility}%, staffing ${Math.round(accounting.staffingRatio * 100)}%, and district congestion ${simulation.getState().city.metrics.congestionPercent.toFixed(0)}% drive this value.`;
+  } else if (mode === "utilities") {
+    value = `${utility}% utility service`;
+    why = `Power comes from the regional grid, water from the municipal system, and waste from sanitation collection.`;
+  } else if (mode === "employment") value = `${building.employeeIds.length} of ${accounting.requiredWorkers} required positions filled`;
+  else if (mode === "happiness") {
+    const happiness = residents.length > 0 ? sumNumbers(residents.map((person) => person.happiness)) / residents.length : accounting.serviceQuality * 100;
+    value = `${happiness.toFixed(0)}% ${residents.length > 0 ? "resident happiness" : "service quality"}`;
+    why = residents.length > 0 ? "Income, expenses, needs, commute, and service access determine this score." : accounting.diagnosis;
+  } else if (mode === "migration") {
+    const leaving = residents.filter((person) => person.migrationStatus !== "staying").length;
+    value = `${leaving} of ${residents.length} residents considering departure`;
+    why = leaving > 0 ? "Unemployment, negative finances, or unmet needs are the modeled causes." : "Residents currently have no strong pressure to leave.";
+  } else if (mode === "goods") value = `${building.goodsInventory.toFixed(0)} units in stock · ${accounting.importedSupplies.toFixed(0)} imported`;
+  else if (["congestion", "pedestrians", "conflicts"].includes(mode)) {
+    value = `${Math.round(sumNumbers(trips.map((connection) => connection.volume)))} connected daily trips`;
+    why = `Commutes, customer visits, and supply deliveries are the building's traffic causes.`;
+  }
+  return `<strong>${escapeHtml(building.name)}</strong><span>${escapeHtml(value)}</span><small>${escapeHtml(why)}</small>`;
+}
+
+function setSettingsOpen(open: boolean): void {
+  settingsDrawer.hidden = !open;
+  settingsScrim.hidden = !open;
+  settingsButton.setAttribute("aria-expanded", String(open));
+}
+
+function updateControlPreviews(): void {
+  const settings = simulation.getSettings();
+  speedLimitOutput.value = `${settings.speedLimitMph} mph`;
+  signalCycleOutput.value = `${settings.signalCycleSeconds} sec`;
+  transitHeadwayOutput.value = `${settings.transitHeadwayMinutes} min`;
+  roadCapacityOutput.value = `${settings.roadCapacity}%`;
+  utilityCapacityOutput.value = `${Math.round(settings.utilityCapacityScale * 100)}%`;
+  zoningOutput.value = `${Math.round(settings.zoningStrictness * 100)}%`;
+  timeHorizonPreview.textContent = {
+    day: "Each real second advances one simulated hour.",
+    week: "Each real second advances six simulated hours.",
+    month: "Each real second advances one simulated day.",
+    year: "Each real second advances one simulated week.",
+  }[settings.timeHorizon];
+  speedLimitPreview.textContent = settings.speedLimitMph > 30
+    ? "Faster free-flow trips, with more braking distance and crossing exposure."
+    : settings.speedLimitMph < 20
+      ? "Lower conflict severity, but longer vehicle and delivery trips."
+      : "Balanced travel time and crossing risk.";
+  signalCyclePreview.textContent = Math.abs(settings.signalCycleSeconds - 75) < 15
+    ? "Near the district's balanced cycle."
+    : settings.signalCycleSeconds > 90
+      ? "Longer vehicle phases can increase pedestrian waiting."
+      : "Short phases can add stopping delay on busy approaches.";
+  transitHeadwayPreview.textContent = `About ${(60 / settings.transitHeadwayMinutes).toFixed(1)} departures per hour; shorter waits cost more service capacity.`;
+  roadCapacityPreview.textContent = settings.roadCapacity === 100
+    ? "Baseline vehicle and delivery capacity."
+    : `${Math.abs(settings.roadCapacity - 100)}% ${settings.roadCapacity > 100 ? "more" : "less"} capacity for commutes and freight.`;
+  utilityCapacityPreview.textContent = settings.utilityCapacityScale >= 1
+    ? "Current supply should meet modeled demand unless the city grows."
+    : "Shortfalls directly reduce production and civic-service delivery.";
+  zoningPreview.textContent = settings.zoningStrictness > 1
+    ? "Tighter limits slow floor-area and housing growth."
+    : settings.zoningStrictness < 1
+      ? "Looser limits allow faster long-term development."
+      : "Baseline limits on long-term development.";
+}
+
+function accountingNode(label: string, value: number, max: number, tone: string): string {
+  const width = Math.max(8, Math.min(100, Math.abs(value) / max * 100));
+  return `<span class="accounting-node" data-tone="${tone}"><small>${label}</small><b>${formatDetailedMoney(value)}</b><i style="width:${width}%"></i></span>`;
+}
+
+function utilityMeter(label: string, value: number, source: string): string {
+  return `<label><span>${label}<small>${source}</small></span><meter min="0" max="1" value="${value}"></meter><b>${Math.round(value * 100)}%</b></label>`;
+}
+
+function isCivicFunction(buildingFunction: DetailedBuilding["function"]): boolean {
+  return ["university", "library", "school", "clinic", "culture", "recreation"].includes(buildingFunction);
+}
+
+function formatBuildingFunction(value: DetailedBuilding["function"]): string {
+  const names: Record<DetailedBuilding["function"], string> = {
+    housing: "Residential building",
+    retail: "Retail business",
+    office: "Office employer",
+    university: "University facility",
+    library: "Community library",
+    school: "School",
+    clinic: "Health service",
+    culture: "Cultural service",
+    recreation: "Recreation service",
+    parking: "Parking service",
+    industrial: "Production and supply",
+  };
+  return names[value];
+}
+
+function formatEntityStatus(value: DetailedBuilding["accounting"]["status"]): string {
+  return value === "understaffed" ? "Understaffed" : capitalize(value);
+}
+
+function formatEmployment(value: DetailedPerson["employment"]): string {
+  return value === "external" ? "Works outside the section" : value === "local" ? "Locally employed" : capitalize(value);
+}
+
+function formatActivity(value: DetailedPerson["currentActivity"]): string {
+  return value === "shop" ? "Shopping" : value === "healthcare" ? "Health visit" : capitalize(value);
+}
+
+function formatMode(value: DetailedPerson["schedule"][number]["mode"]): string {
+  return value === "transit" ? "Transit" : capitalize(value);
+}
+
+function formatMigration(value: DetailedPerson["migrationStatus"]): string {
+  return value === "staying" ? "Staying: " : value === "considering-leaving" ? "Considering leaving: " : "Moving out: ";
+}
+
+function formatMinute(minute: number): string {
+  const normalized = ((minute % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  const period = hours >= 12 ? "PM" : "AM";
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+
+function formatDetailedMoney(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0,
+  }).format(value);
+}
+
+function sumNumbers(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  })[character] ?? character);
+}
+
 function requireElement<T extends Element>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing required element: #${id}`);
@@ -673,6 +1198,7 @@ function flyToSearchResult(rawQuery: string): void {
 renderer.resize();
 renderer.setSelectedFeature(selectedFeature?.id ?? null);
 initializeSearch();
+updateControlPreviews();
 setCameraMode(cameraMode);
 setAppMode("build");
 simulation.start();
