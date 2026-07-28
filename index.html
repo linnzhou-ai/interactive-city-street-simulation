@@ -110,8 +110,44 @@
           />
           <p id="autosave-status" class="autosave-status">Autosave ready</p>
         </div>
-        <p class="tool-section-label">Buildings</p>
-        <div class="building-tool-grid" aria-label="Building placement tools">
+        <div class="build-workspace-switch" aria-label="Build workspace">
+          <button id="city-edit-workspace" type="button" aria-pressed="true">City edit</button>
+          <button id="expansion-workspace" type="button" aria-pressed="false">Expansion build</button>
+        </div>
+        <p id="build-workspace-help" class="placement-help">
+          Select an original street or intersection to edit it.
+        </p>
+        <p class="tool-section-label" data-build-workspace-section="expansion" hidden>
+          Expansion roads
+        </p>
+        <button
+          id="draw-expansion-road-button"
+          class="draw-road-button"
+          type="button"
+          aria-pressed="true"
+          data-build-workspace-section="expansion"
+          hidden
+        >
+          <span>Draw road</span>
+          <small>Click + drag to extend</small>
+        </button>
+        <p
+          id="expansion-road-count"
+          class="placement-help"
+          data-build-workspace-section="expansion"
+          hidden
+        >
+          0 roads · endpoints snap together
+        </p>
+        <p class="tool-section-label" data-build-workspace-section="expansion" hidden>
+          Buildings
+        </p>
+        <div
+          class="building-tool-grid"
+          aria-label="Building placement tools"
+          data-build-workspace-section="expansion"
+          hidden
+        >
           <button class="building-tool-button" type="button" data-building-tool="residential" aria-pressed="true">
             <span class="building-swatch residential-swatch"></span>
             <span>Residential</span>
@@ -133,7 +169,11 @@
             <small>Services + visitors</small>
           </button>
         </div>
-        <div class="building-placement-settings">
+        <div
+          class="building-placement-settings"
+          data-build-workspace-section="expansion"
+          hidden
+        >
           <label for="building-floors-control">
             <span>Floors</span>
             <input id="building-floors-control" type="number" min="1" max="20" value="5" />
@@ -143,9 +183,15 @@
             <input id="building-color-control" type="color" value="#bf765f" />
           </label>
         </div>
-        <p class="placement-help">Click the ground to place · Drag a building to move · Press <kbd>R</kbd> to rotate.</p>
-        <p class="tool-section-label">Street tools</p>
-        <div class="tool-list" aria-label="Street design tools">
+        <p class="placement-help" data-build-workspace-section="expansion" hidden>
+          Choose a building, then click the ground · Drag to move · Press <kbd>R</kbd> to rotate.
+        </p>
+        <p class="tool-section-label" data-build-workspace-section="city-edit">Street tools</p>
+        <div
+          class="tool-list"
+          aria-label="Street design tools"
+          data-build-workspace-section="city-edit"
+        >
           <button class="tool-button" type="button" data-build-tool="add-lane" data-target="street">
             <span class="tool-icon add-lane-icon"></span>
             <span>Add vehicle lane</span>
@@ -177,8 +223,14 @@
             <small>Cycle</small>
           </button>
         </div>
-        <p class="tool-section-label">Intersection tools</p>
-        <div class="tool-list compact-tool-list" aria-label="Intersection design tools">
+        <p class="tool-section-label" data-build-workspace-section="city-edit">
+          Intersection tools
+        </p>
+        <div
+          class="tool-list compact-tool-list"
+          aria-label="Intersection design tools"
+          data-build-workspace-section="city-edit"
+        >
           <button
             class="tool-button"
             type="button"

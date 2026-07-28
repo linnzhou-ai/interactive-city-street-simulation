@@ -1,4 +1,5 @@
 import type {
+  ExpansionRoad,
   FeatureDesign,
   PlacedBuilding,
   ScenarioSettings,
@@ -10,7 +11,9 @@ export const PROJECT_STATE_VERSION = 1;
 export interface EditorSnapshot {
   designs: Array<[string, FeatureDesign]>;
   buildings: PlacedBuilding[];
+  expansionRoads: ExpansionRoad[];
   nextBuildingId: number;
+  nextExpansionRoadId: number;
 }
 
 export interface ProjectSnapshot extends EditorSnapshot {
@@ -63,7 +66,9 @@ export function cloneEditorSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
   return {
     designs: snapshot.designs.map(([id, design]) => [id, { ...design }]),
     buildings: snapshot.buildings.map((building) => ({ ...building })),
+    expansionRoads: snapshot.expansionRoads.map((road) => ({ ...road })),
     nextBuildingId: snapshot.nextBuildingId,
+    nextExpansionRoadId: snapshot.nextExpansionRoadId,
   };
 }
 
@@ -105,16 +110,45 @@ export function parseProjectSnapshot(raw: string): ProjectSnapshot {
     buildings.push({ ...building });
   }
 
+  const expansionRoads: ExpansionRoad[] = [];
+  for (const road of Array.isArray(value.expansionRoads) ? value.expansionRoads : []) {
+    if (!isExpansionRoad(road)) {
+      throw new Error("This design file contains an invalid expansion road.");
+    }
+    expansionRoads.push({ ...road });
+  }
+
   return {
     version: PROJECT_STATE_VERSION,
     savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date(0).toISOString(),
     designs,
     buildings,
+    expansionRoads,
     nextBuildingId: Math.max(1, Math.trunc(value.nextBuildingId)),
+    nextExpansionRoadId:
+      typeof value.nextExpansionRoadId === "number" &&
+      Number.isFinite(value.nextExpansionRoadId)
+        ? Math.max(1, Math.trunc(value.nextExpansionRoadId))
+        : expansionRoads.length + 1,
     settings: { ...value.settings },
     timeOfDayHours: normalizeHour(value.timeOfDayHours),
     weather: value.weather,
   };
+}
+
+function isExpansionRoad(value: unknown): value is ExpansionRoad {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    Number.isFinite(value.startX) &&
+    Number.isFinite(value.startZ) &&
+    Number.isFinite(value.endX) &&
+    Number.isFinite(value.endZ) &&
+    typeof value.width === "number" &&
+    Number.isFinite(value.width) &&
+    value.width >= 6 &&
+    value.width <= 30
+  );
 }
 
 function isScenarioSettings(value: unknown): value is ScenarioSettings {

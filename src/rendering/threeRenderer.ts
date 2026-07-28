@@ -16,6 +16,7 @@ import type {
   CameraMode,
   DistrictFeature,
   EnvironmentMode,
+  ExpansionRoad,
   FeatureDesign,
   GeoPoint,
   MapOverlayMode,
@@ -51,6 +52,9 @@ const RENDER_HEIGHTS = {
 } as const;
 const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
 const ROAD_MARKING_END_INSET = 15;
+const EXPANSION_WORLD_LIMIT = 2_400;
+const CORE_PROTECTION_PADDING = 34;
+const CORE_BOUNDS = createProtectedCoreBounds();
 const FLY_COLLIDER_RADIUS = 0.45;
 const WALK_COLLIDER_RADIUS = 0.38;
 const WALK_PLAYER_HEIGHT = 1.78;
@@ -93,6 +97,16 @@ interface BuildingInteractionHandlers {
   onPlacementRejected: (reason: string) => void;
 }
 
+interface ExpansionRoadInteractionHandlers {
+  onComplete: (
+    startX: number,
+    startZ: number,
+    endX: number,
+    endZ: number,
+  ) => void;
+  onRejected: (reason: string) => void;
+}
+
 interface BuildingPlacementResult {
   valid: boolean;
   reason: string;
@@ -114,8 +128,11 @@ export class ThreeRenderer {
   private readonly trafficGroup = new THREE.Group();
   private readonly pedestrianGroup = new THREE.Group();
   private readonly placedBuildingGroup = new THREE.Group();
+  private readonly expansionRoadGroup = new THREE.Group();
+  private readonly expansionGuideGroup = new THREE.Group();
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
   private readonly placedBuildingData = new Map<string, PlacedBuilding>();
+  private readonly expansionRoadData = new Map<string, ExpansionRoad>();
   private readonly placementPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly placementPoint = new THREE.Vector3();
   private readonly dragOffset = new THREE.Vector3();
@@ -138,9 +155,15 @@ export class ThreeRenderer {
   );
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
   private buildingInteractionHandlers: BuildingInteractionHandlers | null = null;
+  private expansionRoadInteractionHandlers: ExpansionRoadInteractionHandlers | null =
+    null;
   private selectedFeatureId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
   private buildingPlacementEnabled = false;
+  private expansionMode = false;
+  private expansionRoadDrawEnabled = false;
+  private drawingExpansionRoadStart: THREE.Vector3 | null = null;
+  private expansionRoadPreview: THREE.Mesh | null = null;
   private pedestrianMarkersVisible = true;
   private vehicleMarkersVisible = true;
   private draggingBuildingId: string | null = null;
@@ -192,11 +215,14 @@ export class ThreeRenderer {
       this.trafficGroup,
       this.pedestrianGroup,
       this.placedBuildingGroup,
+      this.expansionRoadGroup,
+      this.expansionGuideGroup,
       this.rainPoints,
     );
     this.buildLightingAndSky();
     this.buildGround();
     this.buildRoadsAndSidewalks();
+    this.buildExpansionProtectionGuide();
     this.buildDistrictArchitecture();
     this.buildLandmarks();
     this.buildTreesAndStreetFurniture();
@@ -237,6 +263,29 @@ export class ThreeRenderer {
     this.buildingInteractionHandlers = handlers;
   }
 
+  setExpansionRoadInteractionHandlers(
+    handlers: ExpansionRoadInteractionHandlers,
+  ): void {
+    this.expansionRoadInteractionHandlers = handlers;
+  }
+
+  setExpansionMode(enabled: boolean): void {
+    this.expansionMode = enabled;
+    this.expansionGuideGroup.visible = enabled && this.buildMode;
+    if (!enabled) this.setExpansionRoadDrawEnabled(false);
+  }
+
+  setExpansionRoadDrawEnabled(enabled: boolean): void {
+    this.expansionRoadDrawEnabled =
+      enabled && this.expansionMode && this.buildMode;
+    if (this.cameraMode === "orbit") {
+      this.canvas.style.cursor =
+        this.expansionRoadDrawEnabled || this.buildingPlacementEnabled
+          ? "crosshair"
+          : "grab";
+    }
+  }
+
   setBuildingPlacementEnabled(enabled: boolean): void {
     this.buildingPlacementEnabled = enabled;
     if (this.cameraMode === "orbit") {
@@ -267,6 +316,59 @@ export class ThreeRenderer {
     this.updatePlacedBuildingSelection();
   }
 
+  setExpansionRoads(roads: readonly ExpansionRoad[]): void {
+    clearGroup(this.expansionRoadGroup);
+    this.expansionRoadData.clear();
+    for (const road of roads) {
+      this.expansionRoadData.set(road.id, { ...road });
+      this.addExpansionRoad(road);
+    }
+  }
+
+  validateExpansionRoad(
+    startX: number,
+    startZ: number,
+    endX: number,
+    endZ: number,
+  ): BuildingPlacementResult {
+    const length = Math.hypot(endX - startX, endZ - startZ);
+    if (length < 8) {
+      return { valid: false, reason: "Drag at least 8 meters to create a road." };
+    }
+    if (
+      Math.max(Math.abs(startX), Math.abs(startZ), Math.abs(endX), Math.abs(endZ)) >
+      EXPANSION_WORLD_LIMIT
+    ) {
+      return { valid: false, reason: "That road extends beyond the buildable world." };
+    }
+    if (segmentIntersectsProtectedCore(startX, startZ, endX, endZ)) {
+      return {
+        valid: false,
+        reason: "New roads cannot enter or cross the protected original city.",
+      };
+    }
+    for (const building of this.placedBuildingData.values()) {
+      const footprint = getBuildingFootprint(building);
+      if (
+        distanceToSegment(
+          building.x,
+          building.z,
+          startX,
+          startZ,
+          endX,
+          endZ,
+        ) <
+        Math.hypot(footprint.halfX, footprint.halfZ) + 9.5
+      ) {
+        return {
+          valid: false,
+          reason: "Move nearby buildings before drawing a road through this space.",
+        };
+      }
+    }
+    return { valid: true, reason: "" };
+  }
+
   validateBuildingPlacement(
     building: PlacedBuilding,
     ignoreBuildingId: string | null = null,
@@ -277,6 +379,45 @@ export class ThreeRenderer {
     const maxX = building.x + footprint.halfX + clearance;
     const minZ = building.z - footprint.halfZ - clearance;
     const maxZ = building.z + footprint.halfZ + clearance;
+
+    if (
+      this.expansionMode &&
+      rectanglesOverlap(
+        minX,
+        maxX,
+        minZ,
+        maxZ,
+        CORE_BOUNDS.minX,
+        CORE_BOUNDS.maxX,
+        CORE_BOUNDS.minZ,
+        CORE_BOUNDS.maxZ,
+      )
+    ) {
+      return {
+        valid: false,
+        reason: "New buildings must stay outside the protected original city.",
+      };
+    }
+
+    for (const road of this.expansionRoadData.values()) {
+      const footprintRadius = Math.hypot(footprint.halfX, footprint.halfZ);
+      if (
+        distanceToSegment(
+          building.x,
+          building.z,
+          road.startX,
+          road.startZ,
+          road.endX,
+          road.endZ,
+        ) <
+        footprintRadius + road.width / 2 + 2
+      ) {
+        return {
+          valid: false,
+          reason: "Buildings need a little setback from expansion roads.",
+        };
+      }
+    }
 
     for (const feature of this.features) {
       if (feature.kind !== "street") continue;
@@ -342,6 +483,8 @@ export class ThreeRenderer {
 
   setBuildMode(enabled: boolean): void {
     this.buildMode = enabled;
+    this.expansionGuideGroup.visible = enabled && this.expansionMode;
+    if (!enabled) this.setExpansionRoadDrawEnabled(false);
     for (const group of this.placedBuildingMeshes.values()) {
       const marker = group.getObjectByName("building-activity-marker");
       if (marker) marker.visible = !enabled;
@@ -566,6 +709,139 @@ export class ThreeRenderer {
       lawn.userData.walkable = true;
       this.scene.add(lawn);
     }
+  }
+
+  private buildExpansionProtectionGuide(): void {
+    const material = new THREE.MeshBasicMaterial({
+      color: "#ffb45f",
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+    const width = CORE_BOUNDS.maxX - CORE_BOUNDS.minX;
+    const depth = CORE_BOUNDS.maxZ - CORE_BOUNDS.minZ;
+    const centerX = (CORE_BOUNDS.minX + CORE_BOUNDS.maxX) / 2;
+    const centerZ = (CORE_BOUNDS.minZ + CORE_BOUNDS.maxZ) / 2;
+    const thickness = 4;
+    const north = box(width + thickness, 0.18, thickness, material);
+    north.position.set(centerX, 0.44, CORE_BOUNDS.minZ);
+    const south = north.clone();
+    south.position.z = CORE_BOUNDS.maxZ;
+    const west = box(thickness, 0.18, depth + thickness, material);
+    west.position.set(CORE_BOUNDS.minX, 0.44, centerZ);
+    const east = west.clone();
+    east.position.x = CORE_BOUNDS.maxX;
+    this.expansionGuideGroup.add(north, south, west, east);
+    this.expansionGuideGroup.visible = false;
+  }
+
+  private addExpansionRoad(road: ExpansionRoad): void {
+    const group = new THREE.Group();
+    group.userData.expansionRoadId = road.id;
+    const asphalt = createWorldSegmentMesh(
+      road.startX,
+      road.startZ,
+      road.endX,
+      road.endZ,
+      road.width,
+      0.12,
+      this.materials.asphalt,
+    );
+    asphalt.position.y = RENDER_HEIGHTS.roadSurface;
+    asphalt.receiveShadow = true;
+    asphalt.userData.walkable = true;
+    group.add(asphalt);
+
+    const centerLine = createWorldSegmentMesh(
+      road.startX,
+      road.startZ,
+      road.endX,
+      road.endZ,
+      0.24,
+      0.03,
+      this.materials.yellowLine,
+      2,
+    );
+    centerLine.position.y = RENDER_HEIGHTS.roadMarking;
+    group.add(centerLine);
+
+    const dx = road.endX - road.startX;
+    const dz = road.endZ - road.startZ;
+    const length = Math.hypot(dx, dz);
+    const nx = length > 0 ? -dz / length : 0;
+    const nz = length > 0 ? dx / length : 0;
+    const sidewalkOffset = road.width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
+    for (const side of [-1, 1]) {
+      const sidewalk = createWorldSegmentMesh(
+        road.startX + nx * sidewalkOffset * side,
+        road.startZ + nz * sidewalkOffset * side,
+        road.endX + nx * sidewalkOffset * side,
+        road.endZ + nz * sidewalkOffset * side,
+        SIDEWALK_WIDTH,
+        0.28,
+        this.materials.sidewalk,
+      );
+      sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
+      sidewalk.receiveShadow = true;
+      sidewalk.userData.walkable = true;
+      group.add(sidewalk);
+    }
+    this.expansionRoadGroup.add(group);
+  }
+
+  private updateExpansionRoadPreview(start: THREE.Vector3, end: THREE.Vector3): void {
+    if (this.expansionRoadPreview) {
+      this.expansionGuideGroup.remove(this.expansionRoadPreview);
+      this.expansionRoadPreview.geometry.dispose();
+      disposeMaterial(this.expansionRoadPreview.material);
+    }
+    const validation = this.validateExpansionRoad(start.x, start.z, end.x, end.z);
+    const preview = createWorldSegmentMesh(
+      start.x,
+      start.z,
+      end.x,
+      end.z,
+      15,
+      0.16,
+      new THREE.MeshBasicMaterial({
+        color: validation.valid ? "#79f0c9" : "#ff5252",
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+      }),
+    );
+    preview.position.y = 0.34;
+    this.expansionRoadPreview = preview;
+    this.expansionGuideGroup.add(preview);
+  }
+
+  private clearExpansionRoadPreview(): void {
+    if (!this.expansionRoadPreview) return;
+    this.expansionGuideGroup.remove(this.expansionRoadPreview);
+    this.expansionRoadPreview.geometry.dispose();
+    disposeMaterial(this.expansionRoadPreview.material);
+    this.expansionRoadPreview = null;
+  }
+
+  private snapExpansionPoint(point: THREE.Vector3): THREE.Vector3 {
+    const snapped = point.clone();
+    let closestDistance = 9;
+    for (const road of this.expansionRoadData.values()) {
+      for (const candidate of [
+        [road.startX, road.startZ],
+        [road.endX, road.endZ],
+      ] as const) {
+        const distance = Math.hypot(snapped.x - candidate[0], snapped.z - candidate[1]);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          snapped.x = candidate[0];
+          snapped.z = candidate[1];
+        }
+      }
+    }
+    snapped.x = THREE.MathUtils.clamp(snapped.x, -EXPANSION_WORLD_LIMIT, EXPANSION_WORLD_LIMIT);
+    snapped.z = THREE.MathUtils.clamp(snapped.z, -EXPANSION_WORLD_LIMIT, EXPANSION_WORLD_LIMIT);
+    return snapped;
   }
 
   private buildRoadsAndSidewalks(): void {
@@ -1487,6 +1763,29 @@ export class ThreeRenderer {
   private bindInput(): void {
     this.canvas.addEventListener("pointerdown", (event) => {
       this.pointerDown.set(event.clientX, event.clientY);
+      if (
+        this.buildMode &&
+        this.expansionMode &&
+        this.expansionRoadDrawEnabled &&
+        this.cameraMode === "orbit"
+      ) {
+        this.updatePointerRay(event);
+        if (this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
+          const start = this.snapExpansionPoint(this.placementPoint);
+          if (pointInsideBounds(start.x, start.z, CORE_BOUNDS)) {
+            this.expansionRoadInteractionHandlers?.onRejected(
+              "Start the road outside the protected original city.",
+            );
+            return;
+          }
+          this.drawingExpansionRoadStart = start;
+          this.updateExpansionRoadPreview(start, start);
+          this.controls.enabled = false;
+          this.canvas.setPointerCapture(event.pointerId);
+          event.preventDefault();
+          return;
+        }
+      }
       if (this.buildMode && this.cameraMode === "orbit") {
         this.updatePointerRay(event);
         const hit = this.raycaster.intersectObjects(
@@ -1519,6 +1818,14 @@ export class ThreeRenderer {
       this.canvas.setPointerCapture(event.pointerId);
     });
     this.canvas.addEventListener("pointermove", (event) => {
+      if (this.drawingExpansionRoadStart) {
+        this.updatePointerRay(event);
+        if (this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)) {
+          const end = this.snapExpansionPoint(this.placementPoint);
+          this.updateExpansionRoadPreview(this.drawingExpansionRoadStart, end);
+        }
+        return;
+      }
       if (this.draggingBuildingId) {
         this.updatePointerRay(event);
         const group = this.placedBuildingMeshes.get(this.draggingBuildingId);
@@ -1527,13 +1834,13 @@ export class ThreeRenderer {
           if (!current) return;
           const x = THREE.MathUtils.clamp(
             this.placementPoint.x + this.dragOffset.x,
-            -1_150,
-            1_150,
+            -EXPANSION_WORLD_LIMIT,
+            EXPANSION_WORLD_LIMIT,
           );
           const z = THREE.MathUtils.clamp(
             this.placementPoint.z + this.dragOffset.z,
-            -1_150,
-            1_150,
+            -EXPANSION_WORLD_LIMIT,
+            EXPANSION_WORLD_LIMIT,
           );
           const candidate = { ...current, x, z };
           const placement = this.validateBuildingPlacement(
@@ -1567,6 +1874,33 @@ export class ThreeRenderer {
       this.applyFlyRotation();
     });
     this.canvas.addEventListener("pointerup", (event) => {
+      if (this.drawingExpansionRoadStart) {
+        const start = this.drawingExpansionRoadStart;
+        this.updatePointerRay(event);
+        const hitGround = this.raycaster.ray.intersectPlane(
+          this.placementPlane,
+          this.placementPoint,
+        );
+        const end = hitGround ? this.snapExpansionPoint(this.placementPoint) : start;
+        this.drawingExpansionRoadStart = null;
+        this.clearExpansionRoadPreview();
+        this.controls.enabled = true;
+        if (this.canvas.hasPointerCapture(event.pointerId)) {
+          this.canvas.releasePointerCapture(event.pointerId);
+        }
+        const validation = this.validateExpansionRoad(start.x, start.z, end.x, end.z);
+        if (validation.valid) {
+          this.expansionRoadInteractionHandlers?.onComplete(
+            start.x,
+            start.z,
+            end.x,
+            end.z,
+          );
+        } else {
+          this.expansionRoadInteractionHandlers?.onRejected(validation.reason);
+        }
+        return;
+      }
       if (this.draggingBuildingId) {
         const completedBuildingId = this.draggingBuildingId;
         this.draggingBuildingId = null;
@@ -1658,8 +1992,16 @@ export class ThreeRenderer {
       this.raycaster.ray.intersectPlane(this.placementPlane, this.placementPoint)
     ) {
       this.buildingInteractionHandlers?.onPlace(
-        THREE.MathUtils.clamp(this.placementPoint.x, -1_150, 1_150),
-        THREE.MathUtils.clamp(this.placementPoint.z, -1_150, 1_150),
+        THREE.MathUtils.clamp(
+          this.placementPoint.x,
+          -EXPANSION_WORLD_LIMIT,
+          EXPANSION_WORLD_LIMIT,
+        ),
+        THREE.MathUtils.clamp(
+          this.placementPoint.z,
+          -EXPANSION_WORLD_LIMIT,
+          EXPANSION_WORLD_LIMIT,
+        ),
       );
       return;
     }
@@ -2330,11 +2672,152 @@ function geoToWorld(point: Pick<GeoPoint, "longitude" | "latitude">): THREE.Vect
   );
 }
 
+function createProtectedCoreBounds(): SpatialBounds {
+  const xs = PENN_AVENUES.map((avenue) =>
+    geoToWorld({
+      longitude: avenue.longitude,
+      latitude: PENN_CENTER.latitude,
+    }).x,
+  );
+  const zs = PENN_STREETS.map((street) =>
+    geoToWorld({
+      longitude: PENN_CENTER.longitude,
+      latitude: street.latitude,
+    }).z,
+  );
+  return {
+    minX: Math.min(...xs) - CORE_PROTECTION_PADDING,
+    maxX: Math.max(...xs) + CORE_PROTECTION_PADDING,
+    minZ: Math.min(...zs) - CORE_PROTECTION_PADDING,
+    maxZ: Math.max(...zs) + CORE_PROTECTION_PADDING,
+  };
+}
+
+function pointInsideBounds(x: number, z: number, bounds: SpatialBounds): boolean {
+  return (
+    x >= bounds.minX &&
+    x <= bounds.maxX &&
+    z >= bounds.minZ &&
+    z <= bounds.maxZ
+  );
+}
+
+function rectanglesOverlap(
+  minX: number,
+  maxX: number,
+  minZ: number,
+  maxZ: number,
+  otherMinX: number,
+  otherMaxX: number,
+  otherMinZ: number,
+  otherMaxZ: number,
+): boolean {
+  return (
+    maxX > otherMinX &&
+    minX < otherMaxX &&
+    maxZ > otherMinZ &&
+    minZ < otherMaxZ
+  );
+}
+
+function segmentIntersectsProtectedCore(
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+): boolean {
+  if (
+    pointInsideBounds(startX, startZ, CORE_BOUNDS) ||
+    pointInsideBounds(endX, endZ, CORE_BOUNDS)
+  ) {
+    return true;
+  }
+  const edges = [
+    [CORE_BOUNDS.minX, CORE_BOUNDS.minZ, CORE_BOUNDS.maxX, CORE_BOUNDS.minZ],
+    [CORE_BOUNDS.maxX, CORE_BOUNDS.minZ, CORE_BOUNDS.maxX, CORE_BOUNDS.maxZ],
+    [CORE_BOUNDS.maxX, CORE_BOUNDS.maxZ, CORE_BOUNDS.minX, CORE_BOUNDS.maxZ],
+    [CORE_BOUNDS.minX, CORE_BOUNDS.maxZ, CORE_BOUNDS.minX, CORE_BOUNDS.minZ],
+  ] as const;
+  return edges.some(([aX, aZ, bX, bZ]) =>
+    segmentsIntersect(startX, startZ, endX, endZ, aX, aZ, bX, bZ),
+  );
+}
+
+function segmentsIntersect(
+  aX: number,
+  aZ: number,
+  bX: number,
+  bZ: number,
+  cX: number,
+  cZ: number,
+  dX: number,
+  dZ: number,
+): boolean {
+  const cross = (
+    firstX: number,
+    firstZ: number,
+    secondX: number,
+    secondZ: number,
+  ) => firstX * secondZ - firstZ * secondX;
+  const abX = bX - aX;
+  const abZ = bZ - aZ;
+  const cdX = dX - cX;
+  const cdZ = dZ - cZ;
+  const denominator = cross(abX, abZ, cdX, cdZ);
+  if (Math.abs(denominator) < 0.000001) return false;
+  const acX = cX - aX;
+  const acZ = cZ - aZ;
+  const t = cross(acX, acZ, cdX, cdZ) / denominator;
+  const u = cross(acX, acZ, abX, abZ) / denominator;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+function distanceToSegment(
+  pointX: number,
+  pointZ: number,
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+): number {
+  const dx = endX - startX;
+  const dz = endZ - startZ;
+  const lengthSquared = dx * dx + dz * dz;
+  if (lengthSquared === 0) return Math.hypot(pointX - startX, pointZ - startZ);
+  const t = THREE.MathUtils.clamp(
+    ((pointX - startX) * dx + (pointZ - startZ) * dz) / lengthSquared,
+    0,
+    1,
+  );
+  return Math.hypot(pointX - (startX + dx * t), pointZ - (startZ + dz * t));
+}
+
 function worldToGeo(x: number, z: number): GeoPoint {
   return {
     longitude: PENN_CENTER.longitude + x / METERS_PER_DEGREE_LONGITUDE,
     latitude: PENN_CENTER.latitude - z / METERS_PER_DEGREE_LATITUDE,
   };
+}
+
+function createWorldSegmentMesh(
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+  width: number,
+  height: number,
+  material: THREE.Material,
+  endInset = 0,
+): THREE.Mesh {
+  const dx = endX - startX;
+  const dz = endZ - startZ;
+  const fullLength = Math.hypot(dx, dz);
+  const inset = Math.min(endInset, Math.max(0, fullLength / 2 - 0.1));
+  const usableLength = Math.max(0.1, fullLength - inset * 2);
+  const object = box(usableLength, height, width, material);
+  object.position.set((startX + endX) / 2, height / 2, (startZ + endZ) / 2);
+  object.rotation.y = Math.atan2(dx, dz) + Math.PI / 2;
+  return object;
 }
 
 function createSegmentMesh(
@@ -2741,6 +3224,14 @@ function clearGroup(group: THREE.Group): void {
   for (const child of [...group.children]) {
     group.remove(child);
     if (child instanceof THREE.Mesh) child.geometry.dispose();
+  }
+}
+
+function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
+  if (Array.isArray(material)) {
+    for (const item of material) item.dispose();
+  } else {
+    material.dispose();
   }
 }
 

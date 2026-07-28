@@ -13,11 +13,13 @@ import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
   AppMode,
   BuildingKind,
+  BuildWorkspace,
   BuildTool,
   CameraMode,
   DesignImpact,
   DistrictFeature,
   EnvironmentMode,
+  ExpansionRoad,
   FeatureDesign,
   LaneDirection,
   ManualSignalTarget,
@@ -52,6 +54,13 @@ const exportProjectButton = requireElement<HTMLButtonElement>("export-project-bu
 const importProjectButton = requireElement<HTMLButtonElement>("import-project-button");
 const importProjectFile = requireElement<HTMLInputElement>("import-project-file");
 const autosaveStatus = requireElement<HTMLElement>("autosave-status");
+const cityEditWorkspace = requireElement<HTMLButtonElement>("city-edit-workspace");
+const expansionWorkspace = requireElement<HTMLButtonElement>("expansion-workspace");
+const buildWorkspaceHelp = requireElement<HTMLElement>("build-workspace-help");
+const drawExpansionRoadButton = requireElement<HTMLButtonElement>(
+  "draw-expansion-road-button",
+);
+const expansionRoadCount = requireElement<HTMLElement>("expansion-road-count");
 const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const buildingEditor = requireElement<HTMLElement>("building-editor");
@@ -138,6 +147,9 @@ const buildToolButtons = Array.from(
 const buildingToolButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-building-tool]"),
 );
+const buildWorkspaceSections = Array.from(
+  document.querySelectorAll<HTMLElement>("[data-build-workspace-section]"),
+);
 
 const simulation = new Simulation();
 simulation.setSimulationSeed(createSessionSeed());
@@ -145,17 +157,21 @@ simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
 const renderer = new ThreeRenderer(canvas);
 const designs = new Map<string, FeatureDesign>();
 const placedBuildings = new Map<string, PlacedBuilding>();
+const expansionRoads = new Map<string, ExpansionRoad>();
 const features = renderer.getFeatures();
 const editHistory = new EditHistory();
 const AUTOSAVE_KEY = "penn-street-lab:autosave";
 const SAVE_SLOT_PREFIX = "penn-street-lab:slot:";
 let appMode: AppMode = "build";
+let buildWorkspace: BuildWorkspace = "city-edit";
+let expansionRoadToolActive = false;
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature = features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
 let selectedPlacedBuildingId: string | null = null;
 let activeBuildingTool: BuildingKind | null = "residential";
 let nextBuildingId = 1;
+let nextExpansionRoadId = 1;
 let previousTimestamp = performance.now();
 let dragStartSnapshot: EditorSnapshot | null = null;
 let autosaveTimer: number | null = null;
@@ -173,6 +189,12 @@ loadProjectButton.addEventListener("click", loadProjectFromSlot);
 exportProjectButton.addEventListener("click", exportProject);
 importProjectButton.addEventListener("click", () => importProjectFile.click());
 importProjectFile.addEventListener("change", () => void importProject());
+cityEditWorkspace.addEventListener("click", () => setBuildWorkspace("city-edit"));
+expansionWorkspace.addEventListener("click", () => setBuildWorkspace("expansion"));
+drawExpansionRoadButton.addEventListener("click", () => {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  setExpansionRoadToolActive(!expansionRoadToolActive);
+});
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -191,17 +213,22 @@ resetButton.addEventListener("click", () => {
 });
 
 resetDesignButton.addEventListener("click", () => {
-  if (designs.size === 0 && placedBuildings.size === 0) return;
+  if (designs.size === 0 && placedBuildings.size === 0 && expansionRoads.size === 0) return;
   recordEdit();
   designs.clear();
   placedBuildings.clear();
+  expansionRoads.clear();
+  nextExpansionRoadId = 1;
   selectedPlacedBuildingId = null;
   renderer.setPlacedBuildings([]);
+  renderer.setExpansionRoads([]);
   renderer.setSelectedPlacedBuilding(null);
   syncBuildingActivity();
   syncDesign();
   finishEdit("Empty design autosaved");
-  selectionStatus.textContent = "All placed buildings and street interventions were reset.";
+  updateExpansionRoadCount();
+  selectionStatus.textContent =
+    "All expansion roads, placed buildings, and street interventions were reset.";
 });
 
 for (const button of buildingToolButtons) {
@@ -315,6 +342,7 @@ for (const button of buildToolButtons) {
   button.addEventListener("click", () => {
     const tool = button.dataset.buildTool;
     if (isBuildTool(tool)) {
+      if (buildWorkspace !== "city-edit") setBuildWorkspace("city-edit");
       activeBuildingTool = null;
       renderer.setBuildingPlacementEnabled(false);
       buildingToolButtons.forEach((candidate) => candidate.setAttribute("aria-pressed", "false"));
@@ -344,7 +372,7 @@ locationSearch.addEventListener("submit", (event) => {
 });
 
 renderer.setSelectionHandler((feature) => {
-  if (appMode !== "build") return;
+  if (appMode !== "build" || buildWorkspace !== "city-edit") return;
   selectedPlacedBuildingId = null;
   renderer.setSelectedPlacedBuilding(null);
   selectedFeature = feature;
@@ -370,6 +398,35 @@ renderer.setBuildingInteractionHandlers({
     dragStartSnapshot = null;
   },
   onPlacementRejected: (reason) => {
+    selectionStatus.textContent = reason;
+  },
+});
+
+renderer.setExpansionRoadInteractionHandlers({
+  onComplete: (startX, startZ, endX, endZ) => {
+    if (appMode !== "build" || buildWorkspace !== "expansion") return;
+    const validation = renderer.validateExpansionRoad(startX, startZ, endX, endZ);
+    if (!validation.valid) {
+      selectionStatus.textContent = validation.reason;
+      return;
+    }
+    recordEdit();
+    const road: ExpansionRoad = {
+      id: `expansion-road-${nextExpansionRoadId++}`,
+      startX,
+      startZ,
+      endX,
+      endZ,
+      width: 15,
+    };
+    expansionRoads.set(road.id, road);
+    renderer.setExpansionRoads([...expansionRoads.values()]);
+    updateExpansionRoadCount();
+    finishEdit("Expansion road autosaved");
+    selectionStatus.textContent =
+      "Road added. Drag from an endpoint to keep extending the network.";
+  },
+  onRejected: (reason) => {
     selectionStatus.textContent = reason;
   },
 });
@@ -431,7 +488,17 @@ function setAppMode(mode: AppMode): void {
   simulateModeButton.setAttribute("aria-pressed", String(!building));
   renderer.setBuildMode(building);
   renderer.setBuildingPlacementEnabled(
-    building && cameraMode === "orbit" && activeBuildingTool !== null,
+    building &&
+      buildWorkspace === "expansion" &&
+      cameraMode === "orbit" &&
+      activeBuildingTool !== null &&
+      !expansionRoadToolActive,
+  );
+  renderer.setExpansionRoadDrawEnabled(
+    building &&
+      buildWorkspace === "expansion" &&
+      cameraMode === "orbit" &&
+      expansionRoadToolActive,
   );
   renderer.setMapOverlay(
     building ? "none" : (analysisOverlay.value as MapOverlayMode),
@@ -446,6 +513,71 @@ function setAppMode(mode: AppMode): void {
   updateInterface();
 }
 
+function setBuildWorkspace(workspace: BuildWorkspace): void {
+  buildWorkspace = workspace;
+  const expansion = workspace === "expansion";
+  cityEditWorkspace.setAttribute("aria-pressed", String(!expansion));
+  expansionWorkspace.setAttribute("aria-pressed", String(expansion));
+  for (const section of buildWorkspaceSections) {
+    section.hidden = section.dataset.buildWorkspaceSection !== workspace;
+  }
+  renderer.setExpansionMode(expansion);
+  if (expansion) {
+    selectedPlacedBuildingId = null;
+    renderer.setSelectedPlacedBuilding(null);
+    renderer.setSelectedFeature(null);
+    activeBuildingTool = null;
+    buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
+    setExpansionRoadToolActive(true);
+    buildWorkspaceHelp.textContent =
+      "The amber boundary protects the original city. Build freely outside it.";
+    selectionTitle.textContent = "Expansion zone";
+    selectionDescription.textContent =
+      "Drag to extend roads, or choose a building and click open ground.";
+    featureKind.textContent = "Build area";
+    featureKind.dataset.kind = "building";
+    buildingEditor.hidden = true;
+    signalEditor.hidden = true;
+    designSummary.replaceChildren();
+    selectionStatus.textContent =
+      "Draw roads outside the protected city. Nearby endpoints snap together.";
+  } else {
+    setExpansionRoadToolActive(false);
+    renderer.setSelectedFeature(selectedFeature?.id ?? null);
+    buildWorkspaceHelp.textContent =
+      "Select an original street or intersection to edit it.";
+    updateSelectionPanel();
+  }
+}
+
+function setExpansionRoadToolActive(active: boolean): void {
+  expansionRoadToolActive = active && buildWorkspace === "expansion";
+  drawExpansionRoadButton.setAttribute(
+    "aria-pressed",
+    String(expansionRoadToolActive),
+  );
+  if (expansionRoadToolActive) {
+    activeBuildingTool = null;
+    buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
+  }
+  renderer.setExpansionRoadDrawEnabled(
+    appMode === "build" && cameraMode === "orbit" && expansionRoadToolActive,
+  );
+  renderer.setBuildingPlacementEnabled(
+    appMode === "build" &&
+      cameraMode === "orbit" &&
+      buildWorkspace === "expansion" &&
+      activeBuildingTool !== null &&
+      !expansionRoadToolActive,
+  );
+}
+
+function updateExpansionRoadCount(): void {
+  expansionRoadCount.textContent = `${expansionRoads.size} road${
+    expansionRoads.size === 1 ? "" : "s"
+  } · endpoints snap together`;
+}
+
 function setCameraMode(mode: CameraMode): void {
   cameraMode = mode;
   document.body.dataset.cameraMode = mode;
@@ -454,7 +586,17 @@ function setCameraMode(mode: CameraMode): void {
   walkCameraButton.setAttribute("aria-pressed", String(mode === "walk"));
   renderer.setCameraMode(mode);
   renderer.setBuildingPlacementEnabled(
-    appMode === "build" && mode === "orbit" && activeBuildingTool !== null,
+    appMode === "build" &&
+      buildWorkspace === "expansion" &&
+      mode === "orbit" &&
+      activeBuildingTool !== null &&
+      !expansionRoadToolActive,
+  );
+  renderer.setExpansionRoadDrawEnabled(
+    appMode === "build" &&
+      buildWorkspace === "expansion" &&
+      mode === "orbit" &&
+      expansionRoadToolActive,
   );
 }
 
@@ -572,8 +714,10 @@ function updateSelectionPanel(): void {
 }
 
 function selectBuildingTool(kind: BuildingKind): void {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   if (cameraMode !== "orbit") setCameraMode("orbit");
   activeBuildingTool = kind;
+  setExpansionRoadToolActive(false);
   buildingColorControl.value = defaultBuildingColor(kind);
   renderer.setBuildingPlacementEnabled(appMode === "build" && cameraMode === "orbit");
   renderer.setSelectedFeature(null);
@@ -584,7 +728,13 @@ function selectBuildingTool(kind: BuildingKind): void {
 }
 
 function placeBuilding(x: number, z: number): void {
-  if (!activeBuildingTool || appMode !== "build") return;
+  if (
+    !activeBuildingTool ||
+    appMode !== "build" ||
+    buildWorkspace !== "expansion"
+  ) {
+    return;
+  }
   const building: PlacedBuilding = {
     id: `placed-building-${nextBuildingId++}`,
     kind: activeBuildingTool,
@@ -910,7 +1060,11 @@ function captureEditorSnapshot(): EditorSnapshot {
     buildings: Array.from(placedBuildings.values(), (building) => ({
       ...building,
     })),
+    expansionRoads: Array.from(expansionRoads.values(), (road) => ({
+      ...road,
+    })),
     nextBuildingId,
+    nextExpansionRoadId,
   };
 }
 
@@ -939,12 +1093,20 @@ function applyEditorSnapshot(snapshot: EditorSnapshot): void {
   for (const building of snapshot.buildings) {
     placedBuildings.set(building.id, { ...building });
   }
+  expansionRoads.clear();
+  for (const road of snapshot.expansionRoads) {
+    expansionRoads.set(road.id, { ...road });
+  }
   nextBuildingId = Math.max(1, snapshot.nextBuildingId);
+  nextExpansionRoadId = Math.max(1, snapshot.nextExpansionRoadId);
   selectedPlacedBuildingId = null;
   renderer.setSelectedPlacedBuilding(null);
   renderer.setPlacedBuildings([...placedBuildings.values()]);
+  renderer.setExpansionRoads([...expansionRoads.values()]);
+  updateExpansionRoadCount();
   syncBuildingActivity();
   syncDesign();
+  if (buildWorkspace === "expansion") setBuildWorkspace("expansion");
 }
 
 function applyProjectSnapshot(snapshot: ProjectSnapshot): void {
@@ -1288,6 +1450,8 @@ if (!restoreAutosave()) {
   syncScenarioControls();
   syncEnvironmentControls();
 }
+updateExpansionRoadCount();
+setBuildWorkspace("city-edit");
 setAppMode("build");
 simulation.start();
 updateInterface();

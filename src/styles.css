@@ -348,6 +348,59 @@ body[data-app-mode="simulate"] .selection-panel {
   font-size: 0.56rem;
 }
 
+[hidden] {
+  display: none !important;
+}
+
+.build-workspace-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+  padding: 0.28rem;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 9px;
+  background: rgb(3 12 15 / 40%);
+}
+
+.build-workspace-switch button {
+  padding: 0.48rem 0.3rem;
+  border-color: transparent;
+  color: #82978e;
+  font-size: 0.58rem;
+  font-weight: 900;
+}
+
+.build-workspace-switch button[aria-pressed="true"] {
+  border-color: rgb(121 224 194 / 30%);
+  color: #e7fff7;
+  background: rgb(52 140 116 / 34%);
+}
+
+.draw-road-button {
+  display: grid;
+  width: 100%;
+  padding: 0.62rem;
+  text-align: left;
+}
+
+.draw-road-button span {
+  font-size: 0.65rem;
+  font-weight: 900;
+}
+
+.draw-road-button small {
+  margin-top: 0.12rem;
+  color: #86a297;
+  font-size: 0.52rem;
+}
+
+.draw-road-button[aria-pressed="true"] {
+  border-color: #79e0c2;
+  color: #e6fff7;
+  background: rgb(52 140 116 / 38%);
+}
+
 .tool-list {
   display: grid;
   gap: 0.4rem;

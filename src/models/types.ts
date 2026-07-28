@@ -1,4 +1,5 @@
 export type AppMode = "build" | "simulate";
+export type BuildWorkspace = "city-edit" | "expansion";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
 export type WeatherMode = "clear" | "rain" | "fog";
@@ -26,6 +27,15 @@ export interface PlacedBuilding {
   rotation: number;
   floors: number;
   color: string;
+}
+
+export interface ExpansionRoad {
+  id: string;
+  startX: number;
+  startZ: number;
+  endX: number;
+  endZ: number;
+  width: number;
 }
 
 export type BuildTool =
