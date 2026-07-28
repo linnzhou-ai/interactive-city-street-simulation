@@ -37,6 +37,10 @@ import type {
   EntityBuildingDefinition,
   EntitySelection,
 } from "../models/entityTypes";
+import {
+  cameraClipPlanes,
+  validateBuildingGeometry,
+} from "./renderDiagnostics";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 const METERS_PER_DEGREE_LONGITUDE =
@@ -45,6 +49,7 @@ const ROAD_WIDTH = 15;
 const MAJOR_ROAD_WIDTH = 22;
 const SIDEWALK_WIDTH = 6;
 const WORLD_SIZE = 5_200;
+const SKY_RADIUS = 3_000;
 const RENDER_HEIGHTS = {
   ground: -0.08,
   lawn: 0.02,
@@ -102,7 +107,7 @@ type EntityHoverHandler = (
 
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.5, 7_000);
+  private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.5, 6_500);
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
   private readonly raycaster = new THREE.Raycaster();
@@ -144,12 +149,34 @@ export class ThreeRenderer {
     }),
   );
   private readonly trafficDebugGroup = new THREE.Group();
+  private readonly lodDebugMaterial = new THREE.MeshBasicMaterial({
+    color: "#54e8bd",
+    wireframe: false,
+  });
+  private readonly debugFrustum = new THREE.Frustum();
+  private readonly debugProjectionMatrix = new THREE.Matrix4();
+  private readonly debugBoundingSphere = new THREE.Sphere();
   private readonly collisionDebugEnabled = new URLSearchParams(window.location.search).has(
     "collisionDebug",
   );
   private readonly trafficDebugEnabled = new URLSearchParams(window.location.search).has(
     "trafficDebug",
   );
+  private readonly lodDebugEnabled = new URLSearchParams(window.location.search).has(
+    "lodDebug",
+  );
+  private readonly frustumDebugEnabled = new URLSearchParams(window.location.search).has(
+    "frustumDebug",
+  );
+  private readonly boundsDebugEnabled = new URLSearchParams(window.location.search).has(
+    "boundsDebug",
+  );
+  private readonly depthDebugEnabled = new URLSearchParams(window.location.search).has(
+    "depthDebug",
+  );
+  private sky: THREE.Mesh | null = null;
+  private depthDebugStatus: HTMLOutputElement | null = null;
+  private invalidBuildingGeometryCount = 0;
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
   private entitySelectionHandler: ((selection: EntitySelection) => void) | null = null;
   private entityHoverHandler: EntityHoverHandler | null = null;
@@ -253,7 +280,9 @@ export class ThreeRenderer {
     this.buildCollisionIndexes();
     this.buildCollisionDebug();
     this.buildSignals();
+    this.buildRenderingDebug();
     this.bindInput();
+    this.updateCameraClipping();
     this.updateFeatureHighlights();
   }
 
@@ -272,6 +301,48 @@ export class ThreeRenderer {
       altitude: this.camera.position.y,
       heading: this.camera.rotation.y,
     };
+  }
+
+  getRenderingDebugSnapshot(): {
+    altitude: number;
+    near: number;
+    far: number;
+    invalidBuildingGeometryCount: number;
+    buildingCount: number;
+    lodMode: "full-detail-only";
+    skyRadius: number;
+  } {
+    return {
+      altitude: this.camera.position.y,
+      near: this.camera.near,
+      far: this.camera.far,
+      invalidBuildingGeometryCount: this.invalidBuildingGeometryCount,
+      buildingCount: this.buildingGroups.size,
+      lodMode: "full-detail-only",
+      skyRadius: SKY_RADIUS,
+    };
+  }
+
+  setDebugCameraAltitude(
+    altitudeMeters: number,
+    view: "down" | "horizon" = "down",
+  ): void {
+    const altitude = THREE.MathUtils.clamp(altitudeMeters, 2, 2_000);
+    const target = this.controls.target.clone();
+    if (view === "down") {
+      this.camera.position.set(target.x, altitude, target.z + 0.01);
+      this.camera.lookAt(target.x, 0, target.z);
+    } else {
+      this.camera.position.y = altitude;
+      this.camera.lookAt(target.x, altitude, target.z);
+    }
+    const direction = new THREE.Vector3();
+    this.camera.getWorldDirection(direction);
+    this.flyYaw = Math.atan2(-direction.x, -direction.z);
+    this.flyPitch = Math.asin(
+      THREE.MathUtils.clamp(direction.y, -1, 1),
+    );
+    this.updateCameraClipping();
   }
 
   flyTo(point: GeoPoint, altitude = 260): void {
@@ -328,6 +399,7 @@ export class ThreeRenderer {
       this.camera.getWorldDirection(direction);
       this.controls.target.copy(this.camera.position).addScaledVector(direction, 45);
     }
+    this.updateCameraClipping();
   }
 
   setSelectedFeature(featureId: string | null): void {
@@ -469,6 +541,19 @@ export class ThreeRenderer {
         selectedBuilding.z,
       );
       this.entityHighlightGroup.add(highlight);
+      if (this.boundsDebugEnabled) {
+        const group = this.buildingGroups.get(selectedBuilding.id);
+        if (group) {
+          group.updateWorldMatrix(true, true);
+          const bounds = new THREE.Box3().setFromObject(group);
+          const helper = new THREE.Box3Helper(
+            bounds,
+            new THREE.Color("#ffcb66"),
+          );
+          helper.renderOrder = 40;
+          this.entityHighlightGroup.add(helper);
+        }
+      }
     }
 
     const connections = state.connections
@@ -593,25 +678,32 @@ export class ThreeRenderer {
     }
 
     if (this.cameraMode === "orbit") this.controls.update();
+    this.updateCameraClipping();
     this.updateCollisionDebug();
+    this.updateRenderingDebug();
     this.renderer.render(this.scene, this.camera);
   }
 
   private buildLightingAndSky(): void {
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(4_800, 32, 18),
+      new THREE.SphereGeometry(SKY_RADIUS, 32, 18),
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
+        depthTest: false,
+        depthWrite: false,
         uniforms: {
           topColor: { value: new THREE.Color("#5f91b5") },
           bottomColor: { value: new THREE.Color("#d8ddd0") },
         },
         vertexShader:
-          "varying vec3 vWorldPosition; void main(){ vec4 p=modelMatrix*vec4(position,1.0); vWorldPosition=p.xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
+          "varying vec3 vSkyDirection; void main(){ vSkyDirection=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
         fragmentShader:
-          "uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vWorldPosition; void main(){ float h=normalize(vWorldPosition).y; float f=pow(max(h,0.0),0.55); gl_FragColor=vec4(mix(bottomColor,topColor,f),1.0); }",
+          "uniform vec3 topColor; uniform vec3 bottomColor; varying vec3 vSkyDirection; void main(){ float h=normalize(vSkyDirection).y; float f=pow(max(h,0.0),0.55); gl_FragColor=vec4(mix(bottomColor,topColor,f),1.0); }",
       }),
     );
+    sky.frustumCulled = false;
+    sky.renderOrder = -1_000;
+    this.sky = sky;
     this.scene.add(sky);
 
     const hemisphere = new THREE.HemisphereLight("#dff3ff", "#536044", 2.35);
@@ -982,10 +1074,26 @@ export class ThreeRenderer {
     group.userData.entityKind = "building";
     group.userData.entityId = definition.id;
     this.buildingGroups.set(definition.id, group);
+    group.updateWorldMatrix(true, true);
+    const expectedSpan = Math.hypot(
+      definition.width,
+      definition.depth,
+      definition.height,
+    );
     group.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       child.userData.entityKind = "building";
       child.userData.entityId = definition.id;
+      child.userData.lodLevel = 0;
+      this.validateBuildingMesh(
+        child,
+        definition.id,
+        expectedSpan,
+        "LOD0",
+      );
+      if (this.lodDebugEnabled && child.visible) {
+        child.material = this.lodDebugMaterial;
+      }
       this.selectableBuildings.push(child);
     });
 
@@ -2163,6 +2271,98 @@ export class ThreeRenderer {
     document.body.append(this.collisionDebugStatus);
   }
 
+  private buildRenderingDebug(): void {
+    if (
+      this.depthDebugEnabled ||
+      this.lodDebugEnabled ||
+      this.frustumDebugEnabled ||
+      this.boundsDebugEnabled
+    ) {
+      this.depthDebugStatus = document.createElement("output");
+      this.depthDebugStatus.className = "render-debug-status";
+      document.body.append(this.depthDebugStatus);
+    }
+  }
+
+  private updateCameraClipping(): void {
+    const clipping = cameraClipPlanes(
+      this.cameraMode,
+      this.camera.position.y,
+    );
+    if (
+      this.camera.near !== clipping.near ||
+      this.camera.far !== clipping.far
+    ) {
+      this.camera.near = clipping.near;
+      this.camera.far = clipping.far;
+      this.camera.updateProjectionMatrix();
+    }
+    this.sky?.position.copy(this.camera.position);
+  }
+
+  private updateRenderingDebug(): void {
+    if (!this.depthDebugStatus) return;
+    const ratio = this.camera.far / this.camera.near;
+    const details = [
+      `LOD: full detail (LOD0)`,
+      `altitude: ${this.camera.position.y.toFixed(1)} m`,
+      `clip: ${this.camera.near.toFixed(2)}–${this.camera.far.toFixed(0)} m`,
+      `ratio: ${Math.round(ratio).toLocaleString()}:1`,
+      `invalid geometry: ${this.invalidBuildingGeometryCount}`,
+    ];
+    if (this.frustumDebugEnabled) {
+      this.camera.updateMatrixWorld();
+      this.debugProjectionMatrix.multiplyMatrices(
+        this.camera.projectionMatrix,
+        this.camera.matrixWorldInverse,
+      );
+      this.debugFrustum.setFromProjectionMatrix(this.debugProjectionMatrix);
+      let inFrustum = 0;
+      let total = 0;
+      for (const mesh of this.selectableBuildings) {
+        if (!mesh.visible || !mesh.geometry.boundingSphere) continue;
+        total += 1;
+        this.debugBoundingSphere
+          .copy(mesh.geometry.boundingSphere)
+          .applyMatrix4(mesh.matrixWorld);
+        if (this.debugFrustum.intersectsSphere(this.debugBoundingSphere)) {
+          inFrustum += 1;
+        }
+      }
+      details.push(`frustum meshes: ${inFrustum}/${total}`);
+    }
+    this.depthDebugStatus.value = details.join(" · ");
+  }
+
+  private validateBuildingMesh(
+    mesh: THREE.Mesh,
+    buildingId: string,
+    expectedSpanMeters: number,
+    lodLevel: string,
+  ): void {
+    mesh.updateWorldMatrix(true, false);
+    const issues = validateBuildingGeometry(
+      mesh.geometry,
+      mesh.matrixWorld,
+      expectedSpanMeters,
+    );
+    if (issues.length === 0) return;
+    this.invalidBuildingGeometryCount += 1;
+    mesh.visible = false;
+    const bounds = mesh.geometry.boundingBox;
+    console.error("Invalid building geometry excluded from rendering.", {
+      buildingId,
+      lodLevel,
+      issues,
+      boundingBox: bounds
+        ? {
+            min: bounds.min.toArray(),
+            max: bounds.max.toArray(),
+          }
+        : null,
+    });
+  }
+
   private updateCollisionDebug(): void {
     if (!this.collisionDebugEnabled || !this.collisionDebugPlayer) return;
     const mode = this.cameraMode;
@@ -2235,6 +2435,19 @@ export class ThreeRenderer {
       building.rotation.y = rng() * Math.PI;
       building.userData.collidable = true;
       this.scene.add(building);
+      building.userData.entityKind = "building";
+      building.userData.entityId = `distant-building-${index}`;
+      building.userData.lodLevel = 0;
+      building.updateWorldMatrix(true, false);
+      this.validateBuildingMesh(
+        building,
+        `distant-building-${index}`,
+        Math.hypot(width, depth, height),
+        "LOD0",
+      );
+      if (this.lodDebugEnabled && building.visible) {
+        building.material = this.lodDebugMaterial;
+      }
     }
   }
 }

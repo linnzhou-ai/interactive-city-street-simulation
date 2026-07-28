@@ -1320,6 +1320,20 @@ input[type="range"] {
   transform: translateX(-50%);
 }
 
+.render-debug-status {
+  position: fixed;
+  z-index: 6;
+  bottom: 5.8rem;
+  left: 50%;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid rgb(84 232 189 / 55%);
+  border-radius: 8px;
+  color: #d9fff3;
+  background: rgb(15 29 27 / 88%);
+  font: 600 0.68rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  transform: translateX(-50%);
+}
+
 .scene-title #scene-subtitle {
   margin: 0.18rem 0 0;
   color: #b5c8bf;

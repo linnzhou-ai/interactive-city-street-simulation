@@ -131,6 +131,9 @@ const simulation = new Simulation();
 simulation.setSimulationSeed(createSessionSeed());
 simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
 const renderer = new ThreeRenderer(canvas);
+if (import.meta.env.DEV) {
+  Object.assign(window, { __CITY_RENDERER__: renderer });
+}
 const designs = new Map<string, FeatureDesign>();
 const features = renderer.getFeatures();
 let appMode: AppMode = "build";
@@ -1200,6 +1203,20 @@ renderer.setSelectedFeature(selectedFeature?.id ?? null);
 initializeSearch();
 updateControlPreviews();
 setCameraMode(cameraMode);
+if (import.meta.env.DEV) {
+  const debugParameters = new URLSearchParams(window.location.search);
+  const debugAltitude = Number(debugParameters.get("cameraAltitude"));
+  if (
+    debugParameters.has("cameraAltitude") &&
+    Number.isFinite(debugAltitude)
+  ) {
+    setCameraMode("fly");
+    renderer.setDebugCameraAltitude(
+      debugAltitude,
+      debugParameters.get("cameraView") === "horizon" ? "horizon" : "down",
+    );
+  }
+}
 setAppMode("build");
 simulation.start();
 updateInterface();
