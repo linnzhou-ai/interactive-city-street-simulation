@@ -126,6 +126,13 @@ interface ExpansionStreetObjectInteractionHandlers {
   onRejected: (reason: string) => void;
 }
 
+type ExpansionEraseTarget = "road" | "street-object" | "building";
+
+interface ExpansionEraseInteractionHandlers {
+  onErase: (target: ExpansionEraseTarget, id: string) => void;
+  onRejected: (reason: string) => void;
+}
+
 interface ExpansionJunction {
   x: number;
   z: number;
@@ -198,12 +205,15 @@ export class ThreeRenderer {
   private expansionStreetObjectInteractionHandlers:
     | ExpansionStreetObjectInteractionHandlers
     | null = null;
+  private expansionEraseInteractionHandlers: ExpansionEraseInteractionHandlers | null =
+    null;
   private selectedFeatureId: string | null = null;
   private selectedExpansionRoadId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
   private buildingPlacementEnabled = false;
   private expansionMode = false;
   private expansionRoadDrawEnabled = false;
+  private expansionEraseEnabled = false;
   private expansionStreetObjectPlacementTool: ExpansionStreetObjectKind | null = null;
   private drawingExpansionRoadStart: THREE.Vector3 | null = null;
   private expansionRoadPreview: THREE.Mesh | null = null;
@@ -324,12 +334,19 @@ export class ThreeRenderer {
     this.expansionStreetObjectInteractionHandlers = handlers;
   }
 
+  setExpansionEraseInteractionHandlers(
+    handlers: ExpansionEraseInteractionHandlers,
+  ): void {
+    this.expansionEraseInteractionHandlers = handlers;
+  }
+
   setExpansionMode(enabled: boolean): void {
     this.expansionMode = enabled;
     this.expansionGuideGroup.visible = enabled && this.buildMode;
     if (!enabled) {
       this.setExpansionRoadDrawEnabled(false);
       this.setExpansionStreetObjectPlacementTool(null);
+      this.setExpansionEraseEnabled(false);
     }
   }
 
@@ -340,12 +357,7 @@ export class ThreeRenderer {
       this.drawingExpansionRoadStart = null;
       this.clearExpansionRoadPreview();
     }
-    if (this.cameraMode === "orbit") {
-      this.canvas.style.cursor =
-        this.expansionRoadDrawEnabled || this.buildingPlacementEnabled
-          ? "crosshair"
-          : "grab";
-    }
+    this.updateBuildCursor();
   }
 
   setExpansionStreetObjectPlacementTool(
@@ -353,17 +365,17 @@ export class ThreeRenderer {
   ): void {
     this.expansionStreetObjectPlacementTool =
       this.expansionMode && this.buildMode ? tool : null;
-    if (this.cameraMode === "orbit") {
-      this.canvas.style.cursor =
-        this.expansionStreetObjectPlacementTool !== null ? "crosshair" : "grab";
-    }
+    this.updateBuildCursor();
   }
 
   setBuildingPlacementEnabled(enabled: boolean): void {
     this.buildingPlacementEnabled = enabled;
-    if (this.cameraMode === "orbit") {
-      this.canvas.style.cursor = enabled ? "crosshair" : "grab";
-    }
+    this.updateBuildCursor();
+  }
+
+  setExpansionEraseEnabled(enabled: boolean): void {
+    this.expansionEraseEnabled = enabled && this.expansionMode && this.buildMode;
+    this.updateBuildCursor();
   }
 
   setPedestrianMarkersVisible(visible: boolean): void {
@@ -443,44 +455,16 @@ export class ThreeRenderer {
     if (kind === "traffic-signal") {
       return { valid: true, reason: "", x, z, rotation: 0 };
     }
-    const roads = [...this.expansionRoadData.values()];
-    const junctions = findExpansionJunctions(roads);
+    const approaches = findExpansionCrosswalkApproaches([
+      ...this.expansionRoadData.values(),
+    ]);
     let nearestPlacement: { x: number; z: number; rotation: number } | null = null;
     let nearestDistance = Number.POSITIVE_INFINITY;
-    for (const junction of junctions) {
-      const connectedRoads = [...junction.roadIds]
-        .map((roadId) => this.expansionRoadData.get(roadId))
-        .filter((road): road is ExpansionRoad => road !== undefined);
-      const junctionWidth =
-        Math.max(...connectedRoads.map((road) => expansionRoadWidth(road))) + 1;
-      const approachOffset =
-        junctionWidth / 2 +
-        EXPANSION_CROSSWALK_JUNCTION_GAP +
-        EXPANSION_CROSSWALK_BAND_LENGTH / 2;
-      for (const direction of junctionDirections(junction, connectedRoads)) {
-        const candidate = {
-          x:
-            junction.x +
-            (direction === "west"
-              ? -approachOffset
-              : direction === "east"
-                ? approachOffset
-                : 0),
-          z:
-            junction.z +
-            (direction === "north"
-              ? -approachOffset
-              : direction === "south"
-                ? approachOffset
-                : 0),
-          rotation:
-            direction === "west" || direction === "east" ? 0 : Math.PI / 2,
-        };
-        const distance = Math.hypot(x - candidate.x, z - candidate.z);
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestPlacement = candidate;
-        }
+    for (const candidate of approaches) {
+      const distance = Math.hypot(x - candidate.x, z - candidate.z);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestPlacement = candidate;
       }
     }
     if (
@@ -517,6 +501,12 @@ export class ThreeRenderer {
       reason: "",
       ...nearestPlacement,
     };
+  }
+
+  isExpansionCrosswalkSupported(x: number, z: number): boolean {
+    return findExpansionCrosswalkApproaches([
+      ...this.expansionRoadData.values(),
+    ]).some((approach) => Math.hypot(x - approach.x, z - approach.z) < 5);
   }
 
   validateExpansionRoad(
@@ -684,6 +674,7 @@ export class ThreeRenderer {
     if (!enabled) {
       this.setExpansionRoadDrawEnabled(false);
       this.setExpansionStreetObjectPlacementTool(null);
+      this.setExpansionEraseEnabled(false);
     }
     for (const group of this.placedBuildingMeshes.values()) {
       const marker = group.getObjectByName("building-activity-marker");
@@ -733,8 +724,7 @@ export class ThreeRenderer {
     this.flyKeys.clear();
     this.looking = false;
     this.controls.enabled = mode === "orbit";
-    this.canvas.style.cursor =
-      mode === "orbit" && !this.buildingPlacementEnabled ? "grab" : "crosshair";
+    this.canvas.style.cursor = mode === "orbit" ? "grab" : "crosshair";
     if (previousMode === "walk" && document.pointerLockElement === this.canvas) {
       document.exitPointerLock();
     }
@@ -749,6 +739,7 @@ export class ThreeRenderer {
       const direction = new THREE.Vector3();
       this.camera.getWorldDirection(direction);
       this.controls.target.copy(this.camera.position).addScaledVector(direction, 45);
+      this.updateBuildCursor();
     }
   }
 
@@ -2168,6 +2159,20 @@ export class ThreeRenderer {
     }
   }
 
+  private updateBuildCursor(): void {
+    if (this.cameraMode !== "orbit") return;
+    if (this.expansionEraseEnabled) {
+      this.canvas.style.cursor = "not-allowed";
+      return;
+    }
+    this.canvas.style.cursor =
+      this.expansionRoadDrawEnabled ||
+      this.buildingPlacementEnabled ||
+      this.expansionStreetObjectPlacementTool !== null
+        ? "crosshair"
+        : "grab";
+  }
+
   private updatePointerRay(event: PointerEvent): void {
     const bounds = this.canvas.getBoundingClientRect();
     this.pointer.set(
@@ -2188,12 +2193,64 @@ export class ThreeRenderer {
     return null;
   }
 
+  private expansionStreetObjectIdFromObject(
+    object: THREE.Object3D | undefined,
+  ): string | null {
+    let current = object;
+    while (current) {
+      if (typeof current.userData.expansionStreetObjectId === "string") {
+        return current.userData.expansionStreetObjectId;
+      }
+      current = current.parent ?? undefined;
+    }
+    return null;
+  }
+
+  private eraseExpansionObjectAtPointer(): void {
+    const streetObjectHit = this.raycaster.intersectObjects(
+      this.expansionStreetObjectGroup.children,
+      true,
+    )[0];
+    const streetObjectId = this.expansionStreetObjectIdFromObject(
+      streetObjectHit?.object,
+    );
+    if (streetObjectId) {
+      this.expansionEraseInteractionHandlers?.onErase(
+        "street-object",
+        streetObjectId,
+      );
+      return;
+    }
+    const buildingHit = this.raycaster.intersectObjects(
+      [...this.placedBuildingMeshes.values()],
+      true,
+    )[0];
+    const buildingId = this.placedBuildingIdFromObject(buildingHit?.object);
+    if (buildingId) {
+      this.expansionEraseInteractionHandlers?.onErase("building", buildingId);
+      return;
+    }
+    const roadHit = this.raycaster.intersectObjects(
+      this.selectableExpansionRoads,
+      false,
+    )[0];
+    const roadId = roadHit?.object.userData.expansionRoadId;
+    if (typeof roadId === "string") {
+      this.expansionEraseInteractionHandlers?.onErase("road", roadId);
+      return;
+    }
+    this.expansionEraseInteractionHandlers?.onRejected(
+      "Erase only works on roads, street objects, and buildings made in Expansion Build.",
+    );
+  }
+
   private bindInput(): void {
     this.canvas.addEventListener("pointerdown", (event) => {
       this.pointerDown.set(event.clientX, event.clientY);
       if (
         this.buildMode &&
         this.cameraMode === "orbit" &&
+        !this.expansionEraseEnabled &&
         this.expansionStreetObjectPlacementTool === null
       ) {
         this.updatePointerRay(event);
@@ -2422,6 +2479,10 @@ export class ThreeRenderer {
   private pickFeature(event: PointerEvent): void {
     if (!this.buildMode || this.cameraMode !== "orbit") return;
     this.updatePointerRay(event);
+    if (this.expansionMode && this.expansionEraseEnabled) {
+      this.eraseExpansionObjectAtPointer();
+      return;
+    }
     if (
       this.expansionMode &&
       this.expansionStreetObjectPlacementTool &&
@@ -3552,6 +3613,45 @@ function junctionDirections(
     }
   }
   return directions;
+}
+
+function findExpansionCrosswalkApproaches(
+  roads: readonly ExpansionRoad[],
+): Array<{ x: number; z: number; rotation: number }> {
+  const roadById = new Map(roads.map((road) => [road.id, road]));
+  const approaches: Array<{ x: number; z: number; rotation: number }> = [];
+  for (const junction of findExpansionJunctions(roads)) {
+    const connectedRoads = [...junction.roadIds]
+      .map((roadId) => roadById.get(roadId))
+      .filter((road): road is ExpansionRoad => road !== undefined);
+    const junctionWidth =
+      Math.max(...connectedRoads.map((road) => expansionRoadWidth(road))) + 1;
+    const approachOffset =
+      junctionWidth / 2 +
+      EXPANSION_CROSSWALK_JUNCTION_GAP +
+      EXPANSION_CROSSWALK_BAND_LENGTH / 2;
+    for (const direction of junctionDirections(junction, connectedRoads)) {
+      approaches.push({
+        x:
+          junction.x +
+          (direction === "west"
+            ? -approachOffset
+            : direction === "east"
+              ? approachOffset
+              : 0),
+        z:
+          junction.z +
+          (direction === "north"
+            ? -approachOffset
+            : direction === "south"
+              ? approachOffset
+              : 0),
+        rotation:
+          direction === "west" || direction === "east" ? 0 : Math.PI / 2,
+      });
+    }
+  }
+  return approaches;
 }
 
 function worldToGeo(x: number, z: number): GeoPoint {

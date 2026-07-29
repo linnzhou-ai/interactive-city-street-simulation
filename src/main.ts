@@ -67,6 +67,9 @@ const placeCrosswalkButton = requireElement<HTMLButtonElement>("place-crosswalk-
 const placeTrafficSignalButton = requireElement<HTMLButtonElement>(
   "place-traffic-signal-button",
 );
+const eraseExpansionButton = requireElement<HTMLButtonElement>(
+  "erase-expansion-button",
+);
 const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
 const buildingEditor = requireElement<HTMLElement>("building-editor");
@@ -172,6 +175,7 @@ const SAVE_SLOT_PREFIX = "penn-street-lab:slot:";
 let appMode: AppMode = "build";
 let buildWorkspace: BuildWorkspace = "city-edit";
 let expansionRoadToolActive = false;
+let expansionEraseToolActive = false;
 let activeExpansionStreetObjectTool: ExpansionStreetObjectKind | null = null;
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
@@ -211,6 +215,10 @@ placeCrosswalkButton.addEventListener("click", () =>
 placeTrafficSignalButton.addEventListener("click", () =>
   selectExpansionStreetObjectTool("traffic-signal"),
 );
+eraseExpansionButton.addEventListener("click", () => {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  setExpansionEraseToolActive(!expansionEraseToolActive);
+});
 
 runButton.addEventListener("click", () => {
   simulation.start();
@@ -507,6 +515,13 @@ renderer.setExpansionStreetObjectInteractionHandlers({
   },
 });
 
+renderer.setExpansionEraseInteractionHandlers({
+  onErase: (target, id) => eraseExpansionObject(target, id),
+  onRejected: (reason) => {
+    selectionStatus.textContent = reason;
+  },
+});
+
 renderer.setEnvironmentStatusHandler((mode, detail) => {
   updateEnvironmentStatus(mode, detail);
 });
@@ -583,6 +598,12 @@ function setAppMode(mode: AppMode): void {
       ? activeExpansionStreetObjectTool
       : null,
   );
+  renderer.setExpansionEraseEnabled(
+    building &&
+      buildWorkspace === "expansion" &&
+      cameraMode === "orbit" &&
+      expansionEraseToolActive,
+  );
   renderer.setMapOverlay(
     building ? "none" : (analysisOverlay.value as MapOverlayMode),
   );
@@ -629,6 +650,7 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
   } else {
     setExpansionRoadToolActive(false);
     clearExpansionStreetObjectTool();
+    clearExpansionEraseTool();
     selectedExpansionRoadId = null;
     renderer.setSelectedExpansionRoad(null);
     renderer.setSelectedFeature(selectedFeature?.id ?? null);
@@ -648,6 +670,7 @@ function setExpansionRoadToolActive(active: boolean): void {
     String(expansionRoadToolActive),
   );
   if (expansionRoadToolActive) {
+    clearExpansionEraseTool();
     clearExpansionStreetObjectTool();
     activeBuildingTool = null;
     buildingToolButtons.forEach((button) => button.setAttribute("aria-pressed", "false"));
@@ -670,6 +693,7 @@ function selectExpansionStreetObjectTool(
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   if (cameraMode !== "orbit") setCameraMode("orbit");
   expansionRoadToolActive = false;
+  clearExpansionEraseTool();
   drawExpansionRoadButton.setAttribute("aria-pressed", "false");
   renderer.setExpansionRoadDrawEnabled(false);
   activeBuildingTool = null;
@@ -701,6 +725,41 @@ function clearExpansionStreetObjectTool(): void {
   renderer.setExpansionStreetObjectPlacementTool(null);
 }
 
+function setExpansionEraseToolActive(active: boolean): void {
+  expansionEraseToolActive = active && buildWorkspace === "expansion";
+  eraseExpansionButton.setAttribute(
+    "aria-pressed",
+    String(expansionEraseToolActive),
+  );
+  if (expansionEraseToolActive) {
+    expansionRoadToolActive = false;
+    drawExpansionRoadButton.setAttribute("aria-pressed", "false");
+    renderer.setExpansionRoadDrawEnabled(false);
+    clearExpansionStreetObjectTool();
+    activeBuildingTool = null;
+    buildingToolButtons.forEach((button) =>
+      button.setAttribute("aria-pressed", "false"),
+    );
+    renderer.setBuildingPlacementEnabled(false);
+  }
+  renderer.setExpansionEraseEnabled(
+    appMode === "build" &&
+      buildWorkspace === "expansion" &&
+      cameraMode === "orbit" &&
+      expansionEraseToolActive,
+  );
+  if (expansionEraseToolActive) {
+    selectionStatus.textContent =
+      "Erase active. Click a user-built road, street object, or building. The original city is protected.";
+  }
+}
+
+function clearExpansionEraseTool(): void {
+  expansionEraseToolActive = false;
+  eraseExpansionButton.setAttribute("aria-pressed", "false");
+  renderer.setExpansionEraseEnabled(false);
+}
+
 function updateExpansionRoadCount(): void {
   const crosswalks = [...expansionStreetObjects.values()].filter(
     (object) => object.kind === "crosswalk",
@@ -711,6 +770,67 @@ function updateExpansionRoadCount(): void {
   } · ${crosswalks} crosswalk${crosswalks === 1 ? "" : "s"} · ${signals} signal${
     signals === 1 ? "" : "s"
   }`;
+}
+
+function eraseExpansionObject(
+  target: "road" | "street-object" | "building",
+  id: string,
+): void {
+  if (
+    appMode !== "build" ||
+    buildWorkspace !== "expansion" ||
+    !expansionEraseToolActive
+  ) {
+    return;
+  }
+  recordEdit();
+  let message = "Expansion object erased.";
+  if (target === "road") {
+    if (!expansionRoads.delete(id)) return;
+    renderer.setExpansionRoads([...expansionRoads.values()]);
+    let removedCrosswalks = 0;
+    for (const object of [...expansionStreetObjects.values()]) {
+      if (
+        object.kind === "crosswalk" &&
+        !renderer.isExpansionCrosswalkSupported(object.x, object.z)
+      ) {
+        expansionStreetObjects.delete(object.id);
+        removedCrosswalks += 1;
+      }
+    }
+    renderer.setExpansionStreetObjects([...expansionStreetObjects.values()]);
+    if (selectedExpansionRoadId === id) {
+      selectedExpansionRoadId = null;
+      renderer.setSelectedExpansionRoad(null);
+    }
+    message =
+      removedCrosswalks > 0
+        ? `Road erased with ${removedCrosswalks} unsupported crosswalk${
+            removedCrosswalks === 1 ? "" : "s"
+          }.`
+        : "Road erased.";
+  } else if (target === "street-object") {
+    const object = expansionStreetObjects.get(id);
+    if (!object || !expansionStreetObjects.delete(id)) return;
+    renderer.setExpansionStreetObjects([...expansionStreetObjects.values()]);
+    message =
+      object.kind === "crosswalk"
+        ? "Crosswalk erased."
+        : "Traffic signal erased.";
+  } else {
+    const building = placedBuildings.get(id);
+    if (!building || !placedBuildings.delete(id)) return;
+    if (selectedPlacedBuildingId === id) {
+      selectedPlacedBuildingId = null;
+      renderer.setSelectedPlacedBuilding(null);
+    }
+    renderer.setPlacedBuildings([...placedBuildings.values()]);
+    syncBuildingActivity();
+    message = `${formatBuildingKind(building.kind)} building erased.`;
+  }
+  updateExpansionRoadCount();
+  finishEdit("Expansion erase autosaved");
+  selectionStatus.textContent = `${message} Use Undo to restore it.`;
 }
 
 function setCameraMode(mode: CameraMode): void {
@@ -739,6 +859,12 @@ function setCameraMode(mode: CameraMode): void {
       mode === "orbit"
       ? activeExpansionStreetObjectTool
       : null,
+  );
+  renderer.setExpansionEraseEnabled(
+    appMode === "build" &&
+      buildWorkspace === "expansion" &&
+      mode === "orbit" &&
+      expansionEraseToolActive,
   );
   if (appMode === "build" && mode === "fly") {
     selectionStatus.textContent =
@@ -906,6 +1032,7 @@ function selectBuildingTool(kind: BuildingKind): void {
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   if (cameraMode !== "orbit") setCameraMode("orbit");
   activeBuildingTool = kind;
+  clearExpansionEraseTool();
   setExpansionRoadToolActive(false);
   clearExpansionStreetObjectTool();
   buildingColorControl.value = defaultBuildingColor(kind);

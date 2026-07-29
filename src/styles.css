@@ -656,6 +656,13 @@ body[data-app-mode="simulate"] .selection-panel {
   background: linear-gradient(#ff5148 0 30%, #ffd24a 30% 65%, #4ae177 65%);
 }
 
+.erase-icon {
+  border: 4px solid #4b3939;
+  background:
+    linear-gradient(135deg, transparent 40%, #ffd5cc 41% 59%, transparent 60%),
+    #d86659;
+}
+
 .expansion-street-object-tools {
   margin-top: 0.4rem;
 }
