@@ -4,6 +4,7 @@ import {
   resolveSubsteppedMovement,
 } from "../core/collision";
 import { deriveBuildingRole } from "../core/buildingActivity";
+import { PENN_BUILDINGS } from "../data/pennBuildings";
 import {
   PENN_AVENUES,
   PENN_CENTER,
@@ -15,6 +16,7 @@ import type {
   BuildingConnectionKind,
   DetailedBuilding,
   DetailedEntityState,
+  DetailedPerson,
   EntitySelection,
 } from "../models/entityTypes";
 import type {
@@ -65,7 +67,7 @@ const CORE_PROTECTION_PADDING = 10;
 const EXPANSION_GRID_SIZE = 20;
 const EXPANSION_CROSSWALK_BAND_LENGTH = 12.25;
 const EXPANSION_CROSSWALK_JUNCTION_GAP = 0.8;
-const EXPANSION_CROSSWALK_PLACEMENT_RADIUS = 30;
+const EXPANSION_CROSSWALK_PLACEMENT_RADIUS = 18;
 const CORE_BOUNDS = createProtectedCoreBounds();
 const ORIGINAL_ROAD_CONNECTORS = createOriginalRoadConnectors();
 const FLY_COLLIDER_RADIUS = 0.45;
@@ -184,9 +186,13 @@ export class ThreeRenderer {
   private readonly expansionStreetObjectGroup = new THREE.Group();
   private readonly expansionGuideGroup = new THREE.Group();
   private readonly entityPickGroup = new THREE.Group();
+  private readonly entityPersonGroup = new THREE.Group();
   private readonly entityFlowGroup = new THREE.Group();
   private readonly entityHighlightGroup = new THREE.Group();
   private readonly selectableEntityBuildings: THREE.Mesh[] = [];
+  private readonly selectableEntityPeople: THREE.Mesh[] = [];
+  private readonly entityPersonMarkers = new Map<string, THREE.Group>();
+  private readonly trackedPersonIds = new Set<string>();
   private readonly entityFlowParticles: EntityFlowParticle[] = [];
   private readonly entityFlowUp = new THREE.Vector3(0, 1, 0);
   private readonly entityFlowTangent = new THREE.Vector3();
@@ -299,6 +305,7 @@ export class ThreeRenderer {
       this.expansionStreetObjectGroup,
       this.expansionGuideGroup,
       this.entityPickGroup,
+      this.entityPersonGroup,
       this.entityFlowGroup,
       this.entityHighlightGroup,
       this.rainPoints,
@@ -353,6 +360,7 @@ export class ThreeRenderer {
   setEntityMode(enabled: boolean): void {
     this.entityMode = enabled;
     this.entityPickGroup.visible = enabled;
+    this.entityPersonGroup.visible = enabled;
     this.entityFlowGroup.visible = enabled;
     this.entityHighlightGroup.visible = enabled;
     this.canvas.style.cursor =
@@ -372,7 +380,12 @@ export class ThreeRenderer {
       this.entityBuildingSignature = buildingSignature;
       this.rebuildEntityPickSurfaces();
     }
-    const flowSignature = `${state.lastUpdatedDay}:${this.selectedEntity?.kind ?? "none"}:${this.selectedEntity?.id ?? "none"}`;
+    this.syncEntityPeople();
+    const selectedPerson =
+      this.selectedEntity?.kind === "person"
+        ? state.people.find((person) => person.id === this.selectedEntity?.id)
+        : undefined;
+    const flowSignature = `${state.lastUpdatedDay}:${this.selectedEntity?.kind ?? "none"}:${this.selectedEntity?.id ?? "none"}:${selectedPerson?.mobility.phase ?? "stationary"}:${Math.round((selectedPerson?.mobility.routeProgress ?? 0) * 50)}`;
     if (flowSignature !== this.entityFlowSignature) {
       this.entityFlowSignature = flowSignature;
       this.rebuildEntityFlows();
@@ -381,8 +394,52 @@ export class ThreeRenderer {
 
   setSelectedEntity(selection: EntitySelection | null): void {
     this.selectedEntity = selection;
+    this.syncEntityPeople();
     this.entityFlowSignature = "";
     this.rebuildEntityFlows();
+  }
+
+  setTrackedPeople(personIds: readonly string[]): void {
+    this.trackedPersonIds.clear();
+    for (const personId of personIds) this.trackedPersonIds.add(personId);
+    this.syncEntityPeople();
+  }
+
+  focusPerson(personId: string): boolean {
+    const person = this.entityState?.people.find(
+      (candidate) => candidate.id === personId,
+    );
+    if (!person) return false;
+    const altitude = 110;
+    this.camera.position.set(
+      person.mobility.x + altitude * 0.55,
+      altitude,
+      person.mobility.z + altitude * 0.72,
+    );
+    this.controls.target.set(person.mobility.x, 2, person.mobility.z);
+    this.camera.lookAt(this.controls.target);
+    this.controls.update();
+    return true;
+  }
+
+  focusBuilding(building: Readonly<DetailedBuilding>): void {
+    const altitude = THREE.MathUtils.clamp(
+      Math.max(building.width, building.depth, building.height) * 2.2,
+      95,
+      260,
+    );
+    this.camera.position.set(
+      building.x + altitude * 0.58,
+      altitude,
+      building.z + altitude * 0.74,
+    );
+    this.controls.target.set(
+      building.x,
+      Math.min(building.height * 0.42, 32),
+      building.z,
+    );
+    this.camera.lookAt(this.controls.target);
+    this.controls.update();
   }
 
   setExpansionRoadSelectionHandler(handler: (roadId: string) => void): void {
@@ -1063,7 +1120,10 @@ export class ThreeRenderer {
     const visiblePieces = splitRoadAroundJunctions(
       road,
       connectedJunctions,
-      width / 2 + 1,
+      width / 2 +
+        EXPANSION_CROSSWALK_JUNCTION_GAP +
+        EXPANSION_CROSSWALK_BAND_LENGTH +
+        2.2,
     );
     for (const piece of visiblePieces) {
       const centerLine = createWorldSegmentMesh(
@@ -1149,18 +1209,37 @@ export class ThreeRenderer {
       1.4;
     for (const direction of directions) {
       const horizontalApproach = direction === "west" || direction === "east";
+      const approachWidth = approachRoadWidth(
+        junction,
+        connectedRoads,
+        direction,
+      );
+      const stopBarLength = Math.max(2.4, approachWidth / 2 - 0.8);
+      const laneCenterOffset = approachWidth / 4;
       const stopLine = box(
-        horizontalApproach ? 0.45 : width - 1,
+        horizontalApproach ? 0.45 : stopBarLength,
         0.025,
-        horizontalApproach ? width - 1 : 0.45,
+        horizontalApproach ? stopBarLength : 0.45,
         this.materials.whiteLine,
       );
       stopLine.position.set(
         junction.x +
-          (direction === "west" ? -lineOffset : direction === "east" ? lineOffset : 0),
+          (direction === "west"
+            ? -lineOffset
+            : direction === "east"
+              ? lineOffset
+              : direction === "north"
+                ? -laneCenterOffset
+                : laneCenterOffset),
         RENDER_HEIGHTS.roadMarking + 0.01,
         junction.z +
-          (direction === "north" ? -lineOffset : direction === "south" ? lineOffset : 0),
+          (direction === "north"
+            ? -lineOffset
+            : direction === "south"
+              ? lineOffset
+              : direction === "west"
+                ? laneCenterOffset
+                : -laneCenterOffset),
       );
       group.add(stopLine);
     }
@@ -1172,27 +1251,31 @@ export class ThreeRenderer {
     group.position.set(object.x, 0, object.z);
     group.rotation.y = object.rotation;
     group.userData.expansionStreetObjectId = object.id;
-    const nearestJunction = findExpansionJunctions([
+    const nearestApproach = findExpansionCrosswalkApproaches([
       ...this.expansionRoadData.values(),
-    ]).reduce<ExpansionJunction | null>((nearest, junction) => {
-      if (!nearest) return junction;
-      return Math.hypot(object.x - junction.x, object.z - junction.z) <
+    ]).reduce<ExpansionCrosswalkApproach | null>((nearest, approach) => {
+      if (!nearest) return approach;
+      return Math.hypot(object.x - approach.x, object.z - approach.z) <
         Math.hypot(object.x - nearest.x, object.z - nearest.z)
-        ? junction
+        ? approach
         : nearest;
     }, null);
-    const crossingSpan = nearestJunction
-      ? Math.max(
-          ...[...nearestJunction.roadIds]
-            .map((roadId) => this.expansionRoadData.get(roadId))
-            .filter((road): road is ExpansionRoad => road !== undefined)
-            .map((road) => expansionRoadWidth(road)),
-          13.5,
-        )
-      : 13.5;
-    for (let index = -3; index <= 3; index += 1) {
-      const stripe = box(1.15, 0.025, crossingSpan, this.materials.whiteLine);
-      stripe.position.set(index * 1.85, RENDER_HEIGHTS.crosswalk, 0);
+    const crossingSpan = nearestApproach?.crossingSpan ?? 13.5;
+    const stripeCount = 7;
+    const stripeSpacing = EXPANSION_CROSSWALK_BAND_LENGTH / stripeCount;
+    for (let index = 0; index < stripeCount; index += 1) {
+      const stripe = box(
+        stripeSpacing * 0.62,
+        0.025,
+        Math.max(4, crossingSpan - 1),
+        this.materials.whiteLine,
+      );
+      stripe.position.set(
+        -EXPANSION_CROSSWALK_BAND_LENGTH / 2 +
+          stripeSpacing * (index + 0.5),
+        RENDER_HEIGHTS.crosswalk,
+        0,
+      );
       group.add(stripe);
     }
     return group;
@@ -1641,9 +1724,11 @@ export class ThreeRenderer {
 
   private buildLandmarks(): void {
     for (const landmark of PENN_LANDMARKS) {
-      const position = geoToWorld(landmark);
+      const definition = PENN_BUILDINGS.find(
+        (candidate) => candidate.landmarkKind === landmark.kind,
+      );
+      if (!definition) continue;
       const group = new THREE.Group();
-      group.position.set(position.x, 0.3, position.z);
       group.userData.landmark = landmark.name;
       if (landmark.kind === "college-hall") this.buildCollegeHall(group);
       else if (landmark.kind === "fisher") this.buildFisher(group);
@@ -1655,6 +1740,8 @@ export class ThreeRenderer {
       else if (landmark.kind === "houston") this.buildHouston(group);
       else if (landmark.kind === "engineering") this.buildEngineering(group);
       else this.buildMedicine(group);
+      fitObjectToFootprint(group, definition.width, definition.depth);
+      group.position.set(definition.x, 0.3, definition.z);
       this.scene.add(group);
     }
   }
@@ -2554,6 +2641,15 @@ export class ThreeRenderer {
     if (this.cameraMode !== "orbit") return;
     this.updatePointerRay(event);
     if (this.entityMode) {
+      const personHit = this.raycaster.intersectObjects(
+        this.selectableEntityPeople,
+        false,
+      )[0];
+      const personId = personHit?.object.userData.entityPersonId;
+      if (typeof personId === "string") {
+        this.entitySelectionHandler?.({ kind: "person", id: personId });
+        return;
+      }
       const entityHit = this.raycaster.intersectObjects(
         this.selectableEntityBuildings,
         false,
@@ -2667,6 +2763,141 @@ export class ThreeRenderer {
     }
   }
 
+  private syncEntityPeople(): void {
+    if (!this.entityState) {
+      clearGroup(this.entityPersonGroup);
+      this.entityPersonMarkers.clear();
+      this.selectableEntityPeople.length = 0;
+      return;
+    }
+    const selectedPersonId =
+      this.selectedEntity?.kind === "person" ? this.selectedEntity.id : null;
+    const visiblePeople = this.entityState.people
+      .filter(
+        (person) =>
+          person.mobility.phase !== "inside" &&
+            person.mobility.phase !== "outside" ||
+          this.trackedPersonIds.has(person.id) ||
+          person.id === selectedPersonId,
+      )
+      .sort(
+        (left, right) =>
+          Number(right.id === selectedPersonId) -
+            Number(left.id === selectedPersonId) ||
+          Number(this.trackedPersonIds.has(right.id)) -
+            Number(this.trackedPersonIds.has(left.id)) ||
+          left.id.localeCompare(right.id),
+      )
+      .slice(0, 120);
+    const visibleIds = new Set(visiblePeople.map((person) => person.id));
+
+    for (const [personId, marker] of this.entityPersonMarkers) {
+      if (visibleIds.has(personId)) continue;
+      this.entityPersonGroup.remove(marker);
+      disposeObject(marker);
+      this.entityPersonMarkers.delete(personId);
+    }
+
+    const buildingById = new Map(
+      this.entityState.buildings.map((building) => [building.id, building]),
+    );
+    for (const person of visiblePeople) {
+      let marker = this.entityPersonMarkers.get(person.id);
+      if (!marker) {
+        marker = this.createEntityPersonMarker(person);
+        this.entityPersonMarkers.set(person.id, marker);
+        this.entityPersonGroup.add(marker);
+      }
+      const currentBuilding = buildingById.get(person.currentBuildingId);
+      const indoors =
+        person.mobility.phase === "inside" ||
+        person.mobility.phase === "outside";
+      marker.position.set(
+        person.mobility.x,
+        indoors ? (currentBuilding?.height ?? 3) + 4 : 0.35,
+        person.mobility.z,
+      );
+      marker.rotation.y = person.mobility.heading;
+      const selected = person.id === selectedPersonId;
+      const tracked = this.trackedPersonIds.has(person.id);
+      marker.scale.setScalar(selected ? 1.55 : tracked ? 1.3 : 1);
+      const accent = marker.userData.accent as THREE.Mesh | undefined;
+      const accentMaterial = accent?.material;
+      if (accentMaterial instanceof THREE.MeshBasicMaterial) {
+        accentMaterial.color.set(
+          selected ? "#fff1a8" : tracked ? "#ffbd52" : "#6fe7d2",
+        );
+        accentMaterial.opacity = selected || tracked ? 0.96 : 0.66;
+      }
+    }
+
+    this.selectableEntityPeople.length = 0;
+    for (const marker of this.entityPersonMarkers.values()) {
+      const hit = marker.userData.hit as THREE.Mesh | undefined;
+      if (hit) this.selectableEntityPeople.push(hit);
+    }
+  }
+
+  private createEntityPersonMarker(person: Readonly<DetailedPerson>): THREE.Group {
+    const group = new THREE.Group();
+    group.userData.entityPersonId = person.id;
+    const color = residentMarkerColor(person.id);
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.24,
+      roughness: 0.55,
+    });
+    const body = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.48, 1.05, 5, 8),
+      bodyMaterial,
+    );
+    body.position.y = 1.05;
+    body.castShadow = true;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.46, 10, 8),
+      new THREE.MeshStandardMaterial({
+        color: "#f1c6a7",
+        roughness: 0.78,
+      }),
+    );
+    head.position.y = 2.05;
+    head.castShadow = true;
+    const direction = new THREE.Mesh(
+      new THREE.ConeGeometry(0.22, 0.62, 8),
+      new THREE.MeshBasicMaterial({ color: "#f5fff9" }),
+    );
+    direction.rotation.x = Math.PI / 2;
+    direction.position.set(0, 1.22, 0.7);
+    const accent = new THREE.Mesh(
+      new THREE.RingGeometry(0.75, 1.02, 20),
+      new THREE.MeshBasicMaterial({
+        color: "#6fe7d2",
+        transparent: true,
+        opacity: 0.66,
+        depthTest: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    accent.rotation.x = -Math.PI / 2;
+    accent.position.y = 0.05;
+    accent.renderOrder = 9;
+    const hit = new THREE.Mesh(
+      new THREE.SphereGeometry(1.45, 8, 6),
+      new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    hit.position.y = 1.2;
+    hit.userData.entityPersonId = person.id;
+    group.userData.hit = hit;
+    group.userData.accent = accent;
+    group.add(body, head, direction, accent, hit);
+    return group;
+  }
+
   private rebuildEntityFlows(): void {
     this.entityFlowParticles.length = 0;
     clearGroup(this.entityFlowGroup);
@@ -2686,11 +2917,25 @@ export class ThreeRenderer {
       (building) => building.id === selectedBuildingId,
     );
     if (!selectedBuilding) return;
+    const selectedPersonMoving =
+      selectedPerson &&
+      selectedPerson.mobility.phase !== "inside" &&
+      selectedPerson.mobility.phase !== "outside";
 
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(
-        Math.max(8, Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.34),
-        Math.max(11, Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.44),
+        selectedPersonMoving
+          ? 2.8
+          : Math.max(
+              8,
+              Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.34,
+            ),
+        selectedPersonMoving
+          ? 4.1
+          : Math.max(
+              11,
+              Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.44,
+            ),
         32,
       ),
       new THREE.MeshBasicMaterial({
@@ -2704,35 +2949,57 @@ export class ThreeRenderer {
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(
-      selectedBuilding.x,
-      selectedBuilding.height + 4,
-      selectedBuilding.z,
+      selectedPersonMoving ? selectedPerson.mobility.x : selectedBuilding.x,
+      selectedPersonMoving ? 0.42 : selectedBuilding.height + 4,
+      selectedPersonMoving ? selectedPerson.mobility.z : selectedBuilding.z,
     );
     ring.renderOrder = 8;
     this.entityHighlightGroup.add(ring);
 
-    const outline = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        selectedBuilding.width + 3,
-        selectedBuilding.height + 3,
-        selectedBuilding.depth + 3,
-      ),
-      new THREE.MeshBasicMaterial({
-        color: "#fff1a8",
-        wireframe: true,
-        transparent: true,
-        opacity: 0.85,
-        depthTest: false,
-      }),
-    );
-    outline.position.set(
-      selectedBuilding.x,
-      selectedBuilding.height / 2,
-      selectedBuilding.z,
-    );
-    outline.rotation.y = selectedBuilding.rotation;
-    outline.renderOrder = 7;
-    this.entityHighlightGroup.add(outline);
+    if (selectedPersonMoving) {
+      const routeGeometry = new THREE.BufferGeometry().setFromPoints(
+        selectedPerson.mobility.routePoints.map(
+          (point) => new THREE.Vector3(point.x, 1.15, point.z),
+        ),
+      );
+      const routeLine = new THREE.Line(
+        routeGeometry,
+        new THREE.LineDashedMaterial({
+          color: "#fff1a8",
+          transparent: true,
+          opacity: 0.82,
+          dashSize: 8,
+          gapSize: 5,
+          depthTest: false,
+        }),
+      );
+      routeLine.computeLineDistances();
+      routeLine.renderOrder = 7;
+      this.entityHighlightGroup.add(routeLine);
+    } else {
+      const outline = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          selectedBuilding.width + 3,
+          selectedBuilding.height + 3,
+          selectedBuilding.depth + 3,
+        ),
+        new THREE.MeshBasicMaterial({
+          color: "#fff1a8",
+          wireframe: true,
+          transparent: true,
+          opacity: 0.85,
+          depthTest: false,
+        }),
+      );
+      outline.position.set(
+        selectedBuilding.x,
+        selectedBuilding.height / 2,
+        selectedBuilding.z,
+      );
+      outline.rotation.y = selectedBuilding.rotation;
+      outline.renderOrder = 7;
+      this.entityHighlightGroup.add(outline);
+    }
 
     const buildingById = new Map(
       this.entityState.buildings.map((building) => [building.id, building]),
@@ -3954,22 +4221,73 @@ function junctionDirections(
   return directions;
 }
 
-function findExpansionCrosswalkApproaches(
+type ExpansionApproachDirection = "north" | "south" | "east" | "west";
+
+interface ExpansionCrosswalkApproach {
+  x: number;
+  z: number;
+  rotation: number;
+  crossingSpan: number;
+}
+
+function roadSupportsApproachDirection(
+  road: ExpansionRoad,
+  junction: ExpansionJunction,
+  direction: ExpansionApproachDirection,
+): boolean {
+  const horizontal =
+    Math.abs(road.endX - road.startX) >=
+    Math.abs(road.endZ - road.startZ);
+  if ((direction === "west" || direction === "east") !== horizontal) return false;
+  if (direction === "west") {
+    return Math.min(road.startX, road.endX) < junction.x - 0.5;
+  }
+  if (direction === "east") {
+    return Math.max(road.startX, road.endX) > junction.x + 0.5;
+  }
+  if (direction === "north") {
+    return Math.min(road.startZ, road.endZ) < junction.z - 0.5;
+  }
+  return Math.max(road.startZ, road.endZ) > junction.z + 0.5;
+}
+
+function approachRoadWidth(
+  junction: ExpansionJunction,
   roads: readonly ExpansionRoad[],
-): Array<{ x: number; z: number; rotation: number }> {
+  direction: ExpansionApproachDirection,
+): number {
+  return Math.max(
+    ...roads
+      .filter((road) =>
+        roadSupportsApproachDirection(road, junction, direction),
+      )
+      .map((road) => expansionRoadWidth(road)),
+    ROAD_WIDTH,
+  );
+}
+
+export function findExpansionCrosswalkApproaches(
+  roads: readonly ExpansionRoad[],
+): ExpansionCrosswalkApproach[] {
   const roadById = new Map(roads.map((road) => [road.id, road]));
-  const approaches: Array<{ x: number; z: number; rotation: number }> = [];
+  const approaches: ExpansionCrosswalkApproach[] = [];
   for (const junction of findExpansionJunctions(roads)) {
     const connectedRoads = [...junction.roadIds]
       .map((roadId) => roadById.get(roadId))
       .filter((road): road is ExpansionRoad => road !== undefined);
+    const directions = junctionDirections(junction, connectedRoads);
+    const hasHorizontalApproach =
+      directions.has("west") || directions.has("east");
+    const hasVerticalApproach =
+      directions.has("north") || directions.has("south");
+    if (!hasHorizontalApproach || !hasVerticalApproach) continue;
     const junctionWidth =
       Math.max(...connectedRoads.map((road) => expansionRoadWidth(road))) + 1;
     const approachOffset =
       junctionWidth / 2 +
       EXPANSION_CROSSWALK_JUNCTION_GAP +
       EXPANSION_CROSSWALK_BAND_LENGTH / 2;
-    for (const direction of junctionDirections(junction, connectedRoads)) {
+    for (const direction of directions) {
       approaches.push({
         x:
           junction.x +
@@ -3987,6 +4305,11 @@ function findExpansionCrosswalkApproaches(
               : 0),
         rotation:
           direction === "west" || direction === "east" ? 0 : Math.PI / 2,
+        crossingSpan: approachRoadWidth(
+          junction,
+          connectedRoads,
+          direction,
+        ),
       });
     }
   }
@@ -4099,7 +4422,7 @@ function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
   return start.clone().add(end).multiplyScalar(0.5);
 }
 
-function createGabledRoofGeometry(
+export function createGabledRoofGeometry(
   width: number,
   depth: number,
   height: number,
@@ -4125,6 +4448,27 @@ function createGabledRoofGeometry(
   ]);
   geometry.computeVertexNormals();
   return geometry;
+}
+
+export function fitObjectToFootprint(
+  object: THREE.Object3D,
+  width: number,
+  depth: number,
+): void {
+  object.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(object);
+  const size = bounds.getSize(new THREE.Vector3());
+  if (size.x > width) object.scale.x *= width / size.x;
+  if (size.z > depth) object.scale.z *= depth / size.z;
+  object.updateMatrixWorld(true);
+  const center = new THREE.Box3()
+    .setFromObject(object)
+    .getCenter(new THREE.Vector3());
+  for (const child of object.children) {
+    child.position.x -= center.x / object.scale.x;
+    child.position.z -= center.z / object.scale.z;
+  }
+  object.updateMatrixWorld(true);
 }
 
 function getBuildingDimensions(kind: BuildingKind): { width: number; depth: number } {
@@ -4428,6 +4772,14 @@ function clearGroup(group: THREE.Group): void {
   }
 }
 
+function disposeObject(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    disposeMaterial(child.material);
+  });
+}
+
 function routeExpansionRoadNetwork(
   from: THREE.Vector3,
   to: THREE.Vector3,
@@ -4519,6 +4871,15 @@ function entityFlowColor(kind: BuildingConnectionKind): string {
   if (kind === "work") return "#00b7ff";
   if (kind === "visit") return "#ffb000";
   return "#ff5f4a";
+}
+
+function residentMarkerColor(id: string): string {
+  const colors = ["#277c86", "#c36350", "#d3a444", "#786096", "#438263"];
+  let hash = 0;
+  for (const character of id) {
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  }
+  return colors[hash % colors.length];
 }
 
 function entityFlowPoint(

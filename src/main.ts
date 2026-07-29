@@ -71,6 +71,25 @@ const albertPersonMoney = requireElement<HTMLElement>("albert-person-money");
 const albertPersonWage = requireElement<HTMLElement>("albert-person-wage");
 const albertPersonCommute = requireElement<HTMLElement>("albert-person-commute");
 const albertPersonMigration = requireElement<HTMLElement>("albert-person-migration");
+const albertPersonLocation = requireElement<HTMLElement>("albert-person-location");
+const albertPersonProgress = requireElement<HTMLElement>("albert-person-progress");
+const albertPersonDelay = requireElement<HTMLElement>("albert-person-delay");
+const albertPersonDestination = requireElement<HTMLElement>(
+  "albert-person-destination",
+);
+const albertTrackPersonButton = requireElement<HTMLButtonElement>(
+  "albert-track-person-button",
+);
+const albertFavoritePersonButton = requireElement<HTMLButtonElement>(
+  "albert-favorite-person-button",
+);
+const albertTrackedPeople = requireElement<HTMLElement>("albert-tracked-people");
+const albertTrackedPeopleCount = requireElement<HTMLElement>(
+  "albert-tracked-people-count",
+);
+const albertTrackedPeopleList = requireElement<HTMLElement>(
+  "albert-tracked-people-list",
+);
 const albertHouseholdIncome = requireElement<HTMLElement>("albert-household-income");
 const albertHouseholdSpending = requireElement<HTMLElement>("albert-household-spending");
 const albertGoodsImported = requireElement<HTMLElement>("albert-goods-imported");
@@ -244,6 +263,7 @@ let lastClockMinute = -1;
 let albertDashboardOpen = false;
 let selectedAlbertBuildingId: string | null = null;
 let selectedAlbertPersonId: string | null = null;
+const trackedAlbertPersonIds = new Set<string>();
 let currentDesignImpact: DesignImpact = {
   laneCapacityDelta: 0,
   bikeLanes: 0,
@@ -273,6 +293,28 @@ albertPersonSelect.addEventListener("change", () => {
     id: selectedAlbertPersonId,
   });
   renderAlbertDashboard();
+});
+albertTrackPersonButton.addEventListener("click", () => {
+  if (!selectedAlbertPersonId) return;
+  focusAlbertPerson(selectedAlbertPersonId);
+});
+albertFavoritePersonButton.addEventListener("click", () => {
+  if (!selectedAlbertPersonId) return;
+  if (trackedAlbertPersonIds.has(selectedAlbertPersonId)) {
+    trackedAlbertPersonIds.delete(selectedAlbertPersonId);
+  } else {
+    trackedAlbertPersonIds.add(selectedAlbertPersonId);
+  }
+  renderer.setTrackedPeople([...trackedAlbertPersonIds]);
+  renderAlbertDashboard();
+});
+albertTrackedPeopleList.addEventListener("click", (event) => {
+  const button =
+    event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-tracked-person]")
+      : null;
+  const personId = button?.dataset.trackedPerson;
+  if (personId) focusAlbertPerson(personId);
 });
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
@@ -1494,6 +1536,21 @@ function renderAlbertDashboard(): void {
     (candidate) => candidate.id === selectedAlbertPersonId,
   );
   if (person) {
+    const buildingById = new Map(
+      snapshot.entities.buildings.map((building) => [building.id, building]),
+    );
+    const mobility = person.mobility;
+    const destination =
+      buildingById.get(mobility.destinationBuildingId)?.name ??
+      (mobility.destinationBuildingId.startsWith("outside")
+        ? "Outside the district"
+        : "Unknown destination");
+    const currentLocation =
+      mobility.phase === "inside"
+        ? buildingById.get(person.currentBuildingId)?.name ?? destination
+        : mobility.phase === "outside"
+          ? "Outside the district"
+          : `${formatMobilityPhase(mobility.phase)} on the road`;
     albertPersonActivity.textContent = formatDetailedBuildingFunction(person.currentActivity);
     albertPersonName.textContent = person.name;
     albertPersonEmployment.textContent = formatPersonEmployment(person.employment);
@@ -1501,17 +1558,83 @@ function renderAlbertDashboard(): void {
     albertPersonMoney.textContent = formatCurrency(person.money);
     albertPersonWage.textContent = formatCurrency(person.dailyWage);
     albertPersonCommute.textContent = formatCurrency(person.commuteCost);
+    albertPersonLocation.textContent = currentLocation;
+    albertPersonProgress.textContent =
+      mobility.phase === "inside" || mobility.phase === "outside"
+        ? "At destination"
+        : `${Math.round(mobility.routeProgress * 100)}%`;
+    albertPersonDelay.textContent = `${mobility.delayMinutes.toFixed(1)} min`;
+    albertPersonDestination.textContent = destination;
     albertPersonMigration.textContent =
       person.migrationStatus === "staying"
         ? "Staying in the city."
         : `${formatDetailedBuildingFunction(person.migrationStatus)}: ${person.migrationReason}`;
+    const tracked = trackedAlbertPersonIds.has(person.id);
+    albertFavoritePersonButton.setAttribute("aria-pressed", String(tracked));
+    albertFavoritePersonButton.textContent = tracked
+      ? "★ Following resident"
+      : "☆ Follow resident";
   }
+  renderTrackedAlbertPeople(snapshot.entities.people);
 }
 
 function formatPersonEmployment(value: string): string {
   if (value === "local") return "Local worker";
   if (value === "external") return "Outside-city worker";
   return formatDetailedBuildingFunction(value);
+}
+
+function formatMobilityPhase(value: string): string {
+  if (value === "walking") return "Walking";
+  if (value === "driving") return "Driving";
+  if (value === "transit") return "On transit";
+  return "Located";
+}
+
+function renderTrackedAlbertPeople(
+  people: ReadonlyArray<
+    ReturnType<AlbertCitySystems["getSnapshot"]>["entities"]["people"][number]
+  >,
+): void {
+  const tracked = people.filter((person) =>
+    trackedAlbertPersonIds.has(person.id),
+  );
+  albertTrackedPeople.hidden = tracked.length === 0;
+  albertTrackedPeopleCount.textContent = String(tracked.length);
+  albertTrackedPeopleList.replaceChildren(
+    ...tracked.map((person) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.trackedPerson = person.id;
+      const name = document.createElement("span");
+      name.textContent = person.name;
+      const happiness = document.createElement("strong");
+      happiness.textContent = `${Math.round(person.happiness)}%`;
+      const detail = document.createElement("small");
+      detail.textContent =
+        person.mobility.phase === "inside"
+          ? formatDetailedBuildingFunction(person.currentActivity)
+          : `${formatMobilityPhase(person.mobility.phase)} · ${Math.round(
+              person.mobility.routeProgress * 100,
+            )}% to destination`;
+      button.append(name, happiness, detail);
+      return button;
+    }),
+  );
+}
+
+function focusAlbertPerson(personId: string): void {
+  const person = albertCitySystems
+    .getSnapshot()
+    .entities.people.find((candidate) => candidate.id === personId);
+  if (!person) return;
+  selectedAlbertPersonId = person.id;
+  albertPersonSelect.value = person.id;
+  if (appMode !== "simulate") setAppMode("simulate");
+  if (cameraMode !== "orbit") setCameraMode("orbit");
+  renderer.setSelectedEntity({ kind: "person", id: person.id });
+  renderer.focusPerson(person.id);
+  renderAlbertDashboard();
 }
 
 function updateSelectedSignalTiming(): void {
@@ -2056,6 +2179,12 @@ function initializeSearch(): void {
   const optionNames = new Set<string>();
   for (const landmark of PENN_LANDMARKS) optionNames.add(landmark.name);
   for (const feature of features) optionNames.add(feature.name);
+  for (const building of albertCitySystems.getSnapshot().entities.buildings) {
+    optionNames.add(building.name);
+  }
+  for (const person of albertCitySystems.getSnapshot().entities.people) {
+    optionNames.add(person.name);
+  }
   locationOptions.replaceChildren(
     ...Array.from(optionNames)
       .sort()
@@ -2071,6 +2200,28 @@ function initializeSearch(): void {
 function flyToSearchResult(rawQuery: string): void {
   const query = rawQuery.trim().toLowerCase();
   if (!query) return;
+  const citySnapshot = albertCitySystems.getSnapshot();
+  const building = citySnapshot.entities.buildings.find(
+    (candidate) => candidate.name.toLowerCase() === query,
+  );
+  if (building) {
+    locationSearchInput.setCustomValidity("");
+    selectedAlbertBuildingId = building.id;
+    setAlbertDashboardOpen(true);
+    renderer.setSelectedEntity({ kind: "building", id: building.id });
+    renderer.focusBuilding(building);
+    renderAlbertDashboard();
+    return;
+  }
+  const person = citySnapshot.entities.people.find(
+    (candidate) => candidate.name.toLowerCase() === query,
+  );
+  if (person) {
+    locationSearchInput.setCustomValidity("");
+    setAlbertDashboardOpen(true);
+    focusAlbertPerson(person.id);
+    return;
+  }
   const landmark = PENN_LANDMARKS.find(
     (candidate) => candidate.name.toLowerCase() === query,
   );
@@ -2081,7 +2232,9 @@ function flyToSearchResult(rawQuery: string): void {
   );
   const point = landmark ?? feature?.path[Math.floor(feature.path.length / 2)];
   if (!point) {
-    locationSearchInput.setCustomValidity("Choose a listed Penn landmark or street.");
+    locationSearchInput.setCustomValidity(
+      "Choose a listed building, resident, Penn landmark, or street.",
+    );
     locationSearchInput.reportValidity();
     return;
   }

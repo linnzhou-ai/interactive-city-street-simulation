@@ -21,11 +21,11 @@
           <h2 id="simulation-title">Penn · University City</h2>
           <p id="scene-subtitle">Walnut to Spruce · 34th to 38th</p>
           <form id="location-search" class="location-search" role="search">
-            <label class="sr-only" for="location-search-input">Find a Penn landmark or street</label>
+            <label class="sr-only" for="location-search-input">Find a building, resident, Penn landmark, or street</label>
             <input
               id="location-search-input"
               list="location-options"
-              placeholder="Fly to a landmark or street"
+              placeholder="Find a building, person, or street"
               autocomplete="off"
             />
             <datalist id="location-options"></datalist>
@@ -164,8 +164,25 @@
               <div><dt>Money</dt><dd id="albert-person-money">$0</dd></div>
               <div><dt>Daily wage</dt><dd id="albert-person-wage">$0</dd></div>
               <div><dt>Travel cost</dt><dd id="albert-person-commute">$0</dd></div>
+              <div><dt>Current location</dt><dd id="albert-person-location">Home</dd></div>
+              <div><dt>Trip progress</dt><dd id="albert-person-progress">Not travelling</dd></div>
+              <div><dt>Route delay</dt><dd id="albert-person-delay">0 min</dd></div>
+              <div><dt>Destination</dt><dd id="albert-person-destination">Home</dd></div>
             </dl>
             <p id="albert-person-migration">Staying in the city.</p>
+            <div class="albert-person-actions">
+              <button id="albert-track-person-button" type="button">Locate on map</button>
+              <button id="albert-favorite-person-button" type="button" aria-pressed="false">
+                ☆ Follow resident
+              </button>
+            </div>
+          </div>
+          <div id="albert-tracked-people" class="albert-tracked-people" hidden>
+            <div class="albert-section-heading">
+              <span>Followed residents</span>
+              <strong id="albert-tracked-people-count">0</strong>
+            </div>
+            <div id="albert-tracked-people-list"></div>
           </div>
         </section>
 

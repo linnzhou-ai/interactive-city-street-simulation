@@ -500,6 +500,70 @@ body[data-albert-dashboard="open"] .selection-panel {
   line-height: 1.45;
 }
 
+.albert-person-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.albert-person-actions button {
+  padding: 0.45rem 0.3rem;
+  border-color: rgb(232 189 114 / 22%);
+  color: #e9ddc7;
+  font-size: 0.52rem;
+  font-weight: 800;
+}
+
+.albert-person-actions button[aria-pressed="true"] {
+  border-color: #e8bd72;
+  color: #241808;
+  background: #e8bd72;
+}
+
+.albert-tracked-people {
+  margin-top: 0.55rem;
+  padding: 0.55rem;
+  border: 1px solid rgb(232 189 114 / 14%);
+  border-radius: 8px;
+  background: rgb(3 12 15 / 28%);
+}
+
+.albert-tracked-people-list,
+#albert-tracked-people-list {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+#albert-tracked-people-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.45rem;
+  padding: 0.45rem;
+  text-align: left;
+}
+
+#albert-tracked-people-list button span {
+  overflow: hidden;
+  color: #f5eee1;
+  font-size: 0.56rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#albert-tracked-people-list button small {
+  grid-column: 1 / -1;
+  color: #9eada5;
+  font-size: 0.48rem;
+}
+
+#albert-tracked-people-list button strong {
+  color: #e8bd72;
+  font-size: 0.55rem;
+}
+
 .panel,
 .selection-panel {
   padding: 1rem;

@@ -31,6 +31,7 @@ import {
   formatClockTime,
   formatLongDate,
 } from "./timeScale";
+import { ResidentMobilitySystem } from "./residentMobility";
 
 const START_MINUTE = 7 * 60;
 const MAX_EVENTS = 8;
@@ -46,6 +47,7 @@ export interface AlbertCitySnapshot {
 }
 
 export class AlbertCitySystems {
+  private readonly residentMobility = new ResidentMobilitySystem();
   private readonly definition = createDemoCitySectionDefinition();
   private city = createCitySectionState(this.definition);
   private buildingDefinitions: EntityBuildingDefinition[] = [...PENN_BUILDINGS];
@@ -62,6 +64,7 @@ export class AlbertCitySystems {
   private placedBuildingIds = new Set<string>();
 
   reset(): void {
+    this.residentMobility.reset();
     this.city = createCitySectionState(this.definition);
     this.entities = createDetailedEntityState(
       this.buildingDefinitions,
@@ -78,6 +81,7 @@ export class AlbertCitySystems {
   }
 
   setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
+    this.residentMobility.reset();
     this.placedBuildingIds = new Set(buildings.map((building) => building.id));
     this.buildingDefinitions = [
       ...PENN_BUILDINGS,
@@ -159,6 +163,15 @@ export class AlbertCitySystems {
       );
       this.issues = deriveBuildingIssues(this.entities, this.city);
     }
+    this.entities = {
+      ...this.entities,
+      people: this.residentMobility.update(
+        this.entities.people,
+        this.entities.buildings,
+        START_MINUTE + this.elapsedMinutes,
+        this.expansionRoads,
+      ),
+    };
   }
 
   getSnapshot(): AlbertCitySnapshot {

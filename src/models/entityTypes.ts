@@ -18,6 +18,12 @@ export type PersonNeed = "goods" | "health" | "education" | "community" | "recre
 export type PersonActivity = "home" | "work" | "school" | "shop" | "library" | "healthcare" | "leisure";
 export type TravelMode = "walk" | "car" | "transit";
 export type HouseholdFinancialStatus = "stable" | "strained" | "distressed" | "crisis";
+export type PersonMobilityPhase =
+  | "inside"
+  | "walking"
+  | "driving"
+  | "transit"
+  | "outside";
 
 export interface HappinessComponents {
   needs: number;
@@ -164,6 +170,23 @@ export interface PersonScheduleItem {
   travelMinutes: number;
 }
 
+export interface PersonMobilityState {
+  phase: PersonMobilityPhase;
+  mode: TravelMode;
+  activity: PersonActivity;
+  fromBuildingId: string;
+  destinationBuildingId: string;
+  routeProgress: number;
+  departureMinute: number;
+  scheduledArrivalMinute: number;
+  expectedArrivalMinute: number;
+  delayMinutes: number;
+  routePoints: ReadonlyArray<{ x: number; z: number }>;
+  x: number;
+  z: number;
+  heading: number;
+}
+
 export interface DetailedPerson {
   id: string;
   name: string;
@@ -182,7 +205,9 @@ export interface DetailedPerson {
   dailyWage: number;
   dailySpending: number;
   commuteCost: number;
+  dailyTravelDelayMinutes: number;
   money: number;
+  mobility: PersonMobilityState;
   migrationStatus: "staying" | "considering-leaving" | "moving-out";
   migrationReason: string;
   unemployedDays: number;
