@@ -178,6 +178,7 @@ export interface VehicleSnapshot {
   color: string;
   complianceProbability: number;
   violating: boolean;
+  violationEventId?: string;
   source?: "sampled-resident" | "background";
   driverPersonId?: string;
   occupantPersonIds?: readonly string[];
@@ -197,6 +198,7 @@ export interface PedestrianSnapshot {
   variant: number;
   complianceProbability: number;
   violating: boolean;
+  violationEventId?: string;
   source?: "sampled-resident" | "background";
   personId?: string;
   destinationBuildingId?: string;

@@ -164,10 +164,13 @@ export class ThreeRenderer {
   private readonly visiblePersonPoints: Array<{ id: string; x: number; z: number }> = [];
   private readonly personIconPool: THREE.Sprite[] = [];
   private readonly favoritePersonIds = new Set<string>();
+  private readonly personViolationEventIds = new Map<string, string>();
+  private readonly personViolationFlashUntil = new Map<string, number>();
   private readonly personIconMaterials = {
     standard: createPersonIconMaterial("#58d7bd", "#102b2e", false),
     selected: createPersonIconMaterial("#8af5da", "#f5fff9", false),
     favorite: createPersonIconMaterial("#f1c75b", "#30250f", true),
+    violation: createPersonIconMaterial("#ff3b30", "#5b0905", false),
   };
   private readonly agentTransform = new THREE.Object3D();
   private readonly agentColor = new THREE.Color();
@@ -1044,9 +1047,9 @@ export class ThreeRenderer {
     this.updateCameraDepthRange();
     this.sky?.position.copy(this.camera.position);
 
-    this.syncVehicles(state.vehicles);
-    this.syncPedestrians(state.pedestrians);
-    this.syncVisiblePeople(state.vehicles, state.pedestrians);
+    this.syncVehicles(state.vehicles, now);
+    this.syncPedestrians(state.pedestrians, now);
+    this.syncVisiblePeople(state.vehicles, state.pedestrians, now);
     this.updateSignals(state.signals);
     this.expansionBuilder.setRoadAnalysis(this.mapOverlayMode, state.roadTraffic);
     const signature = overlayStateSignature(this.mapOverlayMode, state);
@@ -2537,7 +2540,10 @@ export class ThreeRenderer {
     }
   }
 
-  private syncVehicles(vehicles: readonly VehicleSnapshot[]): void {
+  private syncVehicles(
+    vehicles: readonly VehicleSnapshot[],
+    timestampMs: number,
+  ): void {
     const count = Math.min(vehicles.length, VEHICLE_INSTANCE_CAPACITY);
     for (let index = 0; index < count; index += 1) {
       const vehicle = vehicles[index];
@@ -2564,13 +2570,26 @@ export class ThreeRenderer {
         vehicle.heading,
         scale,
       );
+      const personId = vehicle.driverPersonId
+        ?? vehicle.occupantPersonIds?.[0];
+      const personViolationFlash = personId
+        ? this.personViolationFlashIsRed(
+            personId,
+            vehicle.violationEventId,
+            timestampMs,
+          )
+        : false;
+      const backgroundViolationFlash =
+        vehicle.violating && violationPulseIsRed(timestampMs);
+      const violationFlash =
+        personViolationFlash || backgroundViolationFlash;
       this.vehicleBodies.setColorAt(index, this.agentColor.set(vehicle.color));
-      if (vehicle.violating) {
+      if (violationFlash) {
         this.vehicleBodies.setColorAt(index, this.agentColor.set("#ff3b30"));
       }
       this.vehicleCabins.setColorAt(
         index,
-        this.agentColor.set(vehicle.violating ? "#ffb0a8" : "#aec8ce"),
+        this.agentColor.set(violationFlash ? "#ffb0a8" : "#aec8ce"),
       );
     }
     updateInstanceCount(this.vehicleBodies, count);
@@ -2579,6 +2598,7 @@ export class ThreeRenderer {
 
   private syncPedestrians(
     pedestrians: readonly PedestrianSnapshot[],
+    timestampMs: number,
   ): void {
     const count = Math.min(pedestrians.length, PEDESTRIAN_INSTANCE_CAPACITY);
     for (let index = 0; index < count; index += 1) {
@@ -2604,9 +2624,22 @@ export class ThreeRenderer {
         pedestrian.heading,
         scale,
       );
+      const personViolationFlash = pedestrian.personId
+        ? this.personViolationFlashIsRed(
+            pedestrian.personId,
+            pedestrian.violationEventId,
+            timestampMs,
+          )
+        : false;
+      const backgroundViolationFlash =
+        pedestrian.violating && violationPulseIsRed(timestampMs);
       this.pedestrianBodies.setColorAt(
         index,
-        this.agentColor.set(pedestrian.violating ? "#ff3b30" : pedestrian.color),
+        this.agentColor.set(
+          personViolationFlash || backgroundViolationFlash
+            ? "#ff3b30"
+            : pedestrian.color,
+        ),
       );
       this.pedestrianHeads.setColorAt(
         index,
@@ -2624,21 +2657,33 @@ export class ThreeRenderer {
   private syncVisiblePeople(
     vehicles: readonly VehicleSnapshot[],
     pedestrians: readonly PedestrianSnapshot[],
+    timestampMs: number,
   ): void {
     this.visiblePersonPoints.length = 0;
-    const positions = new Map<string, { x: number; z: number; height: number }>();
+    const positions = new Map<string, {
+      x: number;
+      z: number;
+      height: number;
+      violationEventId?: string;
+    }>();
     for (const pedestrian of pedestrians) {
       if (pedestrian.personId) {
         positions.set(pedestrian.personId, {
           x: pedestrian.x,
           z: pedestrian.z,
           height: 3.1,
+          violationEventId: pedestrian.violationEventId,
         });
       }
     }
     for (const vehicle of vehicles) {
       for (const personId of vehicle.occupantPersonIds ?? []) {
-        positions.set(personId, { x: vehicle.x, z: vehicle.z, height: 4.1 });
+        positions.set(personId, {
+          x: vehicle.x,
+          z: vehicle.z,
+          height: 4.1,
+          violationEventId: vehicle.violationEventId,
+        });
       }
     }
     let iconCount = 0;
@@ -2660,9 +2705,18 @@ export class ThreeRenderer {
       const icon = this.personIconPool[iconCount] ?? this.createPersonIcon();
       icon.position.set(point.x, point.height, point.z);
       icon.scale.set(selected ? 0.052 : 0.044, selected ? 0.066 : 0.056, 1);
-      icon.material = this.favoritePersonIds.has(personId)
-        ? this.personIconMaterials.favorite
-        : selected ? this.personIconMaterials.selected : this.personIconMaterials.standard;
+      const violationFlash = this.personViolationFlashIsRed(
+        personId,
+        point.violationEventId,
+        timestampMs,
+      );
+      icon.material = violationFlash
+        ? this.personIconMaterials.violation
+        : this.favoritePersonIds.has(personId)
+          ? this.personIconMaterials.favorite
+          : selected
+            ? this.personIconMaterials.selected
+            : this.personIconMaterials.standard;
       icon.userData.entityId = personId;
       icon.visible = true;
       iconCount += 1;
@@ -2680,6 +2734,24 @@ export class ThreeRenderer {
     this.personIconPool.push(icon);
     this.personIconGroup.add(icon);
     return icon;
+  }
+
+  private personViolationFlashIsRed(
+    personId: string,
+    eventId: string | undefined,
+    timestampMs: number,
+  ): boolean {
+    if (
+      eventId
+      && this.personViolationEventIds.get(personId) !== eventId
+    ) {
+      this.personViolationEventIds.set(personId, eventId);
+      this.personViolationFlashUntil.set(personId, timestampMs + 2_000);
+    }
+    return (
+      (this.personViolationFlashUntil.get(personId) ?? 0) > timestampMs
+      && violationPulseIsRed(timestampMs)
+    );
   }
 
   private updatePersonIconGroupVisibility(): void {
@@ -3297,6 +3369,10 @@ function setSignalLens(
 ): void {
   material.color.copy(material.emissive).multiplyScalar(active ? 0.8 : 0.14);
   material.emissiveIntensity = active ? 3.4 : 0.035;
+}
+
+function violationPulseIsRed(timestampMs: number): boolean {
+  return Math.floor(timestampMs / 160) % 2 === 0;
 }
 
 function signalCorner(

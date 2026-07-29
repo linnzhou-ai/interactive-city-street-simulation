@@ -40,6 +40,13 @@ interface ActiveTrip {
   expectedArrivalMinute: number;
   delayMinutes: number;
   route: TrafficRoutePath;
+  violationEventId?: string;
+}
+
+export const LAW_VIOLATION_PROBABILITY = 0.15;
+
+export function lawViolationForSample(sample: number): boolean {
+  return clamp(sample, 0, 1) < LAW_VIOLATION_PROBABILITY;
 }
 
 export class SampledMobilitySystem {
@@ -175,7 +182,13 @@ export class SampledMobilitySystem {
     const key = `${day}:${personId}:${scheduleIndex}:${trip.previous.buildingId}:${trip.item.buildingId}`;
     const cached = this.activeTripCache.get(key);
     if (cached) return cached;
-    const stable = { ...trip };
+    const sample = (hashInteger(`law:${key}`) % 10_000) / 10_000;
+    const violationEventId =
+      (trip.item.mode === "walk" || trip.item.mode === "car")
+      && lawViolationForSample(sample)
+        ? key
+        : undefined;
+    const stable = { ...trip, violationEventId };
     this.activeTripCache.set(key, stable);
     return stable;
   }
@@ -250,6 +263,7 @@ export class SampledMobilitySystem {
       delayMinutes: trip.delayMinutes,
       segmentId: routePosition.segmentId,
       vehicleId,
+      violationEventId: trip.violationEventId,
       x: routePosition.x,
       z: routePosition.z,
       heading: routePosition.heading,
@@ -367,6 +381,7 @@ export class SampledMobilitySystem {
       color: transit ? "#d6b34b" : personColor(person.id),
       complianceProbability: 1,
       violating: false,
+      violationEventId: mobility.violationEventId,
       source: "sampled-resident",
       driverPersonId: transit ? undefined : person.id,
       occupantPersonIds: [person.id],
@@ -393,6 +408,7 @@ export class SampledMobilitySystem {
       variant: number % 4,
       complianceProbability: 1,
       violating: false,
+      violationEventId: mobility.violationEventId,
       source: "sampled-resident",
       personId: person.id,
       destinationBuildingId: mobility.destinationBuildingId,

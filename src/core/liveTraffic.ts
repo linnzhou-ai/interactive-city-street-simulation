@@ -61,6 +61,7 @@ const PEDESTRIAN_COLORS = [
   "#735483",
   "#39684e",
 ] as const;
+const VIOLATION_FLASH_SECONDS = 2;
 const VEHICLE_KINDS: readonly VehicleKind[] = [
   "sedan",
   "sedan",
@@ -1032,7 +1033,8 @@ export class LiveTrafficSystem {
               violationRiskMultiplier,
             ),
           violationIntersectionId: null,
-          violatingUntilSeconds: speeding ? this.elapsedSeconds + 3 : 0,
+          violatingUntilSeconds:
+            speeding ? this.elapsedSeconds + VIOLATION_FLASH_SECONDS : 0,
         });
         this.nextVehicleId += 1;
       }
@@ -1224,7 +1226,8 @@ export class LiveTrafficSystem {
         vehicle.violationIntersectionId !== end.id
       ) {
         vehicle.violationIntersectionId = end.id;
-        vehicle.violatingUntilSeconds = this.elapsedSeconds + 3;
+        vehicle.violatingUntilSeconds =
+          this.elapsedSeconds + VIOLATION_FLASH_SECONDS;
         this.trafficViolations += 1;
       }
       const nextKey = nextVehicleSegmentDirectionKey(vehicle);
@@ -1346,7 +1349,8 @@ export class LiveTrafficSystem {
       ) {
         pedestrian.committedIntersectionId = end.id;
         pedestrian.signalViolationUsed = true;
-        pedestrian.violatingUntilSeconds = this.elapsedSeconds + 3;
+        pedestrian.violatingUntilSeconds =
+          this.elapsedSeconds + VIOLATION_FLASH_SECONDS;
         this.trafficViolations += 1;
         this.jaywalkingViolations += 1;
       }

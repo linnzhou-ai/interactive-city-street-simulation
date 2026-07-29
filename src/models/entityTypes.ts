@@ -189,6 +189,7 @@ export interface PersonMobilityState {
   delayMinutes: number;
   segmentId?: string;
   vehicleId?: number;
+  violationEventId?: string;
   x: number;
   z: number;
   heading: number;

@@ -61,6 +61,40 @@ describe("Simulation", () => {
     }
   });
 
+  it("keeps residents traveling off peak while preserving a larger rush hour", () => {
+    const activeTravelersAt = (hour: number): number => {
+      const simulation = new Simulation();
+      simulation.setTimeOfDay(hour);
+      return simulation.getState().entities.people.filter((person) =>
+        person.mobility.phase === "walking"
+        || person.mobility.phase === "driving"
+        || person.mobility.phase === "transit"
+      ).length;
+    };
+    const morningRush = activeTravelersAt(8);
+    const afternoonOffPeak = activeTravelersAt(14);
+
+    expect(afternoonOffPeak).toBeGreaterThan(0);
+    expect(morningRush).toBeGreaterThan(afternoonOffPeak);
+  });
+
+  it("assigns persistent law-violation events to about 15% of active trips", () => {
+    const simulation = new Simulation();
+    simulation.setTimeOfDay(8);
+    const eligible = simulation.getState().entities.people.filter((person) =>
+      person.mobility.phase === "walking"
+      || person.mobility.phase === "driving"
+    );
+    const violating = eligible.filter(
+      (person) => person.mobility.violationEventId !== undefined,
+    );
+    const ratio = violating.length / Math.max(1, eligible.length);
+
+    expect(violating.length).toBeGreaterThan(0);
+    expect(ratio).toBeGreaterThan(0.08);
+    expect(ratio).toBeLessThan(0.22);
+  });
+
   it("derives movement from city time instead of real-time agent stepping", () => {
     const first = new Simulation();
     const second = new Simulation();

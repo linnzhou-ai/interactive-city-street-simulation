@@ -1444,7 +1444,15 @@ function createSchedule(
   policy: Readonly<EntityPolicy>,
   financialStatus: HouseholdFinancialStatus,
 ): PersonScheduleItem[] {
-  const schedule: PersonScheduleItem[] = [item("home", 0, 420, home, "walk", 0)];
+  const personNumber = Number(person.id.replace("person-", "")) || 0;
+  const commuteStagger =
+    Math.floor(hashUnit(`${person.householdId}:${day}:commute`) * 61) - 30;
+  const localStartMinute = 480 + commuteStagger;
+  const externalStartMinute = 450 + commuteStagger;
+  const workEndMinute = 1_020 + commuteStagger;
+  const schedule: PersonScheduleItem[] = [
+    item("home", 0, Math.max(360, localStartMinute - 45), home, "walk", 0),
+  ];
   const destination = person.employment === "student" ? school : work;
   const attendsDestination = destination
     ? person.employment === "student"
@@ -1454,12 +1462,26 @@ function createSchedule(
   if (destination && attendsDestination) {
     const mode = chooseMode(home, destination, policy);
     const travelMinutes = travelTime(home, destination, mode, policy);
-    schedule.push(item(person.employment === "student" ? "school" : "work", 480, 1_020, destination, mode, travelMinutes));
+    schedule.push(item(
+      person.employment === "student" ? "school" : "work",
+      localStartMinute,
+      workEndMinute,
+      destination,
+      mode,
+      travelMinutes,
+    ));
   } else if (person.employment === "external" && worksExternalToday(person, day)) {
-    schedule.push({ activity: "work", startMinute: 450, endMinute: 1_030, buildingId: OUTSIDE_WORK, mode: "transit", travelMinutes: externalCommuteMinutes(policy) });
+    schedule.push({
+      activity: "work",
+      startMinute: externalStartMinute,
+      endMinute: workEndMinute,
+      buildingId: OUTSIDE_WORK,
+      mode: "transit",
+      travelMinutes: externalCommuteMinutes(policy),
+    });
   }
   const workedExternally = schedule.some((scheduleItem) => scheduleItem.buildingId === OUTSIDE_WORK);
-  const selector = (Number(person.id.replace("person-", "")) + day) % 7;
+  const selector = (personNumber + day) % 7;
   let activity: PersonActivity = [
     "shop",
     "library",
@@ -1478,24 +1500,72 @@ function createSchedule(
         : services.recreation;
   const daytimeLocation = attendsDestination && destination ? destination : home;
   const service = preferredService(person, daytimeLocation, candidates, day);
+  let returnOrigin = attendsDestination && destination ? destination : home;
+  let returnReadyMinute =
+    attendsDestination || workedExternally ? workEndMinute : 720;
   if (service) {
-    const mode = workedExternally ? "transit" : chooseMode(daytimeLocation, service, policy);
-    schedule.push(item(
-      activity,
-      1_050,
-      1_140,
-      service,
-      mode,
-      workedExternally
-        ? Math.round(externalCommuteMinutes(policy) * 0.55 + travelTime(home, service, "transit", policy) * 0.45)
-        : travelTime(daytimeLocation, service, mode, policy),
-    ));
+    const lunchTrip =
+      attendsDestination
+      && destination !== undefined
+      && !workedExternally
+      && personNumber % 3 === 0;
+    if (lunchTrip) {
+      const lunchStartMinute = 690 + (personNumber % 7) * 10;
+      const lunchEndMinute = lunchStartMinute + 60;
+      const outboundMode = chooseMode(destination, service, policy);
+      const workItem = schedule.at(-1);
+      if (workItem) workItem.endMinute = lunchStartMinute;
+      schedule.push(item(
+        activity,
+        lunchStartMinute,
+        lunchEndMinute,
+        service,
+        outboundMode,
+        travelTime(destination, service, outboundMode, policy),
+      ));
+      const returnMode = chooseMode(service, destination, policy);
+      schedule.push(item(
+        person.employment === "student" ? "school" : "work",
+        lunchEndMinute + 15,
+        workEndMinute,
+        destination,
+        returnMode,
+        travelTime(service, destination, returnMode, policy),
+      ));
+      returnOrigin = destination;
+      returnReadyMinute = workEndMinute;
+    } else {
+      const serviceStartMinute = attendsDestination || workedExternally
+        ? workEndMinute + 25 + (personNumber % 3) * 10
+        : 570 + ((personNumber * 37 + day * 19) % 600);
+      const serviceEndMinute = serviceStartMinute + 80;
+      const mode = workedExternally
+        ? "transit"
+        : chooseMode(daytimeLocation, service, policy);
+      schedule.push(item(
+        activity,
+        serviceStartMinute,
+        serviceEndMinute,
+        service,
+        mode,
+        workedExternally
+          ? Math.round(
+              externalCommuteMinutes(policy) * 0.55
+              + travelTime(home, service, "transit", policy) * 0.45,
+            )
+          : travelTime(daytimeLocation, service, mode, policy),
+      ));
+      returnOrigin = service;
+      returnReadyMinute = serviceEndMinute;
+    }
   }
-  const returnOrigin = service ?? (attendsDestination && destination ? destination : home);
-  const returnMode = workedExternally && !service ? "transit" : chooseMode(returnOrigin, home, policy);
+  const returnMode =
+    workedExternally && !service
+      ? "transit"
+      : chooseMode(returnOrigin, home, policy);
   schedule.push(item(
     "home",
-    1_180,
+    Math.min(1_400, returnReadyMinute + 30),
     1_440,
     home,
     returnMode,
@@ -1625,6 +1695,7 @@ function countScheduledDemand(
       distressed: 0,
       crisis: 0,
     };
+    const countedWorkplaces = new Set<string>();
     for (const visit of person.schedule) {
       if (["shop", "library", "healthcare", "leisure", "school"].includes(visit.activity)) {
         add(visits, visit.buildingId, visitCompletion);
@@ -1640,8 +1711,13 @@ function countScheduledDemand(
         add(paidServiceVisits, visit.buildingId, weight);
         paidServiceWeightByPerson.set(person.id, weight);
       }
-      if (visit.activity === "work" && visit.buildingId !== OUTSIDE_WORK) {
+      if (
+        visit.activity === "work"
+        && visit.buildingId !== OUTSIDE_WORK
+        && !countedWorkplaces.has(visit.buildingId)
+      ) {
         add(activeWorkers, visit.buildingId, attendance);
+        countedWorkplaces.add(visit.buildingId);
       }
     }
   }
