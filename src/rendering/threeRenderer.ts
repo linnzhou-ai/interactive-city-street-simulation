@@ -1373,14 +1373,18 @@ export class ThreeRenderer {
     depth: number,
     color: string,
   ): void {
+    const roofHeight = THREE.MathUtils.clamp(Math.min(width, depth) * 0.18, 2.8, 8);
     const roof = new THREE.Mesh(
-      new THREE.CylinderGeometry(Math.min(width, depth) * 0.55, Math.min(width, depth) * 0.55, 5, 4),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.9 }),
+      createGabledRoofGeometry(width, depth, roofHeight),
+      new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.9,
+        side: THREE.DoubleSide,
+      }),
     );
-    roof.scale.set(width / Math.max(depth, 1), 1, 1);
-    roof.rotation.y = Math.PI / 4;
-    roof.position.set(x, y + 2.5, z);
+    roof.position.set(x, y, z);
     roof.castShadow = true;
+    roof.receiveShadow = true;
     roof.userData.collidable = true;
     group.add(roof);
   }
@@ -1416,9 +1420,7 @@ export class ThreeRenderer {
         (candidate) => candidate.landmarkKind === landmark.kind,
       );
       if (!definition) continue;
-      const position = geoToWorld(landmark);
       const group = new THREE.Group();
-      group.position.set(position.x, 0.3, position.z);
       group.userData.landmark = landmark.name;
       if (landmark.kind === "college-hall") this.buildCollegeHall(group);
       else if (landmark.kind === "fisher") this.buildFisher(group);
@@ -1430,6 +1432,8 @@ export class ThreeRenderer {
       else if (landmark.kind === "houston") this.buildHouston(group);
       else if (landmark.kind === "engineering") this.buildEngineering(group);
       else this.buildMedicine(group);
+      fitObjectToFootprint(group, definition.width, definition.depth);
+      group.position.set(definition.x, 0.3, definition.z);
       this.registerEntityGroup(group, definition);
       this.scene.add(group);
     }
@@ -3131,6 +3135,55 @@ function createOffsetSegmentMesh(
 function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
   const [start, end = start] = feature.path.map(geoToWorld);
   return start.clone().add(end).multiplyScalar(0.5);
+}
+
+export function createGabledRoofGeometry(
+  width: number,
+  depth: number,
+  height: number,
+): THREE.BufferGeometry {
+  const halfWidth = width / 2;
+  const halfDepth = depth / 2;
+  const positions = new Float32Array([
+    -halfWidth, 0, -halfDepth,
+    halfWidth, 0, -halfDepth,
+    -halfWidth, 0, halfDepth,
+    halfWidth, 0, halfDepth,
+    0, height, -halfDepth,
+    0, height, halfDepth,
+  ]);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex([
+    0, 4, 5, 0, 5, 2,
+    1, 3, 5, 1, 5, 4,
+    0, 1, 4,
+    2, 5, 3,
+    0, 2, 3, 0, 3, 1,
+  ]);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+export function fitObjectToFootprint(
+  object: THREE.Object3D,
+  width: number,
+  depth: number,
+): void {
+  object.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(object);
+  const size = bounds.getSize(new THREE.Vector3());
+  if (size.x > width) object.scale.x *= width / size.x;
+  if (size.z > depth) object.scale.z *= depth / size.z;
+  object.updateMatrixWorld(true);
+  const center = new THREE.Box3()
+    .setFromObject(object)
+    .getCenter(new THREE.Vector3());
+  for (const child of object.children) {
+    child.position.x -= center.x / object.scale.x;
+    child.position.z -= center.z / object.scale.z;
+  }
+  object.updateMatrixWorld(true);
 }
 
 function vehicleScale(
