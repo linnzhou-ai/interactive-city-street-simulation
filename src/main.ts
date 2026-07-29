@@ -41,6 +41,40 @@ const simulationTitle = requireElement<HTMLElement>("simulation-title");
 const sceneSubtitle = requireElement<HTMLElement>("scene-subtitle");
 const buildModeButton = requireElement<HTMLButtonElement>("build-mode-button");
 const simulateModeButton = requireElement<HTMLButtonElement>("simulate-mode-button");
+const citySystemsButton = requireElement<HTMLButtonElement>("city-systems-button");
+const albertDashboard = requireElement<HTMLElement>("albert-dashboard");
+const closeAlbertDashboard = requireElement<HTMLButtonElement>("close-albert-dashboard");
+const albertDashboardClock = requireElement<HTMLElement>("albert-dashboard-clock");
+const albertPopulation = requireElement<HTMLElement>("albert-population");
+const albertCityProfit = requireElement<HTMLElement>("albert-city-profit");
+const albertHappiness = requireElement<HTMLElement>("albert-happiness");
+const albertUnemployment = requireElement<HTMLElement>("albert-unemployment");
+const albertBuildingCount = requireElement<HTMLElement>("albert-building-count");
+const albertBuildingSelect = requireElement<HTMLSelectElement>("albert-building-select");
+const albertBuildingFunction = requireElement<HTMLElement>("albert-building-function");
+const albertBuildingName = requireElement<HTMLElement>("albert-building-name");
+const albertBuildingAddress = requireElement<HTMLElement>("albert-building-address");
+const albertBuildingStatus = requireElement<HTMLElement>("albert-building-status");
+const albertBuildingStaffing = requireElement<HTMLElement>("albert-building-staffing");
+const albertBuildingResidents = requireElement<HTMLElement>("albert-building-residents");
+const albertBuildingWorkers = requireElement<HTMLElement>("albert-building-workers");
+const albertBuildingRevenue = requireElement<HTMLElement>("albert-building-revenue");
+const albertBuildingProfit = requireElement<HTMLElement>("albert-building-profit");
+const albertBuildingDiagnosis = requireElement<HTMLElement>("albert-building-diagnosis");
+const albertPersonCount = requireElement<HTMLElement>("albert-person-count");
+const albertPersonSelect = requireElement<HTMLSelectElement>("albert-person-select");
+const albertPersonActivity = requireElement<HTMLElement>("albert-person-activity");
+const albertPersonName = requireElement<HTMLElement>("albert-person-name");
+const albertPersonEmployment = requireElement<HTMLElement>("albert-person-employment");
+const albertPersonHappiness = requireElement<HTMLElement>("albert-person-happiness");
+const albertPersonMoney = requireElement<HTMLElement>("albert-person-money");
+const albertPersonWage = requireElement<HTMLElement>("albert-person-wage");
+const albertPersonCommute = requireElement<HTMLElement>("albert-person-commute");
+const albertPersonMigration = requireElement<HTMLElement>("albert-person-migration");
+const albertHouseholdIncome = requireElement<HTMLElement>("albert-household-income");
+const albertHouseholdSpending = requireElement<HTMLElement>("albert-household-spending");
+const albertGoodsImported = requireElement<HTMLElement>("albert-goods-imported");
+const albertMunicipalBalance = requireElement<HTMLElement>("albert-municipal-balance");
 const orbitCameraButton = requireElement<HTMLButtonElement>("orbit-camera-button");
 const flyCameraButton = requireElement<HTMLButtonElement>("fly-camera-button");
 const walkCameraButton = requireElement<HTMLButtonElement>("walk-camera-button");
@@ -207,6 +241,9 @@ let previousTimestamp = performance.now();
 let dragStartSnapshot: EditorSnapshot | null = null;
 let autosaveTimer: number | null = null;
 let lastClockMinute = -1;
+let albertDashboardOpen = false;
+let selectedAlbertBuildingId: string | null = null;
+let selectedAlbertPersonId: string | null = null;
 let currentDesignImpact: DesignImpact = {
   laneCapacityDelta: 0,
   bikeLanes: 0,
@@ -217,6 +254,18 @@ let currentDesignImpact: DesignImpact = {
 
 buildModeButton.addEventListener("click", () => setAppMode("build"));
 simulateModeButton.addEventListener("click", () => setAppMode("simulate"));
+citySystemsButton.addEventListener("click", () => {
+  setAlbertDashboardOpen(!albertDashboardOpen);
+});
+closeAlbertDashboard.addEventListener("click", () => setAlbertDashboardOpen(false));
+albertBuildingSelect.addEventListener("change", () => {
+  selectedAlbertBuildingId = albertBuildingSelect.value;
+  renderAlbertDashboard();
+});
+albertPersonSelect.addEventListener("change", () => {
+  selectedAlbertPersonId = albertPersonSelect.value;
+  renderAlbertDashboard();
+});
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
 walkCameraButton.addEventListener("click", () => setCameraMode("walk"));
@@ -1320,12 +1369,117 @@ function updateAlbertCityPanel(): void {
         })
       : [createCityIssuePlaceholder()]),
   );
+  if (albertDashboardOpen) renderAlbertDashboard();
 }
 
 function createCityIssuePlaceholder(): HTMLLIElement {
   const item = document.createElement("li");
   item.textContent = "No critical building issues";
   return item;
+}
+
+function setAlbertDashboardOpen(open: boolean): void {
+  albertDashboardOpen = open;
+  albertDashboard.hidden = !open;
+  citySystemsButton.setAttribute("aria-pressed", String(open));
+  document.body.dataset.albertDashboard = open ? "open" : "closed";
+  if (open) {
+    syncAlbertDirectoryOptions();
+    renderAlbertDashboard();
+  }
+}
+
+function syncAlbertDirectoryOptions(): void {
+  const snapshot = albertCitySystems.getSnapshot();
+  const buildings = snapshot.entities.buildings;
+  const people = snapshot.entities.people;
+
+  if (albertBuildingSelect.options.length !== buildings.length) {
+    albertBuildingSelect.replaceChildren(
+      ...buildings.map((building) => {
+        const option = document.createElement("option");
+        option.value = building.id;
+        option.textContent = `${formatDetailedBuildingFunction(building.function)} · ${building.name}`;
+        return option;
+      }),
+    );
+  }
+  if (!selectedAlbertBuildingId || !buildings.some((building) => building.id === selectedAlbertBuildingId)) {
+    selectedAlbertBuildingId = buildings[0]?.id ?? null;
+  }
+  if (selectedAlbertBuildingId) albertBuildingSelect.value = selectedAlbertBuildingId;
+
+  if (albertPersonSelect.options.length !== people.length) {
+    albertPersonSelect.replaceChildren(
+      ...people.map((person) => {
+        const option = document.createElement("option");
+        option.value = person.id;
+        option.textContent = `${person.name} · ${formatDetailedBuildingFunction(person.employment)}`;
+        return option;
+      }),
+    );
+  }
+  if (!selectedAlbertPersonId || !people.some((person) => person.id === selectedAlbertPersonId)) {
+    selectedAlbertPersonId = people[0]?.id ?? null;
+  }
+  if (selectedAlbertPersonId) albertPersonSelect.value = selectedAlbertPersonId;
+}
+
+function renderAlbertDashboard(): void {
+  const snapshot = albertCitySystems.getSnapshot();
+  const metrics = snapshot.city.metrics;
+  syncAlbertDirectoryOptions();
+
+  albertDashboardClock.textContent = `${snapshot.dateLabel} · ${snapshot.clockLabel}`;
+  albertPopulation.textContent = Math.round(metrics.population).toLocaleString();
+  albertCityProfit.textContent = formatCurrency(metrics.businessProfitDaily);
+  albertHappiness.textContent = metrics.happiness.toFixed(1);
+  albertUnemployment.textContent = `${metrics.unemploymentPercent.toFixed(1)}%`;
+  albertBuildingCount.textContent = snapshot.entities.buildings.length.toLocaleString();
+  albertPersonCount.textContent = snapshot.entities.people.length.toLocaleString();
+  albertHouseholdIncome.textContent = formatCurrency(metrics.householdIncomeDaily);
+  albertHouseholdSpending.textContent = formatCurrency(metrics.householdSpendingDaily);
+  albertGoodsImported.textContent = Math.round(metrics.goodsImportedDaily).toLocaleString();
+  albertMunicipalBalance.textContent = formatCurrency(metrics.municipalBalance);
+
+  const building = snapshot.entities.buildings.find(
+    (candidate) => candidate.id === selectedAlbertBuildingId,
+  );
+  if (building) {
+    albertBuildingFunction.textContent = formatDetailedBuildingFunction(building.function);
+    albertBuildingName.textContent = building.name;
+    albertBuildingAddress.textContent = building.address;
+    albertBuildingStatus.textContent = formatAccountingStatus(building.accounting.status);
+    albertBuildingStaffing.textContent = `${Math.round(building.accounting.staffingRatio * 100)}%`;
+    albertBuildingResidents.textContent = building.residentIds.length.toLocaleString();
+    albertBuildingWorkers.textContent = building.employeeIds.length.toLocaleString();
+    albertBuildingRevenue.textContent = formatCurrency(building.accounting.operatingRevenue);
+    albertBuildingProfit.textContent = formatCurrency(building.accounting.profit);
+    albertBuildingDiagnosis.textContent = building.accounting.diagnosis;
+  }
+
+  const person = snapshot.entities.people.find(
+    (candidate) => candidate.id === selectedAlbertPersonId,
+  );
+  if (person) {
+    albertPersonActivity.textContent = formatDetailedBuildingFunction(person.currentActivity);
+    albertPersonName.textContent = person.name;
+    albertPersonEmployment.textContent = formatPersonEmployment(person.employment);
+    albertPersonHappiness.textContent = person.happiness.toFixed(0);
+    albertPersonMoney.textContent = formatCurrency(person.money);
+    albertPersonWage.textContent = formatCurrency(person.dailyWage);
+    albertPersonCommute.textContent = formatCurrency(person.commuteCost);
+    albertPersonMigration.textContent =
+      person.migrationStatus === "staying"
+        ? "Staying in the city."
+        : `${formatDetailedBuildingFunction(person.migrationStatus)}: ${person.migrationReason}`;
+  }
+}
+
+function formatPersonEmployment(value: string): string {
+  if (value === "local") return "Local worker";
+  if (value === "external") return "Outside-city worker";
+  return formatDetailedBuildingFunction(value);
 }
 
 function updateSelectedSignalTiming(): void {
@@ -1925,6 +2079,7 @@ if (!restoreAutosave()) {
 }
 updateExpansionRoadCount();
 updateAlbertCityPanel();
+setAlbertDashboardOpen(false);
 setBuildWorkspace("city-edit");
 setAppMode("build");
 simulation.start();

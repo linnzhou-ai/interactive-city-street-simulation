@@ -63,6 +63,14 @@
             <button id="build-mode-button" type="button" aria-pressed="true">Build</button>
             <button id="simulate-mode-button" type="button" aria-pressed="false">Simulate</button>
           </div>
+          <button
+            id="city-systems-button"
+            class="city-systems-button"
+            type="button"
+            aria-pressed="false"
+          >
+            City Systems
+          </button>
           <div class="edit-history-actions" aria-label="Edit history">
             <button id="undo-button" type="button" disabled title="Undo (⌘Z)">Undo</button>
             <button id="redo-button" type="button" disabled title="Redo (⌘Shift Z)">Redo</button>
@@ -74,6 +82,103 @@
           </div>
         </div>
       </header>
+
+      <aside
+        id="albert-dashboard"
+        class="albert-dashboard hud-panel"
+        aria-labelledby="albert-dashboard-title"
+        hidden
+      >
+        <div class="albert-dashboard-heading">
+          <div>
+            <p class="panel-kicker">Albert simulation layer</p>
+            <h2 id="albert-dashboard-title">City Systems</h2>
+          </div>
+          <button id="close-albert-dashboard" type="button" aria-label="Close City Systems">×</button>
+        </div>
+        <p id="albert-dashboard-clock" class="albert-dashboard-clock">
+          January 1, 2026 · 07:00
+        </p>
+        <div class="albert-overview-grid" aria-label="City economy overview">
+          <article><span>Population</span><strong id="albert-population">0</strong></article>
+          <article><span>Daily profit</span><strong id="albert-city-profit">$0</strong></article>
+          <article><span>Happiness</span><strong id="albert-happiness">0</strong></article>
+          <article><span>Unemployment</span><strong id="albert-unemployment">0%</strong></article>
+        </div>
+
+        <section class="albert-inspector-section" aria-labelledby="albert-building-title">
+          <div class="albert-section-heading">
+            <div>
+              <span>Functional buildings</span>
+              <h3 id="albert-building-title">Building inspector</h3>
+            </div>
+            <strong id="albert-building-count">0</strong>
+          </div>
+          <label for="albert-building-select">
+            <span>Inspect building</span>
+            <select id="albert-building-select"></select>
+          </label>
+          <div class="albert-entity-card">
+            <div>
+              <span id="albert-building-function">Function</span>
+              <strong id="albert-building-name">Building</strong>
+              <small id="albert-building-address">University City</small>
+            </div>
+            <dl>
+              <div><dt>Status</dt><dd id="albert-building-status">Operating</dd></div>
+              <div><dt>Staffing</dt><dd id="albert-building-staffing">0%</dd></div>
+              <div><dt>Residents</dt><dd id="albert-building-residents">0</dd></div>
+              <div><dt>Workers</dt><dd id="albert-building-workers">0</dd></div>
+              <div><dt>Revenue/day</dt><dd id="albert-building-revenue">$0</dd></div>
+              <div><dt>Profit/day</dt><dd id="albert-building-profit">$0</dd></div>
+            </dl>
+            <p id="albert-building-diagnosis">No diagnosis available.</p>
+          </div>
+        </section>
+
+        <section class="albert-inspector-section" aria-labelledby="albert-person-title">
+          <div class="albert-section-heading">
+            <div>
+              <span>Simulated residents</span>
+              <h3 id="albert-person-title">Resident inspector</h3>
+            </div>
+            <strong id="albert-person-count">0</strong>
+          </div>
+          <label for="albert-person-select">
+            <span>Inspect resident</span>
+            <select id="albert-person-select"></select>
+          </label>
+          <div class="albert-entity-card">
+            <div>
+              <span id="albert-person-activity">Home</span>
+              <strong id="albert-person-name">Resident</strong>
+              <small id="albert-person-employment">Local worker</small>
+            </div>
+            <dl>
+              <div><dt>Happiness</dt><dd id="albert-person-happiness">0</dd></div>
+              <div><dt>Money</dt><dd id="albert-person-money">$0</dd></div>
+              <div><dt>Daily wage</dt><dd id="albert-person-wage">$0</dd></div>
+              <div><dt>Travel cost</dt><dd id="albert-person-commute">$0</dd></div>
+            </dl>
+            <p id="albert-person-migration">Staying in the city.</p>
+          </div>
+        </section>
+
+        <section class="albert-economy-ledger" aria-labelledby="albert-economy-title">
+          <div class="albert-section-heading">
+            <div>
+              <span>Connected economy</span>
+              <h3 id="albert-economy-title">Daily ledger</h3>
+            </div>
+          </div>
+          <dl>
+            <div><dt>Household income</dt><dd id="albert-household-income">$0</dd></div>
+            <div><dt>Household spending</dt><dd id="albert-household-spending">$0</dd></div>
+            <div><dt>Goods imported</dt><dd id="albert-goods-imported">0</dd></div>
+            <div><dt>Municipal balance</dt><dd id="albert-municipal-balance">$0</dd></div>
+          </dl>
+        </section>
+      </aside>
 
       <aside class="panel tools-panel hud-panel" aria-labelledby="tools-title">
         <div class="panel-heading">

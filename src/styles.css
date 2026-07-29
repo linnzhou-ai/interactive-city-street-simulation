@@ -264,6 +264,208 @@ body[data-app-mode="simulate"] .selection-panel {
   display: none;
 }
 
+body[data-albert-dashboard="open"] .tools-panel,
+body[data-albert-dashboard="open"] .selection-panel {
+  display: none;
+}
+
+.city-systems-button[aria-pressed="true"] {
+  border-color: #d9a85c;
+  color: #22170b;
+  background: #e8bd72;
+}
+
+.albert-dashboard {
+  position: fixed;
+  z-index: 12;
+  top: 6.7rem;
+  bottom: 1rem;
+  left: 1rem;
+  width: min(370px, calc(100vw - 2rem));
+  padding: 1rem;
+  overflow: auto;
+  border-color: rgb(232 189 114 / 30%);
+  background:
+    linear-gradient(155deg, rgb(35 28 20 / 97%), rgb(10 20 23 / 96%)),
+    rgb(10 20 23 / 96%);
+}
+
+.albert-dashboard[hidden] {
+  display: none;
+}
+
+.albert-dashboard-heading,
+.albert-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.albert-dashboard-heading {
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid rgb(232 189 114 / 16%);
+}
+
+.albert-dashboard-heading h2,
+.albert-section-heading h3 {
+  margin: 0.1rem 0 0;
+  color: #f5eee1;
+}
+
+.albert-dashboard-heading h2 {
+  font-size: 1rem;
+}
+
+.albert-dashboard-heading button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  color: #dcc9a7;
+  font-size: 1rem;
+}
+
+.albert-dashboard-clock {
+  margin: 0.65rem 0 0;
+  color: #d8bd8d;
+  font-size: 0.63rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.albert-overview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+}
+
+.albert-overview-grid article {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.58rem;
+  border: 1px solid rgb(232 189 114 / 12%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 4%);
+}
+
+.albert-overview-grid span,
+.albert-section-heading span,
+.albert-inspector-section label > span {
+  color: #a99d87;
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.albert-overview-grid strong {
+  color: #f0d39b;
+  font-size: 0.77rem;
+}
+
+.albert-inspector-section,
+.albert-economy-ledger {
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgb(232 189 114 / 14%);
+}
+
+.albert-section-heading h3 {
+  font-size: 0.72rem;
+}
+
+.albert-section-heading > strong {
+  color: #e8bd72;
+  font-size: 0.7rem;
+}
+
+.albert-inspector-section label {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+}
+
+.albert-inspector-section select {
+  width: 100%;
+  padding: 0.48rem;
+  border: 1px solid rgb(232 189 114 / 18%);
+  border-radius: 8px;
+  color: #f5eee1;
+  background: rgb(5 14 17 / 84%);
+  font-size: 0.6rem;
+}
+
+.albert-entity-card {
+  margin-top: 0.5rem;
+  padding: 0.65rem;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 9px;
+  background: rgb(3 12 15 / 35%);
+}
+
+.albert-entity-card > div:first-child {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.albert-entity-card > div:first-child span {
+  color: #e8bd72;
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.albert-entity-card > div:first-child strong {
+  color: #f5eee1;
+  font-size: 0.72rem;
+}
+
+.albert-entity-card > div:first-child small {
+  color: #9eada5;
+  font-size: 0.54rem;
+}
+
+.albert-entity-card dl,
+.albert-economy-ledger dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin: 0.6rem 0 0;
+}
+
+.albert-entity-card dl div,
+.albert-economy-ledger dl div {
+  padding: 0.4rem;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 4%);
+}
+
+.albert-entity-card dt,
+.albert-economy-ledger dt {
+  color: #87978f;
+  font-size: 0.48rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.albert-entity-card dd,
+.albert-economy-ledger dd {
+  margin: 0.12rem 0 0;
+  color: #cceadd;
+  font-size: 0.65rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.albert-entity-card > p {
+  margin: 0.55rem 0 0;
+  color: #abb9b2;
+  font-size: 0.54rem;
+  line-height: 1.45;
+}
+
 .panel,
 .selection-panel {
   padding: 1rem;
