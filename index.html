@@ -612,16 +612,7 @@
       <details id="performance-panel" class="metrics hud-panel" aria-labelledby="metrics-title">
         <summary id="performance-summary" class="metrics-heading">
           <div>
-            <p id="metrics-kicker" class="panel-kicker">Modified design</p>
             <h2 id="metrics-title">Performance snapshot</h2>
-          </div>
-          <div class="comparison-switch" aria-label="Metric comparison">
-            <button id="baseline-metrics-button" type="button" aria-pressed="false">
-              Baseline
-            </button>
-            <button id="modified-metrics-button" type="button" aria-pressed="true">
-              Modified
-            </button>
           </div>
           <button
             id="performance-minimize-button"
@@ -649,6 +640,10 @@
             <article data-stat="migration" data-stat-scope="city" tabindex="0">
               <span>Net migration</span>
               <strong id="city-migration" data-stat-value>0/yr</strong>
+            </article>
+            <article data-stat="governmentFunds" data-stat-scope="city" tabindex="0">
+              <span>Government funds</span>
+              <strong id="city-government-funds" data-stat-value>$0</strong>
             </article>
           </div>
           <div class="metric-grid">

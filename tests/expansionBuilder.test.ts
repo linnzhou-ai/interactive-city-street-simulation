@@ -30,6 +30,25 @@ function builder(scene: THREE.Scene): ExpansionBuilder {
 }
 
 describe("ExpansionBuilder crosswalk sets", () => {
+  it("renders added roads with opaque black asphalt", () => {
+    const scene = new THREE.Scene();
+    const expansion = builder(scene);
+    expansion.setRoads([horizontalRoad]);
+
+    let roadGroup: THREE.Object3D | undefined;
+    scene.traverse((object) => {
+      if (
+        object.userData.expansionType === "road"
+        && object.userData.expansionId === horizontalRoad.id
+      ) roadGroup = object;
+    });
+    const surface = roadGroup?.children[0] as THREE.Mesh;
+    const material = surface.material as THREE.MeshStandardMaterial;
+    expect(material.color.getHexString()).toBe("071417");
+    expect(material.transparent).toBe(false);
+    expect(material.opacity).toBe(1);
+  });
+
   it("snaps one placement to a junction and renders all four crosswalks", () => {
     const scene = new THREE.Scene();
     const expansion = builder(scene);
@@ -67,5 +86,48 @@ describe("ExpansionBuilder crosswalk sets", () => {
     expect(
       expansion.resolveStreetObjectPlacement(100, 0, "crosswalk"),
     ).toBeNull();
+  });
+
+  it("automatically equips a new road junction with crosswalks and signals", () => {
+    const expansion = builder(new THREE.Scene());
+    expansion.setRoads([horizontalRoad, verticalRoad]);
+
+    expect(expansion.resolveAutomaticStreetObjects(verticalRoad.id)).toEqual([
+      {
+        kind: "crosswalk",
+        x: 100,
+        z: 0,
+        rotation: 0,
+      },
+      {
+        kind: "traffic-signal",
+        x: 100,
+        z: 0,
+        rotation: 0,
+      },
+    ]);
+  });
+
+  it("does not duplicate automatic junction equipment", () => {
+    const expansion = builder(new THREE.Scene());
+    expansion.setRoads([horizontalRoad, verticalRoad]);
+    expansion.setStreetObjects([
+      {
+        id: "crosswalk-set",
+        kind: "crosswalk",
+        x: 100,
+        z: 0,
+        rotation: 0,
+      },
+      {
+        id: "signal-set",
+        kind: "traffic-signal",
+        x: 100,
+        z: 0,
+        rotation: 0,
+      },
+    ]);
+
+    expect(expansion.resolveAutomaticStreetObjects(verticalRoad.id)).toEqual([]);
   });
 });

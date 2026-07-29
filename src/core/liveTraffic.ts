@@ -20,12 +20,12 @@ import type {
   RoadSegmentModel,
 } from "../data/roadLanes";
 import type {
+  BuildingKind,
   ManualSignalTarget,
   LaneDirection,
   ExpansionRoad,
   ExpansionStreetObject,
   PedestrianSnapshot,
-  PlacedBuilding,
   RoadTrafficSnapshot,
   ScenarioSettings,
   SignalControlMode,
@@ -143,9 +143,19 @@ interface PedestrianAgent {
 }
 
 interface BuildingDestination {
-  kind: PlacedBuilding["kind"];
+  kind: BuildingKind;
   node: GridNode;
 }
+
+type BuildingDestinationInput = Readonly<{
+  kind: BuildingKind;
+  x: number;
+  z: number;
+  id?: string;
+  floors?: number;
+  rotation?: number;
+  color?: string;
+}>;
 
 interface EconomicRouteEdge {
   to: string;
@@ -327,6 +337,7 @@ export class LiveTrafficSystem {
   private trafficViolations = 0;
   private jaywalkingViolations = 0;
   private buildingDestinations: BuildingDestination[] = [];
+  private buildingDestinationNodeIds = new Set<string>();
   private expansionRoads: ExpansionRoad[] = [];
   private expansionStreetObjects: ExpansionStreetObject[] = [];
   private expansionRoadIds = new Set<string>();
@@ -412,11 +423,19 @@ export class LiveTrafficSystem {
     this.controllers.get(intersectionId)?.setTiming(timing);
   }
 
-  setBuildingDestinations(buildings: readonly PlacedBuilding[]): void {
-    this.buildingDestinations = buildings.map((building) => ({
-      kind: building.kind,
-      node: nearestGridNodeFromWorld(this.nodes, building.x, building.z),
-    }));
+  setBuildingDestinations<T extends BuildingDestinationInput>(
+    buildings: readonly T[],
+  ): void {
+    const destinations = new Map<string, BuildingDestination>();
+    for (const building of buildings) {
+      const node = nearestGridNodeFromWorld(this.nodes, building.x, building.z);
+      const existing = destinations.get(node.id);
+      if (existing === undefined || building.kind === "industrial") {
+        destinations.set(node.id, { kind: building.kind, node });
+      }
+    }
+    this.buildingDestinations = [...destinations.values()];
+    this.buildingDestinationNodeIds = new Set(destinations.keys());
     this.pedestrianDestinations.splice(
       0,
       this.pedestrianDestinations.length,
@@ -427,10 +446,10 @@ export class LiveTrafficSystem {
     );
   }
 
-  setExpansionNetwork(
+  setExpansionNetwork<T extends BuildingDestinationInput>(
     roads: readonly ExpansionRoad[],
     streetObjects: readonly ExpansionStreetObject[],
-    buildings: readonly PlacedBuilding[],
+    buildings: readonly T[],
   ): void {
     for (const roadId of this.expansionRoadIds) this.roadSegments.delete(roadId);
     this.expansionRoads = roads.map((road) => ({ ...road }));
@@ -1176,6 +1195,9 @@ export class LiveTrafficSystem {
       this.completedVehicleTravelSeconds +=
         this.elapsedSeconds - vehicle.spawnedAt;
       this.completedVehicleDelaySeconds += vehicle.delaySeconds;
+      if (this.isBuildingDestination(vehicle.path.at(-1))) {
+        this.buildingArrivals += 1;
+      }
       return false;
     });
   }
@@ -1390,14 +1412,14 @@ export class LiveTrafficSystem {
           pedestrian.path,
           pedestrian.segmentIndex,
         );
-      } else if (
-        this.buildingDestinations.some(
-          (destination) => destination.node.id === segmentEnd.id,
-        )
-      ) {
+      } else if (this.isBuildingDestination(segmentEnd)) {
         this.buildingArrivals += 1;
       }
     }
+  }
+
+  private isBuildingDestination(node: GridNode | undefined): boolean {
+    return node !== undefined && this.buildingDestinationNodeIds.has(node.id);
   }
 
   private createVehicleRoute(demandLevel: number): readonly GridNode[] {

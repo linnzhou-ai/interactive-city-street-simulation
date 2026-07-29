@@ -3052,10 +3052,6 @@ body[data-city-inspector="minimized"] .metrics {
   font-size: 1rem;
 }
 
-.metrics:not([open]) .comparison-switch {
-  display: none;
-}
-
 .metrics:not([open]) .performance-minimize-button {
   display: none;
 }
@@ -3072,7 +3068,7 @@ body[data-city-inspector="minimized"] .metrics {
 
 .city-system-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.3rem;
   margin-bottom: 0.42rem;
 }
@@ -3108,8 +3104,7 @@ body[data-city-inspector="minimized"] .metrics {
   min-width: 140px;
 }
 
-.metrics-heading,
-.comparison-switch {
+.metrics-heading {
   display: flex;
   align-items: flex-start;
 }
@@ -3118,24 +3113,6 @@ body[data-city-inspector="minimized"] .metrics {
   flex-direction: column;
   justify-content: center;
   gap: 0.6rem;
-}
-
-.comparison-switch {
-  gap: 0.2rem;
-  padding: 0.2rem;
-  border-radius: 9px;
-  background: rgb(4 13 16 / 34%);
-}
-
-.comparison-switch button {
-  padding: 0.35rem 0.45rem;
-  border-color: transparent;
-  font-size: 0.56rem;
-}
-
-.comparison-switch button[aria-pressed="true"] {
-  color: #d9fff3;
-  background: rgb(74 178 148 / 28%);
 }
 
 .metric-grid {

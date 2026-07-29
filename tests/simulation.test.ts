@@ -14,6 +14,18 @@ describe("Simulation", () => {
     expect(simulation.getState()).toEqual(createInitialState());
   });
 
+  it("deducts funded municipal projects from government funds", () => {
+    const simulation = new Simulation();
+    const before = simulation.getState().city.municipalBudget;
+
+    expect(simulation.fundMunicipalProject(250_000)).toBe(true);
+    expect(simulation.getState().city.municipalBudget).toBe(before - 250_000);
+    expect(simulation.getState().city.metrics.municipalBalance).toBe(
+      before - 250_000,
+    );
+    expect(simulation.fundMunicipalProject(before)).toBe(false);
+  });
+
   it("advances district time after starting", () => {
     const simulation = new Simulation();
     simulation.start();
@@ -23,6 +35,15 @@ describe("Simulation", () => {
     expect(simulation.getState().elapsedSeconds).toBeGreaterThan(0);
     expect(simulation.getState().metrics.activeVehicles).toBeGreaterThan(0);
     expect(simulation.getState().metrics.activePedestrians).toBeGreaterThan(0);
+  });
+
+  it("counts arrivals at existing city buildings", () => {
+    const simulation = new Simulation();
+    simulation.start();
+
+    simulation.update(240);
+
+    expect(simulation.getState().metrics.buildingArrivals).toBeGreaterThan(0);
   });
 
   it("uses the 758 detailed residents as authoritative visible travelers", () => {
@@ -331,22 +352,6 @@ describe("Simulation", () => {
     expect(upgraded.congestion).toBeLessThanOrEqual(baseline.congestion);
     expect(upgraded.averageSpeedMph).toBeGreaterThan(baseline.averageSpeedMph);
     expect(upgraded.pedestrianWaitSeconds).toBeLessThan(baseline.pedestrianWaitSeconds);
-  });
-
-  it("keeps baseline comparison independent from the modified design", () => {
-    const simulation = new Simulation();
-    const baseline = simulation.getBaselineMetrics();
-
-    simulation.setDesignImpact({
-      laneCapacityDelta: 2,
-      bikeLanes: 3,
-      sidewalkUpgrades: 2,
-      crosswalks: 3,
-      pedestrianIslands: 2,
-    });
-
-    expect(simulation.getBaselineMetrics()).toEqual(baseline);
-    expect(simulation.getState().metrics).not.toEqual(baseline);
   });
 
   it("removes demolished city buildings from the live entity model", () => {

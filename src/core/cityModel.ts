@@ -9,6 +9,7 @@ import type {
   GoodsBasket,
 } from "../models/cityTypes";
 import type { HouseholdExpenseLedger } from "../models/cityEconomyTypes";
+import { advanceCitySection } from "./cityEngine";
 import {
   advanceCityEconomy,
   createExternalMarketState,
@@ -32,32 +33,7 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
   });
   const seededDistricts = seededEconomy.districts.map(initializeDistrictIndicators);
   const metrics = summarizeInitialCity(seededDistricts, definition.startingBudget);
-  const timeline: CityTimelinePoint[] = [{
-    day: 0,
-    year: definition.startYear,
-    month: 1,
-    population: metrics.population,
-    grossCityProductDaily: metrics.grossCityProductDaily,
-    averageLandValue: metrics.averageLandValue,
-    congestionPercent: metrics.congestionPercent,
-    congestionCostDaily: metrics.congestionCostDaily,
-    housingOccupancyPercent: metrics.housingOccupancyPercent,
-    municipalBalance: metrics.municipalBalance,
-    happiness: metrics.happiness,
-    unemploymentPercent: metrics.unemploymentPercent,
-    goodsImportedDaily: metrics.goodsImportedDaily,
-    goodsConsumedDaily: metrics.goodsConsumedDaily,
-    annualizedNetMigration: metrics.annualizedNetMigration,
-    averageTrafficDelayMinutes: metrics.averageTrafficDelayMinutes,
-    commuteTripsDaily: metrics.commuteTripsDaily,
-    shoppingTripsDaily: metrics.shoppingTripsDaily,
-    vehicleTripsDaily: metrics.vehicleTripsDaily,
-    pedestrianTripsDaily: metrics.pedestrianTripsDaily,
-    freightTripsDaily: metrics.freightTripsDaily,
-    civicServiceCoveragePercent: metrics.civicServiceCoveragePercent,
-  }];
-
-  return {
+  const initialState: CitySectionState = {
     id: definition.id,
     name: definition.name,
     startYear: definition.startYear,
@@ -71,6 +47,41 @@ export function createCitySectionState(definition: CitySectionDefinition): CityS
     externalMarkets: seededEconomy.externalMarkets,
     market: seededEconomy.market,
     metrics,
+    timeline: [],
+  };
+  // One pass establishes traffic conditions; the next lets employment respond.
+  const stabilized = advanceCitySection(initialState, 2).state;
+  const initialMetrics = stabilized.metrics;
+  const timeline: CityTimelinePoint[] = [{
+    day: 0,
+    year: definition.startYear,
+    month: 1,
+    population: initialMetrics.population,
+    grossCityProductDaily: initialMetrics.grossCityProductDaily,
+    averageLandValue: initialMetrics.averageLandValue,
+    congestionPercent: initialMetrics.congestionPercent,
+    congestionCostDaily: initialMetrics.congestionCostDaily,
+    housingOccupancyPercent: initialMetrics.housingOccupancyPercent,
+    municipalBalance: initialMetrics.municipalBalance,
+    happiness: initialMetrics.happiness,
+    unemploymentPercent: initialMetrics.unemploymentPercent,
+    goodsImportedDaily: initialMetrics.goodsImportedDaily,
+    goodsConsumedDaily: initialMetrics.goodsConsumedDaily,
+    annualizedNetMigration: initialMetrics.annualizedNetMigration,
+    averageTrafficDelayMinutes: initialMetrics.averageTrafficDelayMinutes,
+    commuteTripsDaily: initialMetrics.commuteTripsDaily,
+    shoppingTripsDaily: initialMetrics.shoppingTripsDaily,
+    vehicleTripsDaily: initialMetrics.vehicleTripsDaily,
+    pedestrianTripsDaily: initialMetrics.pedestrianTripsDaily,
+    freightTripsDaily: initialMetrics.freightTripsDaily,
+    civicServiceCoveragePercent: initialMetrics.civicServiceCoveragePercent,
+  }];
+
+  return {
+    ...stabilized,
+    elapsedDays: 0,
+    year: definition.startYear,
+    month: 1,
     timeline,
   };
 }

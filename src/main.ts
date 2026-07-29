@@ -164,9 +164,7 @@ const cityOutput = requireElement<HTMLElement>("city-output");
 const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
 const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
 const cityMigration = requireElement<HTMLElement>("city-migration");
-const baselineMetricsButton = requireElement<HTMLButtonElement>("baseline-metrics-button");
-const modifiedMetricsButton = requireElement<HTMLButtonElement>("modified-metrics-button");
-const metricsKicker = requireElement<HTMLElement>("metrics-kicker");
+const cityGovernmentFunds = requireElement<HTMLElement>("city-government-funds");
 const performancePanel = requireElement<HTMLDetailsElement>("performance-panel");
 const performanceSummary = requireElement<HTMLElement>("performance-summary");
 const performanceMinimizeButton = requireElement<HTMLButtonElement>("performance-minimize-button");
@@ -264,6 +262,12 @@ const expansionRoads = new Map<string, ExpansionRoad>();
 const expansionStreetObjects = new Map<string, ExpansionStreetObject>();
 const editHistory = new EditHistory();
 const PROJECT_SAVE_KEY = "penn-campus-simulator:linn-project";
+const MUNICIPAL_RESERVE = 18_000_000;
+const MUNICIPAL_PROJECT_INTERVAL_DAYS = 3;
+const MUNICIPAL_ROAD_COST_PER_METER = 2_200;
+const MUNICIPAL_CROSSWALK_COST = 80_000;
+const MUNICIPAL_BUILDING_BASE_COST = 190_000;
+const MUNICIPAL_FLOOR_COST = 55_000;
 const features = renderer.getFeatures();
 let appMode: AppMode = "simulate";
 let buildWorkspace: BuildWorkspace = "city-edit";
@@ -279,7 +283,6 @@ let nextBuildingId = 1;
 let nextExpansionRoadId = 1;
 let nextExpansionStreetObjectId = 1;
 let cameraMode: CameraMode = "orbit";
-let metricView: "baseline" | "modified" = "modified";
 let selectedFeature: DistrictFeature | undefined =
   features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
 let selectedEntity: EntitySelection | null = null;
@@ -301,6 +304,7 @@ let walkMarkerMoved = false;
 let walkMarkerStart = { x: 0, y: 0 };
 let restoreInspectorAfterBuild = false;
 let previousTimestamp = performance.now();
+let lastMunicipalGrowthDay = 0;
 
 buildModeButton.addEventListener("click", () => {
   simulation.pause();
@@ -429,6 +433,7 @@ pauseButton.addEventListener("click", () => {
 
 resetButton.addEventListener("click", () => {
   simulation.reset();
+  lastMunicipalGrowthDay = 0;
   updateInterface();
 });
 
@@ -553,8 +558,6 @@ for (const button of buildToolButtons) {
   });
 }
 
-baselineMetricsButton.addEventListener("click", () => setMetricView("baseline"));
-modifiedMetricsButton.addEventListener("click", () => setMetricView("modified"));
 performanceMinimizeButton.addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -906,11 +909,15 @@ renderer.setExpansionRoadInteractionHandlers({
       ...roadData,
     };
     expansionRoads.set(road.id, road);
+    renderer.setExpansionRoads([...expansionRoads.values()]);
+    const safetyFeatures = addAutomaticRoadSafetyFeatures(road.id);
     syncExpansion();
     selectExpansionRoad(road.id);
     finishEdit();
     setBuildFeedback(
-      "Expansion road added. Draw road remains active for the next segment.",
+      safetyFeatures.crosswalks > 0
+        ? `Expansion road added with ${safetyFeatures.crosswalks} crosswalk set${safetyFeatures.crosswalks === 1 ? "" : "s"} and ${safetyFeatures.signals} signal set${safetyFeatures.signals === 1 ? "" : "s"}.`
+        : "Expansion road added. Connect it to another road to create automatic crosswalks and signals.",
       "success",
     );
   },
@@ -958,9 +965,146 @@ function animationFrame(timestamp: number): void {
   const deltaSeconds = (timestamp - previousTimestamp) / 1000;
   previousTimestamp = timestamp;
   simulation.update(deltaSeconds);
+  fundMunicipalGrowth();
   renderer.render(simulation.getState());
   updateMetrics();
   window.requestAnimationFrame(animationFrame);
+}
+
+function fundMunicipalGrowth(): void {
+  const state = simulation.getState();
+  if (!state.running) return;
+  const currentDay = Math.floor(state.city.elapsedDays);
+  if (
+    currentDay - lastMunicipalGrowthDay
+    < MUNICIPAL_PROJECT_INTERVAL_DAYS
+  ) return;
+  lastMunicipalGrowthDay = currentDay;
+
+  const municipalRoads = [...expansionRoads.values()].filter((road) =>
+    road.id.startsWith("municipal-road-")
+  );
+  const municipalBuildings = [...placedBuildings.values()].filter((building) =>
+    building.id.startsWith("municipal-building-")
+  );
+  const shouldBuildBuilding =
+    municipalRoads.length > 0
+    && municipalBuildings.length < municipalRoads.length * 2;
+  if (shouldBuildBuilding) {
+    const building = suggestMunicipalBuilding(
+      municipalRoads,
+      municipalBuildings.length,
+    );
+    if (building) {
+      const cost =
+        MUNICIPAL_BUILDING_BASE_COST + building.floors * MUNICIPAL_FLOOR_COST;
+      if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
+      if (!simulation.fundMunicipalProject(cost)) return;
+      recordEdit();
+      nextBuildingId += 1;
+      placedBuildings.set(building.id, building);
+      syncExpansion();
+      finishEdit();
+      setBuildFeedback(
+        `The city funded a new ${formatBuildingKind(building.kind).toLowerCase()} building for ${formatDetailedMoney(cost)}.`,
+        "success",
+      );
+      return;
+    }
+  }
+
+  const roadData = renderer.suggestMunicipalExpansionRoad(
+    municipalRoads.length,
+  );
+  if (!roadData) return;
+  const roadLength = Math.hypot(
+    roadData.endX - roadData.startX,
+    roadData.endZ - roadData.startZ,
+  );
+  const cost =
+    roadLength * MUNICIPAL_ROAD_COST_PER_METER + MUNICIPAL_CROSSWALK_COST;
+  if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
+  if (!simulation.fundMunicipalProject(cost)) return;
+  recordEdit();
+  const road: ExpansionRoad = {
+    id: `municipal-road-${nextExpansionRoadId++}`,
+    ...roadData,
+  };
+  expansionRoads.set(road.id, road);
+  renderer.setExpansionRoads([...expansionRoads.values()]);
+  addAutomaticRoadSafetyFeatures(road.id, "municipal-object");
+  syncExpansion();
+  finishEdit();
+  setBuildFeedback(
+    `The city funded a connected road with crosswalks and signals for ${formatDetailedMoney(cost)}.`,
+    "success",
+  );
+}
+
+function addAutomaticRoadSafetyFeatures(
+  roadId: string,
+  idPrefix = "expansion-object",
+): { crosswalks: number; signals: number } {
+  let crosswalks = 0;
+  let signals = 0;
+  for (const placement of renderer.resolveAutomaticExpansionStreetObjects(roadId)) {
+    const object: ExpansionStreetObject = {
+      id: `${idPrefix}-${nextExpansionStreetObjectId++}`,
+      ...placement,
+    };
+    expansionStreetObjects.set(object.id, object);
+    if (object.kind === "crosswalk") crosswalks += 1;
+    else signals += 1;
+  }
+  return { crosswalks, signals };
+}
+
+function suggestMunicipalBuilding(
+  roads: readonly ExpansionRoad[],
+  sequence: number,
+): PlacedBuilding | null {
+  const templates: ReadonlyArray<
+    Pick<PlacedBuilding, "kind" | "function" | "floors" | "color">
+  > = [
+    { kind: "residential", function: "housing", floors: 5, color: "#b96f58" },
+    { kind: "commercial", function: "retail", floors: 7, color: "#587f8d" },
+    { kind: "civic", function: "clinic", floors: 4, color: "#b6aa83" },
+    { kind: "industrial", function: "industrial", floors: 4, color: "#80634f" },
+  ];
+  const template = templates[sequence % templates.length]!;
+  const orderedRoads = [...roads].reverse();
+  for (const road of orderedRoads) {
+    const dx = road.endX - road.startX;
+    const dz = road.endZ - road.startZ;
+    const length = Math.hypot(dx, dz);
+    if (length === 0) continue;
+    const normalX = -dz / length;
+    const normalZ = dx / length;
+    for (const progress of [0.35, 0.65]) {
+      for (const side of [1, -1]) {
+        const requested: PlacedBuilding = {
+          id: `municipal-building-${nextBuildingId}`,
+          ...template,
+          x:
+            road.startX
+            + dx * progress
+            + normalX * (road.width / 2 + 28) * side,
+          z:
+            road.startZ
+            + dz * progress
+            + normalZ * (road.width / 2 + 28) * side,
+          rotation: 0,
+        };
+        const resolved =
+          renderer.resolveExpansionBuildingPlacement(requested);
+        if (
+          resolved
+          && renderer.validateBuildingPlacement(resolved).valid
+        ) return resolved;
+      }
+    }
+  }
+  return null;
 }
 
 function setBuildFeedback(
@@ -1095,7 +1239,7 @@ function selectExpansionStreetObjectTool(
     activeExpansionStreetObjectTool === "crosswalk"
       ? "Crosswalk active: click near an added-road junction to place all four sides."
       : activeExpansionStreetObjectTool === "traffic-signal"
-        ? "Traffic signal active: click directly on a user-built road."
+        ? "Traffic signal active: click near an added-road junction to place all four corners."
         : "Choose an expansion tool.",
   );
 }
@@ -1868,8 +2012,7 @@ function updateInterface(): void {
 function updateMetrics(): void {
   const state = simulation.getState();
   recordLiveStatHistory();
-  const metrics =
-    metricView === "baseline" ? simulation.getBaselineMetrics() : state.metrics;
+  const metrics = state.metrics;
   vehicleTime.textContent = `${metrics.vehicleTravelSeconds.toFixed(1)} s`;
   pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
   conflicts.textContent = String(metrics.potentialConflicts);
@@ -1892,18 +2035,10 @@ function updateMetrics(): void {
   cityUnemployment.textContent = `${cityMetrics.unemploymentPercent.toFixed(1)}%`;
   cityTrafficCost.textContent = `${formatCurrency(cityMetrics.congestionCostDaily)}/day`;
   cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
+  cityGovernmentFunds.textContent = formatCurrency(cityMetrics.municipalBalance);
   syncEnvironmentControls();
   updateSelectedSignalStatus();
   updateEntityInterface();
-}
-
-function setMetricView(view: "baseline" | "modified"): void {
-  metricView = view;
-  const baseline = view === "baseline";
-  baselineMetricsButton.setAttribute("aria-pressed", String(baseline));
-  modifiedMetricsButton.setAttribute("aria-pressed", String(!baseline));
-  metricsKicker.textContent = baseline ? "Baseline network" : "Modified design";
-  updateMetrics();
 }
 
 function updateSelectionPanel(): void {
@@ -3400,6 +3535,7 @@ function cityStatInsight(stat: string, current: string): StatInsight {
     trafficCost: "Daily traffic cost",
     imports: "Imported goods share",
     migration: "Annualized net migration",
+    governmentFunds: "Government funds",
   };
   const descriptions: Record<string, string> = {
     population: "Residents represented by the citywide economic model.",
@@ -3408,6 +3544,7 @@ function cityStatInsight(stat: string, current: string): StatInsight {
     trafficCost: "Value of time and operating expense lost to travel delay each day.",
     imports: "Share of consumed goods supplied by regional or outside-city markets.",
     migration: "Projected yearly population change if current conditions persist.",
+    governmentFunds: "Municipal funds available after tax revenue, operating costs, maintenance, and public construction.",
   };
   const historyValue = (point: (typeof points)[number]): number => {
     if (stat === "population") return point.population;
@@ -3415,6 +3552,7 @@ function cityStatInsight(stat: string, current: string): StatInsight {
     if (stat === "unemployment") return point.unemploymentPercent;
     if (stat === "trafficCost") return point.congestionCostDaily;
     if (stat === "imports") return point.goodsImportedDaily / Math.max(1, point.goodsConsumedDaily) * 100;
+    if (stat === "governmentFunds") return point.municipalBalance;
     return point.annualizedNetMigration;
   };
   const factors: Record<string, StatFactor[]> = {
@@ -3447,6 +3585,11 @@ function cityStatInsight(stat: string, current: string): StatInsight {
       factor("Jobs", `${metrics.unemploymentPercent.toFixed(1)}% unemployment`, metrics.unemploymentPercent < 8),
       factor("Housing", `${metrics.housingOccupancyPercent.toFixed(0)}% occupied`, metrics.housingOccupancyPercent < 95),
       factor("Daily life", `${metrics.happiness.toFixed(0)}% happiness and ${metrics.averageTrafficDelayMinutes.toFixed(1)} min delay`, metrics.happiness >= 55 && metrics.averageTrafficDelayMinutes < 8),
+    ],
+    governmentFunds: [
+      factor("Tax revenue", `${formatDetailedMoney(metrics.taxRevenueDaily)} per day`, metrics.taxRevenueDaily >= metrics.maintenanceCostDaily),
+      factor("City operations", `${formatDetailedMoney(metrics.maintenanceCostDaily)} per day`, metrics.maintenanceCostDaily <= metrics.taxRevenueDaily),
+      factor("Growth reserve", "Automatic construction preserves an $18M operating reserve", metrics.municipalBalance >= 18_000_000),
     ],
   };
   return {

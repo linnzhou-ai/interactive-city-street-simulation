@@ -373,6 +373,29 @@ export class ExpansionBuilder {
     return { valid: true, reason: "" };
   }
 
+  suggestGrowthRoad(sequence: number): Omit<ExpansionRoad, "id"> | null {
+    const anchors = boundaryRoadAnchors(this.existingRoads);
+    if (anchors.length === 0) return null;
+    const startIndex = Math.abs(Math.trunc(sequence)) % anchors.length;
+    for (let offset = 0; offset < anchors.length; offset += 1) {
+      const anchor = anchors[(startIndex + offset) % anchors.length]!;
+      const length = GRID_SIZE * 6;
+      const candidate: Omit<ExpansionRoad, "id"> = {
+        startX: anchor.x,
+        startZ: anchor.z,
+        endX: anchor.x + anchor.outwardX * length,
+        endZ: anchor.z + anchor.outwardZ * length,
+        width: 16,
+        laneDelta: 0,
+        bikeLane: sequence % 3 === 1,
+        widenedSidewalk: true,
+        laneDirection: "two-way",
+      };
+      if (this.validateRoad(candidate).valid) return candidate;
+    }
+    return null;
+  }
+
   validateRoadRemoval(id: string): PlacementResult {
     const remainingRoads = this.roads.filter((road) => road.id !== id);
     const disconnectedBuildings = this.buildings.filter(
@@ -399,44 +422,32 @@ export class ExpansionBuilder {
     const dx = road.road.endX - road.road.startX;
     const dz = road.road.endZ - road.road.startZ;
     const length = Math.hypot(dx, dz);
-    const heading = Math.atan2(dx, dz);
     let placementX = road.x;
     let placementZ = road.z;
-    if (kind === "crosswalk") {
-      const junction = roadJunctions([
-        ...this.existingRoads,
-        ...this.roads,
-      ])
-        .map((candidate) => ({
-          candidate,
-          projection: projectPointToRoad(
-            road.road,
-            candidate.x,
-            candidate.z,
-          ),
-        }))
-        .filter(({ projection }) => projection.distance < 1)
-        .sort((left, right) =>
-          Math.abs(left.projection.progress - road.progress)
-          - Math.abs(right.projection.progress - road.progress)
-        )[0];
-      if (
-        !junction
-        || Math.abs(junction.projection.progress - road.progress) * length > 45
-      ) return null;
-      placementX = junction.candidate.x;
-      placementZ = junction.candidate.z;
-    } else {
-      const normalX = Math.cos(heading);
-      const normalZ = -Math.sin(heading);
-      const side = (x - road.x) * normalX + (z - road.z) * normalZ < 0
-        ? -1
-        : 1;
-      const offset = road.road.width / 2 + 1.4;
-      placementX += normalX * offset * side;
-      placementZ += normalZ * offset * side;
-    }
-    const minimumSpacing = kind === "crosswalk" ? 8 : 5;
+    const junction = roadJunctions([
+      ...this.existingRoads,
+      ...this.roads,
+    ])
+      .map((candidate) => ({
+        candidate,
+        projection: projectPointToRoad(
+          road.road,
+          candidate.x,
+          candidate.z,
+        ),
+      }))
+      .filter(({ projection }) => projection.distance < 1)
+      .sort((left, right) =>
+        Math.abs(left.projection.progress - road.progress)
+        - Math.abs(right.projection.progress - road.progress)
+      )[0];
+    if (
+      !junction
+      || Math.abs(junction.projection.progress - road.progress) * length > 45
+    ) return null;
+    placementX = junction.candidate.x;
+    placementZ = junction.candidate.z;
+    const minimumSpacing = 8;
     if (this.objects.some((object) =>
       object.kind === kind
       && Math.hypot(object.x - placementX, object.z - placementZ) < minimumSpacing
@@ -445,12 +456,41 @@ export class ExpansionBuilder {
       kind,
       x: placementX,
       z: placementZ,
-      rotation: kind === "crosswalk" ? 0 : heading,
+      rotation: 0,
     };
   }
 
   isCrosswalkSupported(x: number, z: number): boolean {
     return this.resolveStreetObjectPlacement(x, z, "crosswalk") !== null;
+  }
+
+  resolveAutomaticStreetObjects(
+    roadId: string,
+  ): Array<Omit<ExpansionStreetObject, "id">> {
+    const road = this.roads.find((candidate) => candidate.id === roadId);
+    if (!road) return [];
+    const junctions = roadJunctions([
+      ...this.existingRoads,
+      ...this.roads,
+    ]).filter((junction) =>
+      projectPointToRoad(road, junction.x, junction.z).distance < 1
+    );
+    const placements: Array<Omit<ExpansionStreetObject, "id">> = [];
+    for (const junction of junctions) {
+      for (const kind of ["crosswalk", "traffic-signal"] as const) {
+        if (this.objects.some((object) =>
+          object.kind === kind
+          && Math.hypot(object.x - junction.x, object.z - junction.z) < 8
+        )) continue;
+        placements.push({
+          kind,
+          x: junction.x,
+          z: junction.z,
+          rotation: 0,
+        });
+      }
+    }
+    return placements;
   }
 
   pointerDown(clientX: number, clientY: number): boolean {
@@ -744,6 +784,51 @@ export class ExpansionBuilder {
   }
 }
 
+function boundaryRoadAnchors(
+  roads: readonly ExpansionRoad[],
+): Array<{ x: number; z: number; outwardX: number; outwardZ: number }> {
+  if (roads.length === 0) return [];
+  const endpoints = roads.flatMap((road) => [
+    { x: road.startX, z: road.startZ, road },
+    { x: road.endX, z: road.endZ, road },
+  ]);
+  const minX = Math.min(...endpoints.map((point) => point.x));
+  const maxX = Math.max(...endpoints.map((point) => point.x));
+  const minZ = Math.min(...endpoints.map((point) => point.z));
+  const maxZ = Math.max(...endpoints.map((point) => point.z));
+  const anchors = new Map<
+    string,
+    { x: number; z: number; outwardX: number; outwardZ: number }
+  >();
+  for (const endpoint of endpoints) {
+    const horizontal =
+      Math.abs(endpoint.road.endX - endpoint.road.startX)
+      >= Math.abs(endpoint.road.endZ - endpoint.road.startZ);
+    const anchor = horizontal && Math.abs(endpoint.x - minX) < 1
+      ? { x: endpoint.x, z: endpoint.z, outwardX: -1, outwardZ: 0 }
+      : horizontal && Math.abs(endpoint.x - maxX) < 1
+        ? { x: endpoint.x, z: endpoint.z, outwardX: 1, outwardZ: 0 }
+        : !horizontal && Math.abs(endpoint.z - minZ) < 1
+          ? { x: endpoint.x, z: endpoint.z, outwardX: 0, outwardZ: -1 }
+          : !horizontal && Math.abs(endpoint.z - maxZ) < 1
+            ? { x: endpoint.x, z: endpoint.z, outwardX: 0, outwardZ: 1 }
+            : null;
+    if (anchor) {
+      anchors.set(
+        `${Math.round(anchor.x)}:${Math.round(anchor.z)}:${anchor.outwardX}:${anchor.outwardZ}`,
+        anchor,
+      );
+    }
+  }
+  return [...anchors.values()].sort(
+    (left, right) =>
+      Math.atan2(left.outwardZ, left.outwardX)
+        - Math.atan2(right.outwardZ, right.outwardX)
+      || left.x - right.x
+      || left.z - right.z,
+  );
+}
+
 function createExpansionBoundaryGuide(coreBounds: ExpansionBounds): THREE.Group {
   const guide = new THREE.Group();
   guide.name = "expansion-build-area-guide";
@@ -913,8 +998,11 @@ function createRoadMesh(
     0.18,
     length + 0.8,
     new THREE.MeshStandardMaterial({
-      color: selected ? "#44595a" : congestionColor ?? "#2c3337",
+      color: selected ? "#0b181b" : congestionColor ?? "#071417",
       roughness: 0.97,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
     }),
   );
   roadSurface.position.set(centerX, SURFACE_HEIGHT, centerZ);
@@ -1044,7 +1132,7 @@ function createRoadJunctionMesh(junction: Readonly<RoadJunction>): THREE.Group {
   const size = (junction.radius + 4.2) * 2;
   const surface = new THREE.Mesh(
     new THREE.BoxGeometry(size, 0.2, size),
-    new THREE.MeshStandardMaterial({ color: "#2c3337", roughness: 0.92 }),
+    new THREE.MeshStandardMaterial({ color: "#071417", roughness: 0.92 }),
   );
   surface.position.set(junction.x, SURFACE_HEIGHT + 0.02, junction.z);
   surface.receiveShadow = true;
@@ -1160,27 +1248,50 @@ function createStreetObjectMesh(object: ExpansionStreetObject): THREE.Group {
       group.add(stripeNorth, stripeSouth, stripeWest, stripeEast);
     }
   } else {
-    const pole = box(
-      0.45,
-      5.8,
-      0.45,
-      new THREE.MeshStandardMaterial({ color: "#202925", roughness: 0.8 }),
-    );
-    pole.position.y = 2.9;
-    const signal = box(
-      1.2,
-      2.7,
-      0.9,
-      new THREE.MeshStandardMaterial({ color: "#18201d", roughness: 0.7 }),
-    );
-    signal.position.set(0, 5.2, 0);
-    const red = new THREE.Mesh(
-      new THREE.SphereGeometry(0.3, 10, 8),
-      new THREE.MeshBasicMaterial({ color: "#f05a4a" }),
-    );
-    red.position.set(0, 5.75, 0.47);
-    group.add(pole, signal, red);
+    for (const [x, z, rotation] of [
+      [-10.5, -10.5, 0],
+      [10.5, -10.5, Math.PI / 2],
+      [10.5, 10.5, Math.PI],
+      [-10.5, 10.5, -Math.PI / 2],
+    ] as const) {
+      const assembly = createExpansionSignalAssembly();
+      assembly.position.set(x, 0, z);
+      assembly.rotation.y = rotation;
+      group.add(assembly);
+    }
   }
+  return group;
+}
+
+function createExpansionSignalAssembly(): THREE.Group {
+  const group = new THREE.Group();
+  const pole = box(
+    0.45,
+    5.8,
+    0.45,
+    new THREE.MeshStandardMaterial({ color: "#202925", roughness: 0.8 }),
+  );
+  pole.position.y = 2.9;
+  const signal = box(
+    1.2,
+    2.9,
+    0.9,
+    new THREE.MeshStandardMaterial({ color: "#18201d", roughness: 0.7 }),
+  );
+  signal.position.set(0, 5.2, 0);
+  for (const [y, color] of [
+    [6.0, "#f05a4a"],
+    [5.2, "#e7b73f"],
+    [4.4, "#3cbd6d"],
+  ] as const) {
+    const lens = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 10, 8),
+      new THREE.MeshBasicMaterial({ color }),
+    );
+    lens.position.set(0, y, 0.47);
+    group.add(lens);
+  }
+  group.add(pole, signal);
   return group;
 }
 

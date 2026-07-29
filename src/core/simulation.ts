@@ -7,7 +7,6 @@ import type {
   SignalControlMode,
   SignalSnapshot,
   SignalTiming,
-  SimulationMetrics,
   SimulationState,
   FeatureDesign,
   ExpansionRoad,
@@ -148,6 +147,7 @@ export class Simulation {
       createCitySectionState(this.cityDefinition),
       this.buildingDefinitions,
     );
+    this.traffic.setBuildingDestinations(this.trafficBuildingDestinations());
   }
 
   getState(): Readonly<SimulationState> {
@@ -158,8 +158,18 @@ export class Simulation {
     return this.settings;
   }
 
-  getBaselineMetrics(): SimulationMetrics {
-    return calculateMetrics(this.settings, EMPTY_DESIGN_IMPACT);
+  fundMunicipalProject(cost: number): boolean {
+    if (
+      !Number.isFinite(cost)
+      || cost <= 0
+      || this.state.city.municipalBudget < cost
+    ) return false;
+    this.state.city.municipalBudget -= cost;
+    this.state.city.metrics = {
+      ...this.state.city.metrics,
+      municipalBalance: this.state.city.municipalBudget,
+    };
+    return true;
   }
 
   getBuildingActivity(): Readonly<BuildingActivitySummary> {
@@ -215,7 +225,7 @@ export class Simulation {
     this.traffic.setExpansionNetwork(
       this.expansionRoads,
       this.expansionStreetObjects,
-      this.expansionBuildings,
+      this.trafficBuildingDestinations(),
     );
     this.state.timeHorizon = this.settings.timeHorizon;
     this.state.mobilityDetailMode = mobilityDetailModeForHorizon(
@@ -362,6 +372,7 @@ export class Simulation {
       this.state.entities,
       this.activeBuildingDefinitions(),
     );
+    this.traffic.setBuildingDestinations(this.trafficBuildingDestinations());
     this.refreshSampledMobility();
     this.syncEconomicRoadLoad();
     this.updateMetrics();
@@ -381,7 +392,11 @@ export class Simulation {
       this.state.entities,
       definitions,
     );
-    this.traffic.setExpansionNetwork(roads, streetObjects, buildings);
+    this.traffic.setExpansionNetwork(
+      roads,
+      streetObjects,
+      this.trafficBuildingDestinations(),
+    );
     this.sampledMobility.invalidateRoutes();
     this.refreshSampledMobility();
     this.syncEconomicRoadLoad();
@@ -396,6 +411,18 @@ export class Simulation {
       ),
       ...this.expansionBuildings.map(placedBuildingToDefinition),
     ];
+  }
+
+  private trafficBuildingDestinations(): Array<{
+    kind: PlacedBuilding["kind"];
+    x: number;
+    z: number;
+  }> {
+    return this.activeBuildingDefinitions().map((building) => ({
+      kind: building.zone === "park" ? "civic" : building.zone,
+      x: building.x,
+      z: building.z,
+    }));
   }
 
   update(deltaSeconds: number): void {
@@ -804,83 +831,6 @@ function roundPercent(ratio: number): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
-}
-
-export function calculateMetrics(
-  settings: Readonly<ScenarioSettings>,
-  impact: Readonly<DesignImpact>,
-): SimulationMetrics {
-  const signalPenalty = Math.abs(settings.signalCycleSeconds - 70) * 0.12;
-  const lowSpeedPenalty = settings.speedLimitMph < 20 ? 4 : 0;
-  const vehicleTravelSeconds = Math.max(
-    24,
-    49 +
-      settings.vehicleVolume * 8 +
-      signalPenalty +
-      lowSpeedPenalty -
-      impact.laneCapacityDelta * 4.5,
-  );
-  const congestion = Math.max(
-    1,
-    Math.round(settings.vehicleVolume * 11 - impact.laneCapacityDelta * 4),
-  );
-  const averageSpeedMph = Math.max(
-    4,
-    settings.speedLimitMph -
-      congestion * 0.34 +
-      impact.laneCapacityDelta * 1.2,
-  );
-  const intersectionDelaySeconds = Math.max(
-    3,
-    7 +
-      settings.vehicleVolume * 4.2 +
-      Math.abs(settings.signalCycleSeconds - 65) * 0.1 -
-      impact.laneCapacityDelta * 1.1 -
-      impact.crosswalks * 0.25,
-  );
-  const pedestrianWaitSeconds = Math.max(
-    2,
-    17 +
-      settings.pedestrianVolume * 5 +
-      settings.signalCycleSeconds * 0.08 -
-      impact.sidewalkUpgrades * 1.2 -
-      impact.crosswalks * 0.85 -
-      impact.pedestrianIslands * 1.15,
-  );
-  const potentialConflicts = Math.max(
-    0,
-    Math.round(
-      settings.vehicleVolume * 4 +
-        settings.pedestrianVolume * 3 -
-        impact.bikeLanes * 0.8 -
-        impact.crosswalks * 0.65 -
-        impact.pedestrianIslands * 1.2,
-    ),
-  );
-  const throughputPerHour = Math.max(
-    120,
-    Math.round(
-      420 +
-        settings.vehicleVolume * 90 +
-        impact.laneCapacityDelta * 55 -
-        congestion * 5,
-    ),
-  );
-  return {
-    vehicleTravelSeconds: roundOneDecimal(vehicleTravelSeconds),
-    averageSpeedMph: roundOneDecimal(averageSpeedMph),
-    congestion,
-    intersectionDelaySeconds: roundOneDecimal(intersectionDelaySeconds),
-    pedestrianWaitSeconds: roundOneDecimal(pedestrianWaitSeconds),
-    potentialConflicts,
-    throughputPerHour,
-    activeVehicles: 0,
-    activePedestrians: 0,
-    crossingsCompleted: 0,
-    buildingArrivals: 0,
-    trafficViolations: 0,
-    jaywalkingViolations: 0,
-  };
 }
 
 export function getTimeDemandAdjustment(

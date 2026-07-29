@@ -40,6 +40,7 @@ import {
   ExpansionBuilder,
   type PlacementResult,
 } from "./expansionBuilder";
+import { projectPointToRoad } from "../core/expansionLayout";
 import type {
   BuildingConnectionKind,
   DetailedBuilding,
@@ -117,6 +118,13 @@ interface FlowParticle {
   speed: number;
 }
 
+interface TreePlacement {
+  x: number;
+  z: number;
+  scale: number;
+  type: number;
+}
+
 type EnvironmentStatusHandler = (mode: EnvironmentMode, detail: string) => void;
 type EntityHoverHandler = (
   selection: SceneHoverSelection | null,
@@ -175,6 +183,10 @@ export class ThreeRenderer {
   private readonly agentTransform = new THREE.Object3D();
   private readonly agentColor = new THREE.Color();
   private readonly signalAssemblies: SignalAssembly[] = [];
+  private treePlacements: TreePlacement[] = [];
+  private treeTrunkMesh: THREE.InstancedMesh | null = null;
+  private treeCrownMeshes: THREE.InstancedMesh[] = [];
+  private expansionRoads: ExpansionRoad[] = [];
   private readonly flyKeys = new Set<string>();
   private readonly flyVelocity = new THREE.Vector3();
   private readonly walkVelocity = new THREE.Vector3();
@@ -534,7 +546,9 @@ export class ThreeRenderer {
   }
 
   setExpansionRoads(roads: readonly ExpansionRoad[]): void {
+    this.expansionRoads = roads.map((road) => ({ ...road }));
     this.expansionBuilder.setRoads(roads);
+    this.updateExpansionTreeVisibility();
   }
 
   setSelectedExpansionRoad(id: string | null): void {
@@ -553,6 +567,12 @@ export class ThreeRenderer {
     return this.expansionBuilder.resolveStreetObjectPlacement(x, z, kind);
   }
 
+  resolveAutomaticExpansionStreetObjects(
+    roadId: string,
+  ): Array<Omit<ExpansionStreetObject, "id">> {
+    return this.expansionBuilder.resolveAutomaticStreetObjects(roadId);
+  }
+
   isExpansionCrosswalkSupported(x: number, z: number): boolean {
     return this.expansionBuilder.isCrosswalkSupported(x, z);
   }
@@ -561,6 +581,12 @@ export class ThreeRenderer {
     road: Readonly<Omit<ExpansionRoad, "id">>,
   ): PlacementResult {
     return this.expansionBuilder.validateRoad(road);
+  }
+
+  suggestMunicipalExpansionRoad(
+    sequence: number,
+  ): Omit<ExpansionRoad, "id"> | null {
+    return this.expansionBuilder.suggestGrowthRoad(sequence);
   }
 
   validateExpansionRoadRemoval(id: string): PlacementResult {
@@ -1195,7 +1221,7 @@ export class ThreeRenderer {
         );
         sidewalk.position.copy(center).addScaledVector(normal, sidewalkOffset * side);
         sidewalk.position.y = RENDER_HEIGHTS.sidewalkCenter;
-        sidewalk.rotation.y = angle;
+        sidewalk.rotation.y = angle - Math.PI / 2;
         sidewalk.receiveShadow = true;
         sidewalk.userData.walkable = true;
         this.scene.add(sidewalk);
@@ -1638,8 +1664,9 @@ export class ThreeRenderer {
   }
 
   private addInstancedTrees(
-    positions: Array<{ x: number; z: number; scale: number; type: number }>,
+    positions: TreePlacement[],
   ): void {
+    this.treePlacements = positions.map((position) => ({ ...position }));
     const trunkGeometry = new THREE.CylinderGeometry(0.38, 0.52, 5.5, 7);
     const trunkMesh = new THREE.InstancedMesh(
       trunkGeometry,
@@ -1691,6 +1718,40 @@ export class ThreeRenderer {
     }
     trunkMesh.instanceMatrix.needsUpdate = true;
     this.scene.add(trunkMesh);
+    this.treeTrunkMesh = trunkMesh;
+    this.treeCrownMeshes = crownMeshes;
+    this.updateExpansionTreeVisibility();
+  }
+
+  private updateExpansionTreeVisibility(): void {
+    if (!this.treeTrunkMesh || this.treeCrownMeshes.length === 0) return;
+    const crownCounts = [0, 0, 0];
+    const matrix = new THREE.Matrix4();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const position = new THREE.Vector3();
+    this.treePlacements.forEach((tree, index) => {
+      const blocked = this.expansionRoads.some((road) => {
+        const sidewalkWidth = road.widenedSidewalk ? 5.5 : 3.5;
+        return projectPointToRoad(road, tree.x, tree.z).distance
+          <= road.width / 2 + sidewalkWidth + 1.5;
+      });
+      const visibleScale = blocked ? 0 : tree.scale;
+      quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), index * 1.71);
+      scale.set(visibleScale, visibleScale, visibleScale);
+      position.set(tree.x, 2.8 * tree.scale, tree.z);
+      matrix.compose(position, quaternion, scale);
+      this.treeTrunkMesh!.setMatrixAt(index, matrix);
+
+      const crownIndex = crownCounts[tree.type]++;
+      position.y = tree.type === 2 ? 7.2 * tree.scale : 6.3 * tree.scale;
+      matrix.compose(position, quaternion, scale);
+      this.treeCrownMeshes[tree.type].setMatrixAt(crownIndex, matrix);
+    });
+    this.treeTrunkMesh.instanceMatrix.needsUpdate = true;
+    for (const crown of this.treeCrownMeshes) {
+      crown.instanceMatrix.needsUpdate = true;
+    }
   }
 
   private addStreetlights(): void {
@@ -3016,9 +3077,12 @@ export class ThreeRenderer {
   }
 
   private addDistantSkyline(rng: () => number): void {
+    const center = this.cityBounds.getCenter(new THREE.Vector3());
+    const size = this.cityBounds.getSize(new THREE.Vector3());
+    const cityRadius = Math.hypot(size.x / 2, size.z / 2);
     for (let index = 0; index < 170; index += 1) {
       const angle = rng() * Math.PI * 2;
-      const radius = 1_250 + rng() * 1_150;
+      const radius = cityRadius + 220 + rng() * 900;
       const width = 24 + rng() * 55;
       const depth = 24 + rng() * 55;
       const height = 28 + rng() * (radius < 1_650 ? 150 : 85);
@@ -3029,9 +3093,9 @@ export class ThreeRenderer {
         rng() > 0.45 ? this.materials.distant : this.materials.distantGlass,
       );
       building.position.set(
-        Math.cos(angle) * radius,
+        center.x + Math.cos(angle) * radius,
         height / 2,
-        Math.sin(angle) * radius,
+        center.z + Math.sin(angle) * radius,
       );
       building.rotation.y = rng() * Math.PI;
       building.userData.collidable = true;
