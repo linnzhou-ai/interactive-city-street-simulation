@@ -492,6 +492,10 @@ export class ThreeRenderer {
     this.expansionBuilder.setEraseEnabled(enabled);
   }
 
+  setExpansionRoadEraseEnabled(enabled: boolean): void {
+    this.expansionBuilder.setRoadEraseEnabled(enabled);
+  }
+
   setPedestrianMarkersVisible(visible: boolean): void {
     this.pedestrianGroup.visible = visible;
   }

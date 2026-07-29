@@ -7,6 +7,7 @@ import {
   roadIntersectsBuilding,
   roadJunctions,
   snapRoadPoint,
+  visibleRoadIntervals,
 } from "../src/core/expansionLayout";
 import type { ExpansionRoad, PlacedBuilding } from "../src/models/types";
 
@@ -163,5 +164,17 @@ describe("expansion layout", () => {
       { ...horizontalRoad, startZ: 60, endZ: 60 },
       footprint,
     )).toBe(false);
+  });
+
+  it("clips road markings around merged junction and crosswalk gaps", () => {
+    expect(visibleRoadIntervals(100, [
+      { start: 42, end: 54 },
+      { start: 50, end: 62 },
+      { start: -10, end: 8 },
+      { start: 96, end: 120 },
+    ])).toEqual([
+      { start: 8, end: 42 },
+      { start: 62, end: 96 },
+    ]);
   });
 });

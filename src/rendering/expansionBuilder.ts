@@ -21,8 +21,10 @@ import {
   roadIntersectsBuilding,
   roadJunctions,
   snapRoadPoint,
+  visibleRoadIntervals,
 } from "../core/expansionLayout";
 import type {
+  RoadInterval,
   RoadJunction,
   RoadProjection,
 } from "../core/expansionLayout";
@@ -93,6 +95,7 @@ export class ExpansionBuilder {
   private roadDrawEnabled = false;
   private buildingPlacementEnabled = false;
   private eraseEnabled = false;
+  private roadEraseEnabled = false;
   private streetObjectTool: ExpansionStreetObjectKind | null = null;
   private roadStart: THREE.Vector3 | null = null;
   private draggingBuildingId: string | null = null;
@@ -190,6 +193,10 @@ export class ExpansionBuilder {
     this.eraseEnabled = enabled;
   }
 
+  setRoadEraseEnabled(enabled: boolean): void {
+    this.roadEraseEnabled = enabled;
+  }
+
   setBuildings(buildings: readonly PlacedBuilding[]): void {
     this.buildings = buildings.map((building) => ({ ...building }));
     clearGroup(this.buildingGroup);
@@ -207,7 +214,21 @@ export class ExpansionBuilder {
 
   setRoads(roads: readonly ExpansionRoad[]): void {
     this.roads = roads.map((road) => ({ ...road }));
+    this.refreshRoadMeshes();
+    this.setBuildings(this.buildings);
+  }
+
+  private refreshRoadMeshes(): void {
     clearGroup(this.roadGroup);
+    const networkJunctions = roadJunctions([
+      ...this.existingRoads,
+      ...this.roads,
+    ]);
+    const relevantJunctions = networkJunctions.filter((junction) =>
+      this.roads.some((road) =>
+        projectPointToRoad(road, junction.x, junction.z).distance < 1,
+      ),
+    );
     for (const road of this.roads) {
       this.roadGroup.add(createRoadMesh(
         road,
@@ -215,12 +236,13 @@ export class ExpansionBuilder {
         this.roadAnalysisMode === "congestion"
           ? this.roadTraffic.get(road.id)?.congestionPercent
           : undefined,
+        relevantJunctions,
+        this.objects,
       ));
     }
-    for (const junction of roadJunctions(this.roads)) {
+    for (const junction of relevantJunctions) {
       this.roadGroup.add(createRoadJunctionMesh(junction));
     }
-    this.setBuildings(this.buildings);
   }
 
   setStreetObjects(objects: readonly ExpansionStreetObject[]): void {
@@ -229,6 +251,7 @@ export class ExpansionBuilder {
     for (const object of this.objects) {
       this.objectGroup.add(createStreetObjectMesh(object));
     }
+    this.refreshRoadMeshes();
   }
 
   setExistingBuildingMeshes(meshes: readonly THREE.Object3D[]): void {
@@ -375,12 +398,54 @@ export class ExpansionBuilder {
     if (!road || road.distance > road.road.width / 2 + 5) return null;
     const dx = road.road.endX - road.road.startX;
     const dz = road.road.endZ - road.road.startZ;
-    const rotation = Math.atan2(dx, dz) + (kind === "crosswalk" ? Math.PI / 2 : 0);
+    const length = Math.hypot(dx, dz);
+    const heading = Math.atan2(dx, dz);
+    let placementX = road.x;
+    let placementZ = road.z;
+    if (kind === "crosswalk") {
+      const junction = roadJunctions([
+        ...this.existingRoads,
+        ...this.roads,
+      ])
+        .map((candidate) => ({
+          candidate,
+          projection: projectPointToRoad(
+            road.road,
+            candidate.x,
+            candidate.z,
+          ),
+        }))
+        .filter(({ projection }) => projection.distance < 1)
+        .sort((left, right) =>
+          Math.abs(left.projection.progress - road.progress)
+          - Math.abs(right.projection.progress - road.progress)
+        )[0];
+      if (
+        !junction
+        || Math.abs(junction.projection.progress - road.progress) * length > 45
+      ) return null;
+      placementX = junction.candidate.x;
+      placementZ = junction.candidate.z;
+    } else {
+      const normalX = Math.cos(heading);
+      const normalZ = -Math.sin(heading);
+      const side = (x - road.x) * normalX + (z - road.z) * normalZ < 0
+        ? -1
+        : 1;
+      const offset = road.road.width / 2 + 1.4;
+      placementX += normalX * offset * side;
+      placementZ += normalZ * offset * side;
+    }
+    const minimumSpacing = kind === "crosswalk" ? 8 : 5;
+    if (this.objects.some((object) =>
+      object.kind === kind
+      && Math.hypot(object.x - placementX, object.z - placementZ) < minimumSpacing
+    )) return null;
     return {
       kind,
-      x: snap(road.x),
-      z: snap(road.z),
-      rotation,
+      x: placementX,
+      z: placementZ,
+      rotation: kind === "crosswalk" ? 0 : heading,
     };
   }
 
@@ -392,6 +457,7 @@ export class ExpansionBuilder {
     if (!this.enabled) return false;
     if (
       this.eraseEnabled
+      || this.roadEraseEnabled
       || this.roadDrawEnabled
       || this.streetObjectTool !== null
       || this.buildingPlacementEnabled
@@ -452,12 +518,26 @@ export class ExpansionBuilder {
     }
     if (!clicked) return false;
     const hit = this.pickTarget(clientX, clientY);
+    if (this.roadEraseEnabled) {
+      const roadHit = this.pickTarget(clientX, clientY, true);
+      if (roadHit?.type === "road") {
+        this.handlers.erase?.("road", roadHit.id);
+      } else {
+        this.handlers.status?.("Click an added road to erase it.", "warning");
+      }
+      return true;
+    }
     if (this.eraseEnabled) {
-      if (hit) {
+      if (hit?.type === "road") {
+        this.handlers.status?.(
+          "Use Erase road to remove an added road.",
+          "warning",
+        );
+      } else if (hit) {
         this.handlers.erase?.(hit.type, hit.id);
       } else {
         this.handlers.status?.(
-          "Bulldoze a city building or a user-built road, object, or building.",
+          "Bulldoze a city building, added building, crosswalk, or signal.",
           "warning",
         );
       }
@@ -524,7 +604,7 @@ export class ExpansionBuilder {
         this.handlers.placeStreetObject?.(placement);
       } else {
         this.handlers.status?.(
-          "Crosswalks and traffic signals must be placed directly on a user-built road.",
+          "Place this on an added road with enough clear space.",
           "error",
         );
       }
@@ -561,6 +641,7 @@ export class ExpansionBuilder {
   get isEditing(): boolean {
     return this.enabled && (
       this.eraseEnabled
+      || this.roadEraseEnabled
       || this.roadDrawEnabled
       || this.streetObjectTool !== null
       || this.buildingPlacementEnabled
@@ -594,7 +675,11 @@ export class ExpansionBuilder {
       : null;
   }
 
-  private pickTarget(clientX: number, clientY: number): HitTarget | null {
+  private pickTarget(
+    clientX: number,
+    clientY: number,
+    roadOnly = false,
+  ): HitTarget | null {
     const bounds = this.canvas.getBoundingClientRect();
     this.pointer.set(
       ((clientX - bounds.left) / bounds.width) * 2 - 1,
@@ -602,7 +687,9 @@ export class ExpansionBuilder {
     );
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hits = this.raycaster.intersectObjects(
-      [
+      roadOnly
+        ? [this.roadGroup]
+        : [
         this.objectGroup,
         this.buildingGroup,
         this.roadGroup,
@@ -774,6 +861,8 @@ function createRoadMesh(
   road: ExpansionRoad,
   selected: boolean,
   congestionPercent?: number,
+  junctions: readonly RoadJunction[] = [],
+  streetObjects: readonly ExpansionStreetObject[] = [],
 ): THREE.Group {
   const group = targetGroup("road", road.id);
   const dx = road.endX - road.startX;
@@ -782,6 +871,36 @@ function createRoadMesh(
   const centerX = (road.startX + road.endX) / 2;
   const centerZ = (road.startZ + road.endZ) / 2;
   const heading = Math.atan2(dx, dz);
+  const junctionIntervals = junctions
+    .map((junction) => ({
+      junction,
+      projection: projectPointToRoad(road, junction.x, junction.z),
+    }))
+    .filter(({ projection }) => projection.distance < 1)
+    .map(({ junction, projection }) => {
+      const center = projection.progress * length;
+      const halfLength = junction.radius + 4.2;
+      return {
+        start: center - halfLength,
+        end: center + halfLength,
+      };
+    });
+  const crosswalkIntervals = streetObjects
+    .filter((object) => object.kind === "crosswalk")
+    .map((object) => projectPointToRoad(road, object.x, object.z))
+    .filter((projection) => projection.distance <= road.width / 2)
+    .map((projection) => {
+      const center = projection.progress * length;
+      return {
+        start: center - 14.5,
+        end: center + 14.5,
+      };
+    });
+  const sidewalkIntervals = visibleRoadIntervals(length, junctionIntervals);
+  const markingIntervals = visibleRoadIntervals(
+    length,
+    [...junctionIntervals, ...crosswalkIntervals],
+  );
   const congestionColor = congestionPercent === undefined
     ? null
     : new THREE.Color().setHSL(
@@ -806,42 +925,71 @@ function createRoadMesh(
   const sidewalkWidth = road.widenedSidewalk ? 5.5 : 3.5;
   const sideOffset = road.width / 2 + sidewalkWidth / 2;
   for (const side of [-1, 1]) {
-    const sidewalk = box(
+    addRoadBoxSegments(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      sidewalkIntervals,
+      sideOffset * side,
       sidewalkWidth,
       0.25,
-      length + 0.8,
-      new THREE.MeshStandardMaterial({ color: "#c7c5ba", roughness: 0.94 }),
-    );
-    sidewalk.position.set(
-      centerX + Math.cos(heading) * sideOffset * side,
       SURFACE_HEIGHT + 0.08,
-      centerZ - Math.sin(heading) * sideOffset * side,
+      new THREE.MeshStandardMaterial({ color: "#c7c5ba", roughness: 0.94 }),
+      true,
     );
-    sidewalk.rotation.y = heading;
-    sidewalk.receiveShadow = true;
-    group.add(sidewalk);
-    const curb = box(
+    addRoadBoxSegments(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      sidewalkIntervals,
+      (road.width / 2 + 0.18) * side,
       0.35,
       0.34,
-      length + 0.8,
+      SURFACE_HEIGHT + 0.13,
       new THREE.MeshStandardMaterial({ color: "#ddd9cf", roughness: 0.94 }),
     );
-    curb.position.set(
-      centerX + Math.cos(heading) * (road.width / 2 + 0.18) * side,
-      SURFACE_HEIGHT + 0.13,
-      centerZ - Math.sin(heading) * (road.width / 2 + 0.18) * side,
-    );
-    curb.rotation.y = heading;
-    group.add(curb);
   }
 
   const yellowMaterial = new THREE.MeshBasicMaterial({ color: "#f1ca56" });
   const whiteMaterial = new THREE.MeshBasicMaterial({ color: "#f1efe8" });
   if ((road.laneDirection ?? "two-way") === "two-way") {
-    addRoadLine(group, centerX, centerZ, heading, length, -0.18, 0.13, yellowMaterial);
-    addRoadLine(group, centerX, centerZ, heading, length, 0.18, 0.13, yellowMaterial);
+    addRoadLine(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      markingIntervals,
+      -0.18,
+      0.13,
+      yellowMaterial,
+    );
+    addRoadLine(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      markingIntervals,
+      0.18,
+      0.13,
+      yellowMaterial,
+    );
   } else {
-    addDashedRoadLine(group, centerX, centerZ, heading, length, 0, whiteMaterial);
+    addDashedRoadLine(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      markingIntervals,
+      0,
+      whiteMaterial,
+    );
   }
   const travelLaneCount = Math.max(1, Math.min(4, 2 + (road.laneDelta ?? 0)));
   for (let divider = 1; divider < travelLaneCount; divider += 1) {
@@ -855,27 +1003,38 @@ function createRoadMesh(
       centerZ,
       heading,
       length,
+      markingIntervals,
       offset,
       whiteMaterial,
     );
   }
   for (const edgeOffset of [-road.width / 2 + 0.55, road.width / 2 - 0.55]) {
-    addRoadLine(group, centerX, centerZ, heading, length, edgeOffset, 0.1, whiteMaterial);
+    addRoadLine(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      markingIntervals,
+      edgeOffset,
+      0.1,
+      whiteMaterial,
+    );
   }
   if (road.bikeLane) {
-    const bikeLane = box(
+    addRoadBoxSegments(
+      group,
+      centerX,
+      centerZ,
+      heading,
+      length,
+      markingIntervals,
+      road.width / 2 - 1.7,
       2.3,
       0.03,
-      Math.max(1, length - 1),
+      SURFACE_HEIGHT + 0.115,
       new THREE.MeshBasicMaterial({ color: "#2ca79f", transparent: true, opacity: 0.9 }),
     );
-    bikeLane.position.set(
-      centerX + Math.cos(heading) * (road.width / 2 - 1.7),
-      SURFACE_HEIGHT + 0.115,
-      centerZ - Math.sin(heading) * (road.width / 2 - 1.7),
-    );
-    bikeLane.rotation.y = heading;
-    group.add(bikeLane);
   }
   return group;
 }
@@ -899,18 +1058,24 @@ function addRoadLine(
   centerZ: number,
   heading: number,
   length: number,
+  intervals: readonly RoadInterval[],
   lateralOffset: number,
   width: number,
   material: THREE.Material,
 ): void {
-  const line = box(width, 0.035, Math.max(1, length - 1), material);
-  line.position.set(
-    centerX + Math.cos(heading) * lateralOffset,
+  addRoadBoxSegments(
+    group,
+    centerX,
+    centerZ,
+    heading,
+    length,
+    intervals,
+    lateralOffset,
+    width,
+    0.035,
     SURFACE_HEIGHT + 0.125,
-    centerZ - Math.sin(heading) * lateralOffset,
+    material,
   );
-  line.rotation.y = heading;
-  group.add(line);
 }
 
 function addDashedRoadLine(
@@ -919,20 +1084,61 @@ function addDashedRoadLine(
   centerZ: number,
   heading: number,
   length: number,
+  intervals: readonly RoadInterval[],
   lateralOffset: number,
   material: THREE.Material,
 ): void {
-  const dashCount = Math.max(1, Math.floor(length / 14));
-  for (let index = 0; index < dashCount; index += 1) {
-    const along = -length / 2 + ((index + 0.5) * length) / dashCount;
-    const dash = box(0.12, 0.035, Math.min(5.5, length / dashCount * 0.55), material);
-    dash.position.set(
+  for (const interval of intervals) {
+    const intervalLength = interval.end - interval.start;
+    const dashCount = Math.max(1, Math.floor(intervalLength / 14));
+    for (let index = 0; index < dashCount; index += 1) {
+      const roadDistance =
+        interval.start + ((index + 0.5) * intervalLength) / dashCount;
+      const along = roadDistance - length / 2;
+      const dash = box(
+        0.12,
+        0.035,
+        Math.min(5.5, intervalLength / dashCount * 0.55),
+        material,
+      );
+      dash.position.set(
+        centerX + Math.sin(heading) * along + Math.cos(heading) * lateralOffset,
+        SURFACE_HEIGHT + 0.13,
+        centerZ + Math.cos(heading) * along - Math.sin(heading) * lateralOffset,
+      );
+      dash.rotation.y = heading;
+      group.add(dash);
+    }
+  }
+}
+
+function addRoadBoxSegments(
+  group: THREE.Group,
+  centerX: number,
+  centerZ: number,
+  heading: number,
+  roadLength: number,
+  intervals: readonly RoadInterval[],
+  lateralOffset: number,
+  width: number,
+  height: number,
+  y: number,
+  material: THREE.Material,
+  receiveShadow = false,
+): void {
+  for (const interval of intervals) {
+    const segmentLength = interval.end - interval.start;
+    if (segmentLength < 0.2) continue;
+    const along = (interval.start + interval.end) / 2 - roadLength / 2;
+    const segment = box(width, height, segmentLength, material);
+    segment.position.set(
       centerX + Math.sin(heading) * along + Math.cos(heading) * lateralOffset,
-      SURFACE_HEIGHT + 0.13,
+      y,
       centerZ + Math.cos(heading) * along - Math.sin(heading) * lateralOffset,
     );
-    dash.rotation.y = heading;
-    group.add(dash);
+    segment.rotation.y = heading;
+    segment.receiveShadow = receiveShadow;
+    group.add(segment);
   }
 }
 
@@ -942,10 +1148,16 @@ function createStreetObjectMesh(object: ExpansionStreetObject): THREE.Group {
   group.rotation.y = object.rotation;
   if (object.kind === "crosswalk") {
     const material = new THREE.MeshBasicMaterial({ color: "#f4f1e7" });
-    for (let index = -4; index <= 4; index += 1) {
-      const stripe = box(1.1, 0.035, 8, material);
-      stripe.position.x = index * 1.65;
-      group.add(stripe);
+    for (let index = -3; index <= 3; index += 1) {
+      const stripeNorth = box(1.35, 0.035, 6.2, material);
+      stripeNorth.position.set(index * 2.25, 0, -10.5);
+      const stripeSouth = stripeNorth.clone();
+      stripeSouth.position.z = 10.5;
+      const stripeWest = box(6.2, 0.035, 1.35, material);
+      stripeWest.position.set(-10.5, 0, index * 2.25);
+      const stripeEast = stripeWest.clone();
+      stripeEast.position.x = 10.5;
+      group.add(stripeNorth, stripeSouth, stripeWest, stripeEast);
     }
   } else {
     const pole = box(
@@ -1097,8 +1309,20 @@ function nearestRoad(
   roads: readonly ExpansionRoad[],
   x: number,
   z: number,
-): { road: ExpansionRoad; x: number; z: number; distance: number } | null {
-  let nearest: { road: ExpansionRoad; x: number; z: number; distance: number } | null =
+): {
+  road: ExpansionRoad;
+  x: number;
+  z: number;
+  distance: number;
+  progress: number;
+} | null {
+  let nearest: {
+    road: ExpansionRoad;
+    x: number;
+    z: number;
+    distance: number;
+    progress: number;
+  } | null =
     null;
   for (const road of roads) {
     const dx = road.endX - road.startX;
@@ -1114,7 +1338,13 @@ function nearestRoad(
     const projectedZ = road.startZ + dz * t;
     const distance = Math.hypot(x - projectedX, z - projectedZ);
     if (!nearest || distance < nearest.distance) {
-      nearest = { road, x: projectedX, z: projectedZ, distance };
+      nearest = {
+        road,
+        x: projectedX,
+        z: projectedZ,
+        distance,
+        progress: t,
+      };
     }
   }
   return nearest;
@@ -1136,10 +1366,6 @@ function overlapsBounds(a: ExpansionBounds, b: ExpansionBounds): boolean {
     a.minZ < b.maxZ &&
     a.maxZ > b.minZ
   );
-}
-
-function snap(value: number): number {
-  return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
 
 function box(

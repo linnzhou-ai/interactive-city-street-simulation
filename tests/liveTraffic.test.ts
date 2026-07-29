@@ -261,6 +261,54 @@ describe("LiveTrafficSystem", () => {
       && point.x <= road.endX)).toBe(true);
   });
 
+  it("applies one four-sided crosswalk set to both roads at its junction", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const horizontal = {
+      id: "crosswalk-horizontal",
+      startX: 700,
+      startZ: -390,
+      endX: 900,
+      endZ: -390,
+      width: 16,
+    };
+    const vertical = {
+      id: "crosswalk-vertical",
+      startX: 800,
+      startZ: -490,
+      endX: 800,
+      endZ: -290,
+      width: 16,
+    };
+    traffic.setExpansionNetwork(
+      [horizontal, vertical],
+      [{
+        id: "crosswalk-set",
+        kind: "crosswalk",
+        x: 800,
+        z: -390,
+        rotation: 0,
+      }],
+      [],
+    );
+    traffic.setEconomicRoadLoad(new Map([
+      [horizontal.id, 100],
+      [vertical.id, 100],
+    ]));
+
+    expect(traffic.getEndpointMobilitySupport({ x: 880, z: -390 }).walkingBonus)
+      .toBe(5);
+    expect(traffic.getEndpointMobilitySupport({ x: 800, z: -310 }).walkingBonus)
+      .toBe(5);
+    expect(
+      traffic.getRoadTraffic()
+        .filter((snapshot) =>
+          snapshot.segmentId === horizontal.id
+          || snapshot.segmentId === vertical.id
+        )
+        .every((snapshot) => snapshot.averageDelaySeconds > 3),
+    ).toBe(true);
+  });
+
   it("splices a new street into the middle of an existing city block", () => {
     const traffic = new LiveTrafficSystem(20260729);
     const metersPerLongitude = 111_320

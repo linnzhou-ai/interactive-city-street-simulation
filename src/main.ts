@@ -94,6 +94,7 @@ const buildActionStatus = requireElement<HTMLElement>("build-action-status");
 const drawExpansionRoadButton = requireElement<HTMLButtonElement>("draw-expansion-road-button");
 const placeExpansionCrosswalkButton = requireElement<HTMLButtonElement>("place-expansion-crosswalk-button");
 const placeExpansionSignalButton = requireElement<HTMLButtonElement>("place-expansion-signal-button");
+const eraseExpansionRoadButton = requireElement<HTMLButtonElement>("erase-expansion-road-button");
 const eraseExpansionButton = requireElement<HTMLButtonElement>("erase-expansion-button");
 const expansionRoadCount = requireElement<HTMLElement>("expansion-road-count");
 const expansionRoadEditor = requireElement<HTMLElement>("expansion-road-editor");
@@ -268,6 +269,7 @@ let appMode: AppMode = "simulate";
 let buildWorkspace: BuildWorkspace = "city-edit";
 let activeBuildingTool: BuildingKind | null = null;
 let expansionRoadToolActive = false;
+let expansionRoadEraseToolActive = false;
 let expansionEraseToolActive = false;
 let activeExpansionStreetObjectTool: ExpansionStreetObjectKind | null = null;
 let selectedPlacedBuildingId: string | null = null;
@@ -331,6 +333,10 @@ placeExpansionCrosswalkButton.addEventListener("click", () =>
 placeExpansionSignalButton.addEventListener("click", () =>
   selectExpansionStreetObjectTool("traffic-signal"),
 );
+eraseExpansionRoadButton.addEventListener("click", () => {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  setExpansionRoadEraseToolActive(!expansionRoadEraseToolActive);
+});
 eraseExpansionButton.addEventListener("click", () => {
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   setExpansionEraseToolActive(!expansionEraseToolActive);
@@ -924,7 +930,7 @@ renderer.setExpansionStreetObjectInteractionHandlers({
     finishEdit();
     setBuildFeedback(
       object.kind === "crosswalk"
-        ? "Crosswalk placed on the expansion road."
+        ? "Four-sided crosswalk set placed at the expansion-road junction."
         : "Traffic signal placed on the expansion road.",
       "success",
     );
@@ -995,9 +1001,11 @@ function updateBuildSelectionName(): void {
       : "New traffic signal";
     return;
   }
-  buildSelectionName.textContent = expansionEraseToolActive
-    ? "User-built item"
-    : "Expansion area";
+  buildSelectionName.textContent = expansionRoadEraseToolActive
+    ? "Added road"
+    : expansionEraseToolActive
+      ? "Building or object"
+      : "Expansion area";
 }
 
 function setBuildWorkspace(workspace: BuildWorkspace): void {
@@ -1022,6 +1030,7 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
     }
   } else {
     expansionRoadToolActive = false;
+    expansionRoadEraseToolActive = false;
     expansionEraseToolActive = false;
     activeExpansionStreetObjectTool = null;
     activeBuildingTool = null;
@@ -1056,6 +1065,7 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
 function setExpansionRoadToolActive(active: boolean): void {
   expansionRoadToolActive = active && buildWorkspace === "expansion";
   if (expansionRoadToolActive) {
+    expansionRoadEraseToolActive = false;
     expansionEraseToolActive = false;
     activeExpansionStreetObjectTool = null;
     activeBuildingTool = null;
@@ -1076,13 +1086,14 @@ function selectExpansionStreetObjectTool(
   activeExpansionStreetObjectTool =
     activeExpansionStreetObjectTool === tool ? null : tool;
   expansionRoadToolActive = false;
+  expansionRoadEraseToolActive = false;
   expansionEraseToolActive = false;
   activeBuildingTool = null;
   syncExpansionToolState();
   updateBuildSelectionName();
   setBuildFeedback(
     activeExpansionStreetObjectTool === "crosswalk"
-      ? "Crosswalk active: click directly on a user-built road."
+      ? "Crosswalk active: click near an added-road junction to place all four sides."
       : activeExpansionStreetObjectTool === "traffic-signal"
         ? "Traffic signal active: click directly on a user-built road."
         : "Choose an expansion tool.",
@@ -1093,6 +1104,7 @@ function setExpansionEraseToolActive(active: boolean): void {
   expansionEraseToolActive = active && buildWorkspace === "expansion";
   if (expansionEraseToolActive) {
     expansionRoadToolActive = false;
+    expansionRoadEraseToolActive = false;
     activeExpansionStreetObjectTool = null;
     activeBuildingTool = null;
   }
@@ -1100,7 +1112,7 @@ function setExpansionEraseToolActive(active: boolean): void {
   updateBuildSelectionName();
   if (expansionEraseToolActive) {
     setBuildFeedback(
-      "Bulldoze active: click a city building or any user-built item.",
+      "Bulldoze active: click a city building, added building, crosswalk, or signal.",
       "warning",
     );
   } else {
@@ -1108,10 +1120,29 @@ function setExpansionEraseToolActive(active: boolean): void {
   }
 }
 
+function setExpansionRoadEraseToolActive(active: boolean): void {
+  expansionRoadEraseToolActive = active && buildWorkspace === "expansion";
+  if (expansionRoadEraseToolActive) {
+    expansionRoadToolActive = false;
+    expansionEraseToolActive = false;
+    activeExpansionStreetObjectTool = null;
+    activeBuildingTool = null;
+  }
+  syncExpansionToolState();
+  updateBuildSelectionName();
+  setBuildFeedback(
+    expansionRoadEraseToolActive
+      ? "Erase road active: click an added road. Connected crosswalks and signals will also be removed."
+      : "Choose an expansion tool.",
+    expansionRoadEraseToolActive ? "warning" : "info",
+  );
+}
+
 function selectBuildingTool(kind: BuildingKind): void {
   if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
   activeBuildingTool = activeBuildingTool === kind ? null : kind;
   expansionRoadToolActive = false;
+  expansionRoadEraseToolActive = false;
   expansionEraseToolActive = false;
   activeExpansionStreetObjectTool = null;
   if (activeBuildingTool) {
@@ -1133,6 +1164,7 @@ function syncExpansionToolState(): void {
     cameraMode === "orbit";
   renderer.setExpansionMode(appMode === "build" && buildWorkspace === "expansion");
   renderer.setExpansionRoadDrawEnabled(active && expansionRoadToolActive);
+  renderer.setExpansionRoadEraseEnabled(active && expansionRoadEraseToolActive);
   renderer.setExpansionEraseEnabled(active && expansionEraseToolActive);
   renderer.setExpansionStreetObjectPlacementTool(
     active ? activeExpansionStreetObjectTool : null,
@@ -1140,7 +1172,9 @@ function syncExpansionToolState(): void {
   renderer.setBuildingPlacementEnabled(active && activeBuildingTool !== null);
   canvas.dataset.buildInteraction = !active
     ? "none"
-    : expansionEraseToolActive
+    : expansionRoadEraseToolActive
+      ? "erase-road"
+      : expansionEraseToolActive
       ? "erase"
       : expansionRoadToolActive
         ? "road"
@@ -1152,6 +1186,10 @@ function syncExpansionToolState(): void {
   drawExpansionRoadButton.setAttribute(
     "aria-pressed",
     String(expansionRoadToolActive),
+  );
+  eraseExpansionRoadButton.setAttribute(
+    "aria-pressed",
+    String(expansionRoadEraseToolActive),
   );
   eraseExpansionButton.setAttribute(
     "aria-pressed",
@@ -1451,7 +1489,7 @@ function syncExpansion(): void {
     (object) => object.kind === "crosswalk",
   ).length;
   expansionRoadCount.textContent =
-    `${expansionRoads.size} roads · ${crosswalks} crosswalks · ${expansionStreetObjects.size - crosswalks} signals`;
+    `${expansionRoads.size} roads · ${crosswalks} crosswalk sets · ${expansionStreetObjects.size - crosswalks} signals`;
 }
 
 function captureEditorSnapshot(): EditorSnapshot {

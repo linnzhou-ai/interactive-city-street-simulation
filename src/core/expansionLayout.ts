@@ -40,6 +40,11 @@ export interface RoadGeometry {
   width: number;
 }
 
+export interface RoadInterval {
+  start: number;
+  end: number;
+}
+
 export interface BuildingGeometry {
   x: number;
   z: number;
@@ -286,6 +291,40 @@ export function roadJunctions(roads: readonly ExpansionRoad[]): RoadJunction[] {
     }
   }
   return candidates.filter((candidate) => candidate.connections >= 2);
+}
+
+export function visibleRoadIntervals(
+  length: number,
+  blockedIntervals: readonly RoadInterval[],
+): RoadInterval[] {
+  const blocked = blockedIntervals
+    .map((interval) => ({
+      start: clamp(Math.min(interval.start, interval.end), 0, length),
+      end: clamp(Math.max(interval.start, interval.end), 0, length),
+    }))
+    .filter((interval) => interval.end - interval.start > 0.01)
+    .sort((left, right) => left.start - right.start);
+  const merged: RoadInterval[] = [];
+  for (const interval of blocked) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end + 0.01) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      merged.push({ ...interval });
+    }
+  }
+  const visible: RoadInterval[] = [];
+  let cursor = 0;
+  for (const interval of merged) {
+    if (interval.start - cursor > 0.01) {
+      visible.push({ start: cursor, end: interval.start });
+    }
+    cursor = Math.max(cursor, interval.end);
+  }
+  if (length - cursor > 0.01) {
+    visible.push({ start: cursor, end: length });
+  }
+  return visible;
 }
 
 function roadIntersection(
