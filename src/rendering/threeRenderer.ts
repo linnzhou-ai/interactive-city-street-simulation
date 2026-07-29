@@ -156,6 +156,13 @@ interface BuildingPlacementResult {
   reason: string;
 }
 
+interface EntityFlowParticle {
+  mesh: THREE.Mesh;
+  curve: THREE.Curve<THREE.Vector3>;
+  progress: number;
+  speed: number;
+}
+
 export class ThreeRenderer {
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.5, 7_000);
@@ -180,6 +187,9 @@ export class ThreeRenderer {
   private readonly entityFlowGroup = new THREE.Group();
   private readonly entityHighlightGroup = new THREE.Group();
   private readonly selectableEntityBuildings: THREE.Mesh[] = [];
+  private readonly entityFlowParticles: EntityFlowParticle[] = [];
+  private readonly entityFlowUp = new THREE.Vector3(0, 1, 0);
+  private readonly entityFlowTangent = new THREE.Vector3();
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
   private readonly placedBuildingData = new Map<string, PlacedBuilding>();
   private readonly expansionRoadData = new Map<string, ExpansionRoad>();
@@ -877,6 +887,7 @@ export class ThreeRenderer {
     this.syncPedestrians(state.pedestrians, state.elapsedSeconds);
     this.updateSignals(state.signals);
     this.updateEnvironmentEffects(frameSeconds, state.elapsedSeconds);
+    this.updateEntityFlowParticles(frameSeconds);
 
     if (this.cameraMode === "orbit") this.controls.update();
     this.updateCollisionDebug();
@@ -2657,6 +2668,7 @@ export class ThreeRenderer {
   }
 
   private rebuildEntityFlows(): void {
+    this.entityFlowParticles.length = 0;
     clearGroup(this.entityFlowGroup);
     clearGroup(this.entityHighlightGroup);
     if (!this.entityState || !this.selectedEntity) return;
@@ -2793,6 +2805,43 @@ export class ThreeRenderer {
     );
     arrow.renderOrder = 7;
     this.entityFlowGroup.add(arrow);
+
+    const particleSize = THREE.MathUtils.clamp(
+      7 + Math.log2(volume + 1) * 0.7,
+      8,
+      14,
+    );
+    const particleGeometry =
+      kind === "delivery"
+        ? new THREE.BoxGeometry(
+            particleSize * 1.35,
+            particleSize * 0.8,
+            particleSize,
+          )
+        : kind === "visit"
+          ? new THREE.SphereGeometry(particleSize * 0.52, 10, 8)
+          : new THREE.ConeGeometry(
+              particleSize * 0.46,
+              particleSize * 1.35,
+              10,
+            );
+    const particleMaterial = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.42),
+      depthTest: false,
+      transparent: true,
+      opacity: 0.98,
+    });
+    for (let index = 0; index < 3; index += 1) {
+      const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+      particle.renderOrder = 8;
+      this.entityFlowGroup.add(particle);
+      this.entityFlowParticles.push({
+        mesh: particle,
+        curve,
+        progress: index / 3,
+        speed: kind === "delivery" ? 0.09 : kind === "visit" ? 0.15 : 0.19,
+      });
+    }
   }
 
   private createEntityFlowCurve(
@@ -2821,6 +2870,24 @@ export class ThreeRenderer {
     const middle = from.clone().lerp(to, 0.5);
     middle.y += Math.min(80, 24 + from.distanceTo(to) * 0.11);
     return new THREE.QuadraticBezierCurve3(from, middle, to);
+  }
+
+  private updateEntityFlowParticles(frameSeconds: number): void {
+    if (!this.entityMode || frameSeconds <= 0) return;
+    for (const particle of this.entityFlowParticles) {
+      particle.progress =
+        (particle.progress + frameSeconds * particle.speed) % 1;
+      particle.mesh.position.copy(
+        particle.curve.getPoint(particle.progress),
+      );
+      this.entityFlowTangent
+        .copy(particle.curve.getTangent(particle.progress))
+        .normalize();
+      particle.mesh.quaternion.setFromUnitVectors(
+        this.entityFlowUp,
+        this.entityFlowTangent,
+      );
+    }
   }
 
   private updateFlyCamera(deltaSeconds: number): void {
