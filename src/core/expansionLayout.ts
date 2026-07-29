@@ -32,6 +32,22 @@ export interface RoadJunction extends LayoutPoint {
   connections: number;
 }
 
+export interface RoadGeometry {
+  startX: number;
+  startZ: number;
+  endX: number;
+  endZ: number;
+  width: number;
+}
+
+export interface BuildingGeometry {
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  rotation: number;
+}
+
 export function expansionBuildingSize(
   kind: BuildingKind,
 ): { width: number; depth: number } {
@@ -144,7 +160,7 @@ export function isBuildingRoadAdjacent(
 export function snapRoadPoint(
   x: number,
   z: number,
-  roads: readonly ExpansionRoad[],
+  roads: readonly RoadGeometry[],
 ): LayoutPoint {
   const gridPoint = { x: snap(x), z: snap(z) };
   const endpoints = roads.flatMap((road) => [
@@ -158,7 +174,7 @@ export function snapRoadPoint(
     return endpoint;
   }
   const projection = roads
-    .map((road) => projectPointToRoad(road, x, z))
+    .map((road) => projectPointToRoadGeometry(road, x, z))
     .sort((left, right) => left.distance - right.distance)[0];
   if (projection && projection.distance <= ROAD_SNAP_DISTANCE) {
     const horizontal = Math.abs(projection.road.endX - projection.road.startX)
@@ -168,6 +184,48 @@ export function snapRoadPoint(
       : { x: projection.x, z: snap(projection.z) };
   }
   return gridPoint;
+}
+
+export function roadCorridorsOverlap(
+  left: Readonly<RoadGeometry>,
+  right: Readonly<RoadGeometry>,
+): boolean {
+  const leftHorizontal = isHorizontalRoad(left);
+  const rightHorizontal = isHorizontalRoad(right);
+  if (leftHorizontal !== rightHorizontal) return false;
+  const normalDistance = leftHorizontal
+    ? Math.abs(left.startZ - right.startZ)
+    : Math.abs(left.startX - right.startX);
+  if (normalDistance >= (left.width + right.width) / 2 - 0.1) return false;
+  const [leftStart, leftEnd] = roadInterval(left, leftHorizontal);
+  const [rightStart, rightEnd] = roadInterval(right, rightHorizontal);
+  return Math.min(leftEnd, rightEnd) - Math.max(leftStart, rightStart) > 0.5;
+}
+
+export function roadIntersectsBuilding(
+  road: Readonly<RoadGeometry>,
+  building: Readonly<BuildingGeometry>,
+  padding = 2,
+): boolean {
+  const cosine = Math.cos(building.rotation);
+  const sine = Math.sin(building.rotation);
+  const halfX =
+    Math.abs(cosine) * building.width / 2
+    + Math.abs(sine) * building.depth / 2
+    + padding;
+  const halfZ =
+    Math.abs(sine) * building.width / 2
+    + Math.abs(cosine) * building.depth / 2
+    + padding;
+  const roadPadding = road.width / 2;
+  const roadMinX = Math.min(road.startX, road.endX) - roadPadding;
+  const roadMaxX = Math.max(road.startX, road.endX) + roadPadding;
+  const roadMinZ = Math.min(road.startZ, road.endZ) - roadPadding;
+  const roadMaxZ = Math.max(road.startZ, road.endZ) + roadPadding;
+  return roadMinX < building.x + halfX
+    && roadMaxX > building.x - halfX
+    && roadMinZ < building.z + halfZ
+    && roadMaxZ > building.z - halfZ;
 }
 
 export function projectPointToRoad(
@@ -249,6 +307,50 @@ function roadIntersection(
     && z <= Math.max(vertical.startZ, vertical.endZ) + 0.1
     ? { x, z }
     : null;
+}
+
+function isHorizontalRoad(road: Readonly<RoadGeometry>): boolean {
+  return Math.abs(road.endX - road.startX)
+    >= Math.abs(road.endZ - road.startZ);
+}
+
+function projectPointToRoadGeometry(
+  road: Readonly<RoadGeometry>,
+  x: number,
+  z: number,
+): {
+  road: Readonly<RoadGeometry>;
+  x: number;
+  z: number;
+  distance: number;
+} {
+  const dx = road.endX - road.startX;
+  const dz = road.endZ - road.startZ;
+  const lengthSquared = dx * dx + dz * dz;
+  const progress = lengthSquared === 0
+    ? 0
+    : clamp(
+        ((x - road.startX) * dx + (z - road.startZ) * dz) / lengthSquared,
+        0,
+        1,
+      );
+  const projectedX = road.startX + dx * progress;
+  const projectedZ = road.startZ + dz * progress;
+  return {
+    road,
+    x: projectedX,
+    z: projectedZ,
+    distance: Math.hypot(x - projectedX, z - projectedZ),
+  };
+}
+
+function roadInterval(
+  road: Readonly<RoadGeometry>,
+  horizontal: boolean,
+): readonly [number, number] {
+  const start = horizontal ? road.startX : road.startZ;
+  const end = horizontal ? road.endX : road.endZ;
+  return [Math.min(start, end), Math.max(start, end)];
 }
 
 function snap(value: number): number {

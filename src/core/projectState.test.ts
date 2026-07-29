@@ -9,6 +9,7 @@ import {
 const EMPTY_EDITOR: EditorSnapshot = {
   designs: [],
   buildings: [],
+  demolishedBuildingIds: [],
   expansionRoads: [],
   expansionStreetObjects: [],
   nextBuildingId: 1,
@@ -33,6 +34,7 @@ describe("EditHistory", () => {
           color: "#bf765f",
         },
       ],
+      demolishedBuildingIds: [],
       expansionRoads: [],
       expansionStreetObjects: [],
       nextBuildingId: 2,
@@ -65,6 +67,32 @@ describe("parseProjectSnapshot", () => {
     );
     expect(parsed.timeOfDayHours).toBe(1.5);
     expect(parsed.weather).toBe("rain");
+  });
+
+  it("persists demolished city buildings and defaults older saves to none", () => {
+    const baseProject = {
+      version: PROJECT_STATE_VERSION,
+      savedAt: "2026-07-28T00:00:00.000Z",
+      ...EMPTY_EDITOR,
+      settings: {
+        simulationSpeed: 1,
+        speedLimitMph: 25,
+        signalCycleSeconds: 83,
+        vehicleVolume: 2,
+        pedestrianVolume: 2,
+        simulationSeed: 42,
+      },
+      timeOfDayHours: 12,
+      weather: "clear",
+    };
+    expect(parseProjectSnapshot(JSON.stringify({
+      ...baseProject,
+      demolishedBuildingIds: undefined,
+    })).demolishedBuildingIds).toEqual([]);
+    expect(parseProjectSnapshot(JSON.stringify({
+      ...baseProject,
+      demolishedBuildingIds: ["penn-block-0-0-0"],
+    })).demolishedBuildingIds).toEqual(["penn-block-0-0-0"]);
   });
 
   it("round-trips expansion roads and opens older saves without them", () => {

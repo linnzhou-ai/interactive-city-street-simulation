@@ -315,6 +315,25 @@ describe("Simulation", () => {
     expect(simulation.getState().metrics).not.toEqual(baseline);
   });
 
+  it("removes demolished city buildings from the live entity model", () => {
+    const simulation = new Simulation();
+    const buildingId = simulation.getState().entities.buildings[0].id;
+
+    simulation.setDemolishedBuildings([buildingId]);
+
+    expect(
+      simulation.getState().entities.buildings.some(
+        (building) => building.id === buildingId,
+      ),
+    ).toBe(false);
+    simulation.setDemolishedBuildings([]);
+    expect(
+      simulation.getState().entities.buildings.some(
+        (building) => building.id === buildingId,
+      ),
+    ).toBe(true);
+  });
+
   it("traces a building's transport costs to roads on its active routes", () => {
     const simulation = new Simulation();
     simulation.start();

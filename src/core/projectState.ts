@@ -13,6 +13,7 @@ export const PROJECT_STATE_VERSION = 1;
 export interface EditorSnapshot {
   designs: Array<[string, FeatureDesign]>;
   buildings: PlacedBuilding[];
+  demolishedBuildingIds: string[];
   expansionRoads: ExpansionRoad[];
   expansionStreetObjects: ExpansionStreetObject[];
   nextBuildingId: number;
@@ -70,6 +71,7 @@ export function cloneEditorSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
   return {
     designs: snapshot.designs.map(([id, design]) => [id, { ...design }]),
     buildings: snapshot.buildings.map((building) => ({ ...building })),
+    demolishedBuildingIds: [...snapshot.demolishedBuildingIds],
     expansionRoads: snapshot.expansionRoads.map((road) => ({ ...road })),
     expansionStreetObjects: snapshot.expansionStreetObjects.map((object) => ({
       ...object,
@@ -129,6 +131,12 @@ export function parseProjectSnapshot(raw: string): ProjectSnapshot {
     expansionRoads.push({ ...road });
   }
 
+  const demolishedBuildingIds = Array.isArray(value.demolishedBuildingIds)
+    ? value.demolishedBuildingIds.filter(
+        (id): id is string => typeof id === "string",
+      )
+    : [];
+
   const expansionStreetObjects: ExpansionStreetObject[] = [];
   for (const object of Array.isArray(value.expansionStreetObjects)
     ? value.expansionStreetObjects
@@ -144,6 +152,7 @@ export function parseProjectSnapshot(raw: string): ProjectSnapshot {
     savedAt: typeof value.savedAt === "string" ? value.savedAt : new Date(0).toISOString(),
     designs,
     buildings,
+    demolishedBuildingIds,
     expansionRoads,
     expansionStreetObjects,
     nextBuildingId: Math.max(1, Math.trunc(value.nextBuildingId)),

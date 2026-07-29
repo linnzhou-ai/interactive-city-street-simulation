@@ -216,6 +216,7 @@ export class ThreeRenderer {
   private entityHoverHandler: EntityHoverHandler | null = null;
   private selectedFeatureId: string | null = null;
   private selectedEntity: EntitySelection | null = null;
+  private demolishedBuildingSignature = "";
   private visibleFlowKinds = new Set<BuildingConnectionKind>([
     "work",
     "visit",
@@ -288,6 +289,8 @@ export class ThreeRenderer {
         minZ: this.cityBounds.min.z,
         maxZ: this.cityBounds.max.z,
       },
+      baseRoadGeometries(),
+      PENN_BUILDINGS,
     );
 
     this.scene.add(
@@ -334,6 +337,7 @@ export class ThreeRenderer {
     this.buildTrafficDebug();
     this.buildDistrictArchitecture();
     this.buildLandmarks();
+    this.expansionBuilder.setExistingBuildingMeshes(this.selectableBuildings);
     this.buildTreesAndStreetFurniture();
     this.buildParkedCars();
     this.buildCollisionIndexes();
@@ -446,7 +450,7 @@ export class ThreeRenderer {
 
   setExpansionEraseInteractionHandlers(
     handler: (
-      target: "road" | "street-object" | "building",
+      target: "road" | "street-object" | "building" | "existing-building",
       id: string,
     ) => void,
   ): void {
@@ -498,6 +502,28 @@ export class ThreeRenderer {
 
   setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
     this.expansionBuilder.setBuildings(buildings);
+  }
+
+  setDemolishedBuildings(ids: readonly string[]): void {
+    const signature = [...ids].sort().join("|");
+    if (signature === this.demolishedBuildingSignature) return;
+    this.demolishedBuildingSignature = signature;
+    const demolished = new Set(ids);
+    for (const [id, group] of this.buildingGroups) {
+      const visible = !demolished.has(id);
+      group.visible = visible;
+      group.traverse((object) => {
+        object.visible = visible;
+      });
+    }
+    for (const marker of this.entityMarkerGroup.children) {
+      const id = marker.userData.entityId;
+      if (typeof id === "string") marker.visible = !demolished.has(id);
+    }
+    this.expansionBuilder.setDemolishedBuildings(ids);
+    this.collisionIndex.clear();
+    this.walkableIndex.clear();
+    this.buildCollisionIndexes();
   }
 
   setExpansionRoads(roads: readonly ExpansionRoad[]): void {
@@ -2791,6 +2817,7 @@ export class ThreeRenderer {
     this.scene.updateMatrixWorld(true);
     this.scene.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
+      if (!objectAndAncestorsVisible(object)) return;
       if (object.userData.collidable === true) {
         const collisionBox = new THREE.Box3().setFromObject(object);
         if (!collisionBox.isEmpty()) {
@@ -3065,6 +3092,35 @@ function roadWidth(feature: DistrictFeature): number {
     feature.name === "40th Street"
     ? MAJOR_ROAD_WIDTH
     : ROAD_WIDTH;
+}
+
+function baseRoadGeometries(): ExpansionRoad[] {
+  return PENN_ROAD_GRAPH
+    .filter((feature) => feature.kind === "street")
+    .map((feature) => {
+      const [start, end] = feature.path.map(geoToWorld);
+      return {
+        id: `existing-road:${feature.id}`,
+        startX: start.x,
+        startZ: start.z,
+        endX: end.x,
+        endZ: end.z,
+        width: roadWidth(feature),
+        laneDelta: 0,
+        bikeLane: false,
+        widenedSidewalk: false,
+        laneDirection: "two-way",
+      };
+    });
+}
+
+function objectAndAncestorsVisible(object: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (!current.visible) return false;
+    current = current.parent;
+  }
+  return true;
 }
 
 function geoToWorld(point: Pick<GeoPoint, "longitude" | "latitude">): THREE.Vector3 {
@@ -3548,6 +3604,11 @@ class SpatialHash<T extends SpatialBounds> {
 
   getAll(): ReadonlySet<T> {
     return this.items;
+  }
+
+  clear(): void {
+    this.cells.clear();
+    this.items.clear();
   }
 
   private keysForBounds(

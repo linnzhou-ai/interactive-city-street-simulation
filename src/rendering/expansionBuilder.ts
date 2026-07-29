@@ -8,6 +8,7 @@ import type {
   PlacedBuilding,
   RoadTrafficSnapshot,
 } from "../models/types";
+import type { EntityBuildingDefinition } from "../models/entityTypes";
 import {
   EXPANSION_GRID_SIZE,
   EXPANSION_WORLD_LIMIT,
@@ -16,6 +17,8 @@ import {
   isBuildingRoadAdjacent,
   projectPointToRoad,
   resolveRoadsideBuilding,
+  roadCorridorsOverlap,
+  roadIntersectsBuilding,
   roadJunctions,
   snapRoadPoint,
 } from "../core/expansionLayout";
@@ -57,7 +60,7 @@ export interface ExpansionBuilderHandlers {
     object: Omit<ExpansionStreetObject, "id">,
   ) => void;
   erase?: (
-    target: "road" | "street-object" | "building",
+    target: "road" | "street-object" | "building" | "existing-building",
     id: string,
   ) => void;
   status?: (
@@ -67,7 +70,7 @@ export interface ExpansionBuilderHandlers {
 }
 
 interface HitTarget {
-  type: "road" | "street-object" | "building";
+  type: "road" | "street-object" | "building" | "existing-building";
   id: string;
 }
 
@@ -99,12 +102,16 @@ export class ExpansionBuilder {
   private roadAnalysisMode: MapOverlayMode = "none";
   private roadAnalysisSignature = "";
   private highlightedRoadIds = new Set<string>();
+  private existingBuildingMeshes: THREE.Object3D[] = [];
+  private demolishedBuildingIds = new Set<string>();
 
   constructor(
     scene: THREE.Scene,
     private readonly camera: THREE.Camera,
     private readonly canvas: HTMLCanvasElement,
     private readonly coreBounds: ExpansionBounds,
+    private readonly existingRoads: readonly ExpansionRoad[] = [],
+    private readonly existingBuildings: readonly EntityBuildingDefinition[] = [],
   ) {
     this.group.name = "user-expansion";
     this.group.add(
@@ -224,6 +231,14 @@ export class ExpansionBuilder {
     }
   }
 
+  setExistingBuildingMeshes(meshes: readonly THREE.Object3D[]): void {
+    this.existingBuildingMeshes = [...meshes];
+  }
+
+  setDemolishedBuildings(ids: readonly string[]): void {
+    this.demolishedBuildingIds = new Set(ids);
+  }
+
   setSelectedBuilding(id: string | null): void {
     this.selectedBuildingId = id;
     this.setBuildings(this.buildings);
@@ -304,13 +319,16 @@ export class ExpansionBuilder {
     ) {
       return { valid: false, reason: "Road is outside the expansion boundary." };
     }
-    const roadBounds = segmentBounds(road, road.width / 2);
-    const protectedCore = expandedBounds(this.coreBounds, CORE_PADDING);
     if (
-      pointInsideBounds(road.startX, road.startZ, protectedCore) &&
-      pointInsideBounds(road.endX, road.endZ, protectedCore)
+      this.existingBuildings.some((building) =>
+        !this.demolishedBuildingIds.has(building.id)
+        && roadIntersectsBuilding(road, building, 3)
+      )
     ) {
-      return { valid: false, reason: "The original city streets are protected." };
+      return {
+        valid: false,
+        reason: "Road crosses an existing building. Bulldoze the building first.",
+      };
     }
     if (
       this.buildings.some((building) =>
@@ -319,33 +337,15 @@ export class ExpansionBuilder {
     ) {
       return { valid: false, reason: "Road overlaps a placed building." };
     }
-    if (
-      this.roads.some((candidate) => {
-        const sameStart =
-          Math.hypot(
-            candidate.startX - road.startX,
-            candidate.startZ - road.startZ,
-          ) < 2;
-        const sameEnd =
-          Math.hypot(
-            candidate.endX - road.endX,
-            candidate.endZ - road.endZ,
-          ) < 2;
-        const reverseStart =
-          Math.hypot(
-            candidate.endX - road.startX,
-            candidate.endZ - road.startZ,
-          ) < 2;
-        const reverseEnd =
-          Math.hypot(
-            candidate.startX - road.endX,
-            candidate.startZ - road.endZ,
-          ) < 2;
-        return (sameStart && sameEnd) || (reverseStart && reverseEnd);
-      })
-    ) {
-      return { valid: false, reason: "That expansion road already exists." };
+    if ([...this.existingRoads, ...this.roads].some((candidate) =>
+      roadCorridorsOverlap(candidate, road)
+    )) {
+      return {
+        valid: false,
+        reason: "Road overlaps an existing street. Connect by touching or crossing it instead.",
+      };
     }
+    const roadBounds = segmentBounds(road, road.width / 2);
     if (!roadBounds) return { valid: false, reason: "Invalid road geometry." };
     return { valid: true, reason: "" };
   }
@@ -457,7 +457,7 @@ export class ExpansionBuilder {
         this.handlers.erase?.(hit.type, hit.id);
       } else {
         this.handlers.status?.(
-          "Bulldoze only works on user-built roads, objects, and buildings.",
+          "Bulldoze a city building or a user-built road, object, or building.",
           "warning",
         );
       }
@@ -469,7 +469,11 @@ export class ExpansionBuilder {
         this.handlers.status?.("Click visible ground to draw a road.", "error");
         return true;
       }
-      const snappedPoint = snapRoadPoint(point.x, point.z, this.roads);
+      const snappedPoint = snapRoadPoint(
+        point.x,
+        point.z,
+        [...this.existingRoads, ...this.roads],
+      );
       const snapped = new THREE.Vector3(snappedPoint.x, 0, snappedPoint.z);
       if (!this.roadStart) {
         this.roadStart = snapped;
@@ -598,12 +602,31 @@ export class ExpansionBuilder {
     );
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hits = this.raycaster.intersectObjects(
-      [this.objectGroup, this.buildingGroup, this.roadGroup],
+      [
+        this.objectGroup,
+        this.buildingGroup,
+        this.roadGroup,
+        ...(this.eraseEnabled ? this.existingBuildingMeshes : []),
+      ],
       true,
     );
     for (const hit of hits) {
       let object: THREE.Object3D | null = hit.object;
+      if (
+        this.eraseEnabled
+        && object.userData.entityKind === "building"
+        && typeof object.userData.entityId === "string"
+      ) {
+        return { type: "existing-building", id: object.userData.entityId };
+      }
       while (object && object !== this.group) {
+        if (
+          this.eraseEnabled
+          && object.userData.entityKind === "building"
+          && typeof object.userData.entityId === "string"
+        ) {
+          return { type: "existing-building", id: object.userData.entityId };
+        }
         const type = object.userData.expansionType as HitTarget["type"] | undefined;
         const id = object.userData.expansionId as string | undefined;
         if (type && id) return { type, id };
@@ -1112,15 +1135,6 @@ function overlapsBounds(a: ExpansionBounds, b: ExpansionBounds): boolean {
     a.maxX > b.minX &&
     a.minZ < b.maxZ &&
     a.maxZ > b.minZ
-  );
-}
-
-function pointInsideBounds(x: number, z: number, bounds: ExpansionBounds): boolean {
-  return (
-    x >= bounds.minX &&
-    x <= bounds.maxX &&
-    z >= bounds.minZ &&
-    z <= bounds.maxZ
   );
 }
 

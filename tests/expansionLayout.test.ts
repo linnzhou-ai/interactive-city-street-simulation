@@ -3,6 +3,8 @@ import {
   expansionBuildingFootprint,
   isBuildingRoadAdjacent,
   resolveRoadsideBuilding,
+  roadCorridorsOverlap,
+  roadIntersectsBuilding,
   roadJunctions,
   snapRoadPoint,
 } from "../src/core/expansionLayout";
@@ -126,5 +128,40 @@ describe("expansion layout", () => {
     expect(roadJunctions([horizontalRoad, crossingRoad])).toEqual([
       { x: 100, z: 0, radius: 8, connections: 2 },
     ]);
+  });
+
+  it("rejects duplicate road corridors but permits clean crossings and extensions", () => {
+    expect(roadCorridorsOverlap(horizontalRoad, {
+      ...horizontalRoad,
+      startX: 80,
+      endX: 240,
+    })).toBe(true);
+    expect(roadCorridorsOverlap(horizontalRoad, {
+      ...horizontalRoad,
+      startX: 200,
+      endX: 320,
+    })).toBe(false);
+    expect(roadCorridorsOverlap(horizontalRoad, {
+      ...horizontalRoad,
+      startX: 100,
+      startZ: -100,
+      endX: 100,
+      endZ: 100,
+    })).toBe(false);
+  });
+
+  it("keeps roads out of standing buildings after allowing a demolished footprint", () => {
+    const footprint = {
+      x: 100,
+      z: 0,
+      width: 30,
+      depth: 24,
+      rotation: Math.PI / 8,
+    };
+    expect(roadIntersectsBuilding(horizontalRoad, footprint)).toBe(true);
+    expect(roadIntersectsBuilding(
+      { ...horizontalRoad, startZ: 60, endZ: 60 },
+      footprint,
+    )).toBe(false);
   });
 });

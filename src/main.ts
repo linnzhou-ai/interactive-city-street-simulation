@@ -258,6 +258,7 @@ let lastLiveHistorySlot = -1;
 installStatTooltips(statTooltip, resolveStatInsight);
 const designs = new Map<string, FeatureDesign>();
 const placedBuildings = new Map<string, PlacedBuilding>();
+const demolishedBuildingIds = new Set<string>();
 const expansionRoads = new Map<string, ExpansionRoad>();
 const expansionStreetObjects = new Map<string, ExpansionStreetObject>();
 const editHistory = new EditHistory();
@@ -429,12 +430,14 @@ resetDesignButton.addEventListener("click", () => {
   if (
     designs.size === 0 &&
     placedBuildings.size === 0 &&
+    demolishedBuildingIds.size === 0 &&
     expansionRoads.size === 0 &&
     expansionStreetObjects.size === 0
   ) return;
   recordEdit();
   designs.clear();
   placedBuildings.clear();
+  demolishedBuildingIds.clear();
   expansionRoads.clear();
   expansionStreetObjects.clear();
   selectedPlacedBuildingId = null;
@@ -1010,7 +1013,7 @@ function setBuildWorkspace(workspace: BuildWorkspace): void {
   if (expansion) {
     renderer.setSelectedFeature(null);
     buildWorkspaceHelp.textContent =
-      "Build on the green edge outside the city outline. Draw roads first so new buildings are reachable.";
+      "Draw streets anywhere they fit. They snap into the city network; bulldoze a building before routing through its footprint.";
     updateBuildSelectionName();
     if (!activeBuildingTool && !activeExpansionStreetObjectTool) {
       setExpansionRoadToolActive(true);
@@ -1061,7 +1064,7 @@ function setExpansionRoadToolActive(active: boolean): void {
   updateBuildSelectionName();
   setBuildFeedback(
     expansionRoadToolActive
-      ? "Draw road active: click a start point, then an end point on green expansion ground."
+      ? "Draw road active: click a start point, then an end point. Existing streets become real junctions."
       : "Choose an expansion tool.",
   );
 }
@@ -1097,7 +1100,7 @@ function setExpansionEraseToolActive(active: boolean): void {
   updateBuildSelectionName();
   if (expansionEraseToolActive) {
     setBuildFeedback(
-      "Bulldoze active: click a user-built road, object, or building.",
+      "Bulldoze active: click a city building or any user-built item.",
       "warning",
     );
   } else {
@@ -1376,7 +1379,7 @@ function deleteSelectedExpansionRoad(): void {
 }
 
 function eraseExpansionObject(
-  target: "road" | "street-object" | "building",
+  target: "road" | "street-object" | "building" | "existing-building",
   id: string,
 ): void {
   if (target === "road") {
@@ -1391,6 +1394,13 @@ function eraseExpansionObject(
   if (target === "building") {
     changed = placedBuildings.delete(id);
     if (selectedPlacedBuildingId === id) selectPlacedBuilding(null);
+  } else if (target === "existing-building") {
+    changed = !demolishedBuildingIds.has(id);
+    demolishedBuildingIds.add(id);
+    if (selectedEntity?.kind === "building" && selectedEntity.id === id) {
+      selectedEntity = null;
+      renderer.setSelectedEntity(null);
+    }
   } else if (target === "street-object") {
     changed = expansionStreetObjects.delete(id);
   } else {
@@ -1428,10 +1438,15 @@ function syncExpansion(): void {
   const buildings = [...placedBuildings.values()];
   const roads = [...expansionRoads.values()];
   const streetObjects = [...expansionStreetObjects.values()];
+  const demolished = [...demolishedBuildingIds];
   renderer.setExpansionRoads(roads);
   renderer.setPlacedBuildings(buildings);
+  renderer.setDemolishedBuildings(demolished);
   renderer.setExpansionStreetObjects(streetObjects);
+  simulation.setDemolishedBuildings(demolished);
   simulation.setExpansionDesign(buildings, roads, streetObjects);
+  entityInterfaceSignature = "";
+  updateEntityInterface();
   const crosswalks = streetObjects.filter(
     (object) => object.kind === "crosswalk",
   ).length;
@@ -1443,6 +1458,7 @@ function captureEditorSnapshot(): EditorSnapshot {
   return {
     designs: [...designs].map(([id, design]) => [id, { ...design }]),
     buildings: [...placedBuildings.values()].map((building) => ({ ...building })),
+    demolishedBuildingIds: [...demolishedBuildingIds],
     expansionRoads: [...expansionRoads.values()].map((road) => ({ ...road })),
     expansionStreetObjects: [...expansionStreetObjects.values()].map(
       (object) => ({ ...object }),
@@ -1468,11 +1484,15 @@ function captureProjectSnapshot(): ProjectSnapshot {
 function applyEditorSnapshot(snapshot: EditorSnapshot): void {
   designs.clear();
   placedBuildings.clear();
+  demolishedBuildingIds.clear();
   expansionRoads.clear();
   expansionStreetObjects.clear();
   for (const [id, design] of snapshot.designs) designs.set(id, { ...design });
   for (const road of snapshot.expansionRoads) {
     expansionRoads.set(road.id, { ...road });
+  }
+  for (const id of snapshot.demolishedBuildingIds) {
+    demolishedBuildingIds.add(id);
   }
   renderer.setPlacedBuildings([]);
   renderer.setExpansionRoads([...expansionRoads.values()]);

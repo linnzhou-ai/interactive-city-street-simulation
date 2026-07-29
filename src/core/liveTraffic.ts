@@ -1757,12 +1757,21 @@ function buildEconomicRouteGraph(
   connectedNodeIds: Set<string>;
 } {
   const nodes = new Map<string, EconomicRouteNode>();
+  const nodesByCoordinate = new Map<string, EconomicRouteNode>();
   const expansionSegmentNodes = new Map<string, Set<string>>();
+  const coordinateKey = (x: number, z: number): string =>
+    `${Math.round(x * 10)}:${Math.round(z * 10)}`;
   const addNode = (id: string, x: number, z: number, staticNode: boolean): EconomicRouteNode => {
     const existing = nodes.get(id);
     if (existing) return existing;
+    const existingAtCoordinate = nodesByCoordinate.get(coordinateKey(x, z));
+    if (existingAtCoordinate) {
+      if (staticNode) existingAtCoordinate.staticNode = true;
+      return existingAtCoordinate;
+    }
     const node = { id, x, z, staticNode, edges: [] };
     nodes.set(id, node);
+    nodesByCoordinate.set(coordinateKey(x, z), node);
     return node;
   };
   const addEdge = (from: string, to: string, segmentId: string, cost: number): void => {
@@ -1773,6 +1782,45 @@ function buildEconomicRouteGraph(
 
   for (const gridNode of grid.flat()) {
     addNode(gridNode.id, gridNode.x, gridNode.z, true);
+  }
+  const baseSections: Array<{
+    start: GridNode;
+    end: GridNode;
+    road: ExpansionRoad;
+    segment: RoadSegmentModel;
+  }> = [];
+  for (const gridNode of grid.flat()) {
+    for (const neighbor of adjacentNodes(grid, gridNode)) {
+      if (
+        neighbor.column < gridNode.column
+        || neighbor.row < gridNode.row
+      ) continue;
+      const segmentId = segmentIdBetween(
+        gridNode.column,
+        gridNode.row,
+        neighbor.column,
+        neighbor.row,
+      );
+      const segment = roadSegments.get(segmentId);
+      if (!segment) continue;
+      baseSections.push({
+        start: gridNode,
+        end: neighbor,
+        road: {
+          id: segmentId,
+          startX: gridNode.x,
+          startZ: gridNode.z,
+          endX: neighbor.x,
+          endZ: neighbor.z,
+          width: segment.totalWidthMeters,
+          laneDelta: 0,
+          bikeLane: false,
+          widenedSidewalk: false,
+          laneDirection: segment.directionality,
+        },
+        segment,
+      });
+    }
   }
   for (const gridNode of grid.flat()) {
     for (const neighbor of adjacentNodes(grid, gridNode)) {
@@ -1806,6 +1854,14 @@ function buildEconomicRouteGraph(
       { x: road.startX, z: road.startZ, t: 0 },
       { x: road.endX, z: road.endZ, t: 1 },
     ]);
+    for (const base of baseSections) {
+      const intersection = roadIntersection(road, base.road);
+      if (!intersection) continue;
+      pointsByRoad.get(road.id)?.push({
+        ...intersection,
+        t: roadPosition(road, intersection.x, intersection.z),
+      });
+    }
   }
   for (let leftIndex = 0; leftIndex < expansionRoads.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < expansionRoads.length; rightIndex += 1) {
@@ -1826,11 +1882,52 @@ function buildEconomicRouteGraph(
   }
 
   const routeNodeForPoint = (x: number, z: number): EconomicRouteNode => {
-    const nearestStatic = nearestGridNodeFromWorld(grid, x, z);
-    if (Math.hypot(nearestStatic.x - x, nearestStatic.z - z) <= 75) {
-      return nodes.get(nearestStatic.id) as EconomicRouteNode;
+    const existing = nodesByCoordinate.get(coordinateKey(x, z));
+    if (existing) return existing;
+    const base = baseSections.find((section) =>
+      distanceToRoad(x, z, section.road) <= 1.5
+    );
+    if (base) {
+      const progress = roadPosition(base.road, x, z);
+      if (progress <= 0.001) {
+        return nodes.get(base.start.id) as EconomicRouteNode;
+      }
+      if (progress >= 0.999) {
+        return nodes.get(base.end.id) as EconomicRouteNode;
+      }
+      const node = addNode(
+        `base-junction:${base.road.id}:${coordinateKey(x, z)}`,
+        x,
+        z,
+        true,
+      );
+      const forward = travelDirectionBetween(
+        base.start.column,
+        base.start.row,
+        base.end.column,
+        base.end.row,
+      );
+      const reverse = travelDirectionBetween(
+        base.end.column,
+        base.end.row,
+        base.start.column,
+        base.start.row,
+      );
+      const startCost = Math.hypot(x - base.start.x, z - base.start.z)
+        / Math.max(0.65, base.segment.demandWeight);
+      const endCost = Math.hypot(base.end.x - x, base.end.z - z)
+        / Math.max(0.65, base.segment.demandWeight);
+      if (roadAllowsDirection(base.segment, forward)) {
+        addEdge(base.start.id, node.id, base.road.id, startCost);
+        addEdge(node.id, base.end.id, base.road.id, endCost);
+      }
+      if (roadAllowsDirection(base.segment, reverse)) {
+        addEdge(base.end.id, node.id, base.road.id, endCost);
+        addEdge(node.id, base.start.id, base.road.id, startCost);
+      }
+      return node;
     }
-    const id = `expansion-node:${Math.round(x * 10)}:${Math.round(z * 10)}`;
+    const id = `expansion-node:${coordinateKey(x, z)}`;
     return addNode(id, x, z, false);
   };
 

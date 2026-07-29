@@ -135,6 +135,7 @@ export class Simulation {
   private expansionBuildings: PlacedBuilding[] = [];
   private expansionRoads: ExpansionRoad[] = [];
   private expansionStreetObjects: ExpansionStreetObject[] = [];
+  private demolishedBuildingIds = new Set<string>();
 
   constructor(
     private readonly cityDefinition: CitySectionDefinition =
@@ -209,10 +210,7 @@ export class Simulation {
       activity.vehicleDemandLevel,
       activity.pedestrianDemandLevel,
     );
-    const definitions = [
-      ...this.buildingDefinitions,
-      ...this.expansionBuildings.map(placedBuildingToDefinition),
-    ];
+    const definitions = this.activeBuildingDefinitions();
     this.state = createInitialState(this.traffic, city, definitions);
     this.traffic.setExpansionNetwork(
       this.expansionRoads,
@@ -353,6 +351,22 @@ export class Simulation {
     );
   }
 
+  setDemolishedBuildings(ids: readonly string[]): void {
+    const next = new Set(ids);
+    if (
+      next.size === this.demolishedBuildingIds.size
+      && [...next].every((id) => this.demolishedBuildingIds.has(id))
+    ) return;
+    this.demolishedBuildingIds = next;
+    this.state.entities = syncDetailedEntityBuildings(
+      this.state.entities,
+      this.activeBuildingDefinitions(),
+    );
+    this.refreshSampledMobility();
+    this.syncEconomicRoadLoad();
+    this.updateMetrics();
+  }
+
   setExpansionDesign(
     buildings: readonly PlacedBuilding[],
     roads: readonly ExpansionRoad[],
@@ -362,10 +376,7 @@ export class Simulation {
     this.expansionRoads = roads.map((road) => ({ ...road }));
     this.expansionStreetObjects = streetObjects.map((object) => ({ ...object }));
     this.buildingActivity = summarizeBuildingActivity(buildings);
-    const definitions = [
-      ...this.buildingDefinitions,
-      ...this.expansionBuildings.map(placedBuildingToDefinition),
-    ];
+    const definitions = this.activeBuildingDefinitions();
     this.state.entities = syncDetailedEntityBuildings(
       this.state.entities,
       definitions,
@@ -376,6 +387,15 @@ export class Simulation {
     this.syncEconomicRoadLoad();
     this.syncTrafficState();
     this.updateMetrics();
+  }
+
+  private activeBuildingDefinitions(): EntityBuildingDefinition[] {
+    return [
+      ...this.buildingDefinitions.filter(
+        (building) => !this.demolishedBuildingIds.has(building.id),
+      ),
+      ...this.expansionBuildings.map(placedBuildingToDefinition),
+    ];
   }
 
   update(deltaSeconds: number): void {

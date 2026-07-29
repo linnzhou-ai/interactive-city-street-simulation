@@ -3,6 +3,11 @@ import {
   IntersectionSignalController,
   LiveTrafficSystem,
 } from "../src/core/liveTraffic";
+import {
+  PENN_AVENUES,
+  PENN_CENTER,
+  PENN_STREETS,
+} from "../src/data/pennRoadGraph";
 
 describe("IntersectionSignalController", () => {
   it("runs the configured deterministic phase sequence", () => {
@@ -254,6 +259,50 @@ describe("LiveTrafficSystem", () => {
       Math.abs(point.z - road.startZ) < 0.01
       && point.x >= road.startX
       && point.x <= road.endX)).toBe(true);
+  });
+
+  it("splices a new street into the middle of an existing city block", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const metersPerLongitude = 111_320
+      * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+    const avenue = PENN_AVENUES.find((candidate) => candidate.short === "34")!;
+    const walnut = PENN_STREETS.find((candidate) => candidate.slug === "walnut")!;
+    const sansom = PENN_STREETS.find((candidate) => candidate.slug === "sansom")!;
+    const junctionX = (avenue.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const walnutZ = -(walnut.latitude - PENN_CENTER.latitude) * 111_320;
+    const junctionZ = -(
+      (walnut.latitude + sansom.latitude) / 2
+      - PENN_CENTER.latitude
+    ) * 111_320;
+    const road = {
+      id: "expansion-road-mid-block",
+      startX: junctionX + 60,
+      startZ: junctionZ,
+      endX: junctionX,
+      endZ: junctionZ,
+      width: 16,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    const drivingRoute = traffic.getRoutePath(
+      { x: road.startX - 5, z: road.startZ },
+      { x: junctionX, z: walnutZ },
+      "car",
+    );
+    const walkingRoute = traffic.getRoutePath(
+      { x: junctionX, z: walnutZ },
+      { x: road.startX - 5, z: road.startZ },
+      "walk",
+    );
+
+    expect(drivingRoute.segmentIds).toContain(road.id);
+    expect(walkingRoute.segmentIds).toContain(road.id);
+    expect(drivingRoute.points).toContainEqual({
+      x: junctionX,
+      z: junctionZ,
+    });
   });
 
   it("marks isolated expansion parcels as disconnected", () => {
