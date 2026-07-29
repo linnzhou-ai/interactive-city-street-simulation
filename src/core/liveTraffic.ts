@@ -21,7 +21,11 @@ import type {
 } from "../data/roadLanes";
 import type {
   ManualSignalTarget,
+  LaneDirection,
+  ExpansionRoad,
+  ExpansionStreetObject,
   PedestrianSnapshot,
+  PlacedBuilding,
   RoadTrafficSnapshot,
   ScenarioSettings,
   SignalControlMode,
@@ -32,6 +36,7 @@ import type {
   VehicleKind,
   VehicleSnapshot,
 } from "../models/types";
+import type { TravelMode } from "../models/entityTypes";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 const METERS_PER_DEGREE_LONGITUDE =
@@ -86,6 +91,12 @@ export type TrafficRouteEndpoint =
   | "outside-work"
   | "outside-market";
 
+export interface TrafficRoutePath {
+  points: readonly Readonly<{ x: number; z: number }>[];
+  segmentIds: readonly string[];
+  distanceMeters: number;
+}
+
 interface VehicleAgent {
   id: number;
   path: readonly GridNode[];
@@ -102,6 +113,11 @@ interface VehicleAgent {
   spawnedAt: number;
   delaySeconds: number;
   segmentDelaySeconds: number;
+  complianceProbability: number;
+  aggressiveYellow: boolean;
+  mayRunRed: boolean;
+  violationIntersectionId: string | null;
+  violatingUntilSeconds: number;
 }
 
 interface PedestrianAgent {
@@ -119,6 +135,29 @@ interface PedestrianAgent {
   waitSeconds: number;
   committedIntersectionId: string | null;
   segmentId: string;
+  complianceProbability: number;
+  mayCrossAgainstSignal: boolean;
+  signalViolationUsed: boolean;
+  violatingUntilSeconds: number;
+}
+
+interface BuildingDestination {
+  kind: PlacedBuilding["kind"];
+  node: GridNode;
+}
+
+interface EconomicRouteEdge {
+  to: string;
+  segmentId: string;
+  cost: number;
+}
+
+interface EconomicRouteNode {
+  id: string;
+  x: number;
+  z: number;
+  staticNode: boolean;
+  edges: EconomicRouteEdge[];
 }
 
 interface PositionedAgent {
@@ -262,6 +301,9 @@ export class LiveTrafficSystem {
   private readonly routeCache = new Map<string, readonly GridNode[]>();
   private vehicles: VehicleAgent[] = [];
   private pedestrians: PedestrianAgent[] = [];
+  private sampledVehicles: VehicleSnapshot[] = [];
+  private sampledPedestrians: PedestrianSnapshot[] = [];
+  private backgroundTrafficVisible = true;
   private random: RandomSource;
   private nextVehicleId = 1;
   private nextPedestrianId = 1;
@@ -275,6 +317,17 @@ export class LiveTrafficSystem {
   private completedPedestrianTravelSeconds = 0;
   private completedPedestrianWaitSeconds = 0;
   private crossingsCompleted = 0;
+  private buildingArrivals = 0;
+  private trafficViolations = 0;
+  private jaywalkingViolations = 0;
+  private buildingDestinations: BuildingDestination[] = [];
+  private expansionRoads: ExpansionRoad[] = [];
+  private expansionStreetObjects: ExpansionStreetObject[] = [];
+  private expansionRoadIds = new Set<string>();
+  private economicRoadLoad = new Map<string, number>();
+  private economicRouteNodes = new Map<string, EconomicRouteNode>();
+  private expansionSegmentNodes = new Map<string, Set<string>>();
+  private connectedEconomicNodes = new Set<string>();
 
   constructor(seed: number) {
     this.random = new RandomSource(seed);
@@ -288,6 +341,9 @@ export class LiveTrafficSystem {
     this.random = new RandomSource(seed);
     this.vehicles = [];
     this.pedestrians = [];
+    this.sampledVehicles = [];
+    this.sampledPedestrians = [];
+    this.backgroundTrafficVisible = true;
     this.nextVehicleId = 1;
     this.nextPedestrianId = 1;
     this.elapsedSeconds = 0;
@@ -298,6 +354,9 @@ export class LiveTrafficSystem {
     this.completedPedestrianTravelSeconds = 0;
     this.completedPedestrianWaitSeconds = 0;
     this.crossingsCompleted = 0;
+    this.buildingArrivals = 0;
+    this.trafficViolations = 0;
+    this.jaywalkingViolations = 0;
     for (const controller of this.controllers.values()) {
       controller.reset();
     }
@@ -309,7 +368,10 @@ export class LiveTrafficSystem {
     settings: Pick<
       ScenarioSettings,
       "vehicleVolume" | "pedestrianVolume" | "speedLimitMph"
-    >,
+    > & {
+      violationRiskMultiplier?: number;
+      pedestrianViolationRiskMultiplier?: number;
+    },
   ): void {
     if (deltaSeconds <= 0) return;
     let remaining = deltaSeconds;
@@ -317,8 +379,19 @@ export class LiveTrafficSystem {
       const step = Math.min(0.1, remaining);
       this.elapsedSeconds += step;
       for (const controller of this.controllers.values()) controller.update(step);
-      this.updateVehicleSpawner(step, settings.vehicleVolume, settings.speedLimitMph);
-      this.updatePedestrianSpawner(step, settings.pedestrianVolume);
+      this.updateVehicleSpawner(
+        step,
+        settings.vehicleVolume,
+        settings.speedLimitMph,
+        settings.violationRiskMultiplier ?? 1,
+      );
+      this.updatePedestrianSpawner(
+        step,
+        settings.pedestrianVolume,
+        settings.pedestrianViolationRiskMultiplier ??
+          settings.violationRiskMultiplier ??
+          1,
+      );
       this.updateVehicles(step);
       this.updatePedestrians(step);
       remaining -= step;
@@ -330,6 +403,115 @@ export class LiveTrafficSystem {
     timing: Partial<SignalTiming>,
   ): void {
     this.controllers.get(intersectionId)?.setTiming(timing);
+  }
+
+  setBuildingDestinations(buildings: readonly PlacedBuilding[]): void {
+    this.buildingDestinations = buildings.map((building) => ({
+      kind: building.kind,
+      node: nearestGridNodeFromWorld(this.nodes, building.x, building.z),
+    }));
+    this.pedestrianDestinations.splice(
+      0,
+      this.pedestrianDestinations.length,
+      ...PENN_LANDMARKS.map((landmark) =>
+        nearestGridNode(this.nodes, landmark.longitude, landmark.latitude),
+      ),
+      ...this.buildingDestinations.map((destination) => destination.node),
+    );
+  }
+
+  setExpansionNetwork(
+    roads: readonly ExpansionRoad[],
+    streetObjects: readonly ExpansionStreetObject[],
+    buildings: readonly PlacedBuilding[],
+  ): void {
+    for (const roadId of this.expansionRoadIds) this.roadSegments.delete(roadId);
+    this.expansionRoads = roads.map((road) => ({ ...road }));
+    this.expansionStreetObjects = streetObjects.map((object) => ({ ...object }));
+    this.expansionRoadIds = new Set(roads.map((road) => road.id));
+    for (const road of roads) {
+      this.roadSegments.set(road.id, expansionRoadModel(road));
+    }
+    const graph = buildEconomicRouteGraph(this.nodes, this.roadSegments, roads);
+    this.economicRouteNodes = graph.nodes;
+    this.expansionSegmentNodes = graph.expansionSegmentNodes;
+    this.connectedEconomicNodes = graph.connectedNodeIds;
+    this.setBuildingDestinations(buildings);
+  }
+
+  setEconomicRoadLoad(load: ReadonlyMap<string, number>): void {
+    this.economicRoadLoad = new Map(load);
+  }
+
+  setSampledMobility(
+    vehicles: readonly VehicleSnapshot[],
+    pedestrians: readonly PedestrianSnapshot[],
+  ): void {
+    this.sampledVehicles = vehicles.map((vehicle) => ({
+      ...vehicle,
+      occupantPersonIds: vehicle.occupantPersonIds
+        ? [...vehicle.occupantPersonIds]
+        : undefined,
+    }));
+    this.sampledPedestrians = pedestrians.map((pedestrian) => ({ ...pedestrian }));
+  }
+
+  setBackgroundTrafficVisible(visible: boolean): void {
+    this.backgroundTrafficVisible = visible;
+  }
+
+  getExpansionCapacityScale(): number {
+    let connectedLaneMeters = 0;
+    for (const road of this.expansionRoads) {
+      const nodes = this.expansionSegmentNodes.get(road.id);
+      if (!nodes || ![...nodes].some((id) => this.connectedEconomicNodes.has(id))) {
+        continue;
+      }
+      const lanes = this.roadSegments.get(road.id)?.travelLaneCount ?? 0;
+      connectedLaneMeters += lanes * Math.hypot(
+        road.endX - road.startX,
+        road.endZ - road.startZ,
+      );
+    }
+    return 1 + clamp(connectedLaneMeters / 45_000, 0, 0.14);
+  }
+
+  getRoadDescription(
+    segmentId: string,
+  ): { name: string; description: string } | undefined {
+    const road = this.expansionRoads.find((candidate) => candidate.id === segmentId);
+    if (!road) return undefined;
+    const model = this.roadSegments.get(segmentId);
+    return {
+      name: model?.streetName ?? "Expansion road",
+      description: `${Math.round(Math.hypot(road.endX - road.startX, road.endZ - road.startZ))} m user-built ${road.laneDirection ?? "two-way"} road`,
+    };
+  }
+
+  getEndpointMobilitySupport(endpoint: Readonly<{ x: number; z: number }>): {
+    connected: boolean;
+    walkingBonus: number;
+    cyclingBonus: number;
+  } {
+    const nearest = this.expansionRoads
+      .map((road) => ({ road, distance: distanceToRoad(endpoint.x, endpoint.z, road) }))
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (!nearest || nearest.distance > Math.max(55, nearest.road.width * 2.5)) {
+      const gridNode = nearestGridNodeFromWorld(this.nodes, endpoint.x, endpoint.z);
+      const connected = Math.hypot(gridNode.x - endpoint.x, gridNode.z - endpoint.z) <= 180;
+      return { connected, walkingBonus: 0, cyclingBonus: 0 };
+    }
+    const routeNodes = this.expansionSegmentNodes.get(nearest.road.id) ?? new Set();
+    const connected = [...routeNodes].some((id) => this.connectedEconomicNodes.has(id));
+    const nearbyObjects = this.expansionStreetObjects.filter((object) =>
+      distanceToRoad(object.x, object.z, nearest.road) <= nearest.road.width
+    );
+    return {
+      connected,
+      walkingBonus: (nearest.road.widenedSidewalk ? 8 : 0)
+        + (nearbyObjects.some((object) => object.kind === "crosswalk") ? 5 : 0),
+      cyclingBonus: nearest.road.bikeLane ? 7 : 0,
+    };
   }
 
   setAllSignalCycles(totalSeconds: number): void {
@@ -396,6 +578,9 @@ export class LiveTrafficSystem {
           : base,
       );
     }
+    for (const road of this.expansionRoads) {
+      this.roadSegments.set(road.id, expansionRoadModel(road));
+    }
     this.routeCache.clear();
     this.reconcileVehicleRoutes();
   }
@@ -408,6 +593,16 @@ export class LiveTrafficSystem {
     from: TrafficRouteEndpoint,
     to: TrafficRouteEndpoint,
   ): string[] {
+    if (this.expansionRoads.length > 0) {
+      return economicRouteSegmentIds(
+        this.economicRouteNodes,
+        this.expansionRoads,
+        this.expansionSegmentNodes,
+        this.nodes,
+        from,
+        to,
+      );
+    }
     const fromPoint = typeof from === "string" ? null : nearestGridNodeFromWorld(this.nodes, from.x, from.z);
     const toPoint = typeof to === "string" ? null : nearestGridNodeFromWorld(this.nodes, to.x, to.z);
     const origin = typeof from === "string"
@@ -429,20 +624,83 @@ export class LiveTrafficSystem {
     return segments;
   }
 
+  getRoutePath(
+    from: TrafficRouteEndpoint,
+    to: TrafficRouteEndpoint,
+    mode: TravelMode,
+  ): TrafficRoutePath {
+    const fromPoint = typeof from === "string"
+      ? null
+      : nearestGridNodeFromWorld(this.nodes, from.x, from.z);
+    const toPoint = typeof to === "string"
+      ? null
+      : nearestGridNodeFromWorld(this.nodes, to.x, to.z);
+    const origin = typeof from === "string"
+      ? this.outsideRouteNode(from, toPoint)
+      : fromPoint as GridNode;
+    const destination = typeof to === "string"
+      ? this.outsideRouteNode(to, fromPoint)
+      : toPoint as GridNode;
+    const route = mode === "walk"
+      ? createManhattanPath(
+          this.nodes,
+          origin,
+          destination,
+          Math.abs(origin.column - destination.column)
+            >= Math.abs(origin.row - destination.row),
+        )
+      : this.findVehicleRoute(origin, destination, 1.1)
+        ?? createManhattanPath(this.nodes, origin, destination, true);
+    const routeSegmentIds: string[] = [];
+    for (let index = 0; index < route.length - 1; index += 1) {
+      routeSegmentIds.push(segmentIdBetween(
+        route[index].column,
+        route[index].row,
+        route[index + 1].column,
+        route[index + 1].row,
+      ));
+    }
+    const points: Array<{ x: number; z: number }> = [];
+    if (typeof from !== "string") points.push({ x: from.x, z: from.z });
+    points.push(...route.map((node) => ({ x: node.x, z: node.z })));
+    if (typeof to !== "string") points.push({ x: to.x, z: to.z });
+    const deduplicated = points.filter((point, index) =>
+      index === 0 || Math.hypot(
+        point.x - points[index - 1].x,
+        point.z - points[index - 1].z,
+      ) > 0.1
+    );
+    const segmentIds = deduplicated.slice(0, -1).map((_, index) => {
+      const routeOffset = typeof from === "string" ? index : index - 1;
+      return routeSegmentIds[
+        Math.max(0, Math.min(routeSegmentIds.length - 1, routeOffset))
+      ] ?? "off-network";
+    });
+    return {
+      points: deduplicated,
+      segmentIds,
+      distanceMeters: deduplicated.slice(1).reduce((total, point, index) =>
+        total + Math.hypot(
+          point.x - deduplicated[index].x,
+          point.z - deduplicated[index].z,
+        ), 0),
+    };
+  }
+
   getCoverage(): {
     vehicleSegments: ReadonlySet<string>;
     pedestrianSegments: ReadonlySet<string>;
   } {
     return {
-      vehicleSegments: new Set(this.vehicles.map((vehicle) => vehicle.segmentId)),
+      vehicleSegments: new Set(this.getVehicles().map((vehicle) => vehicle.segmentId)),
       pedestrianSegments: new Set(
-        this.pedestrians.map((pedestrian) => pedestrian.segmentId),
+        this.getPedestrians().map((pedestrian) => pedestrian.segmentId),
       ),
     };
   }
 
   getVehicles(): VehicleSnapshot[] {
-    return this.vehicles.map((vehicle) => {
+    const background = this.backgroundTrafficVisible ? this.vehicles.map((vehicle) => {
       const position = positionVehicle(vehicle);
       return {
         id: vehicle.id,
@@ -453,12 +711,17 @@ export class LiveTrafficSystem {
         queued: vehicle.queued,
         kind: vehicle.kind,
         color: vehicle.color,
+        complianceProbability: vehicle.complianceProbability,
+        violating: this.elapsedSeconds < vehicle.violatingUntilSeconds,
+        source: "background" as const,
+        delaySeconds: vehicle.segmentDelaySeconds,
       };
-    });
+    }) : [];
+    return [...this.sampledVehicles, ...background];
   }
 
   getPedestrians(): PedestrianSnapshot[] {
-    return this.pedestrians.map((pedestrian) => {
+    const background = this.backgroundTrafficVisible ? this.pedestrians.map((pedestrian) => {
       const position = positionPedestrian(pedestrian);
       return {
         id: pedestrian.id,
@@ -467,24 +730,32 @@ export class LiveTrafficSystem {
         waiting: pedestrian.waiting,
         color: pedestrian.color,
         variant: pedestrian.variant,
+        complianceProbability: pedestrian.complianceProbability,
+        violating: this.elapsedSeconds < pedestrian.violatingUntilSeconds,
+        source: "background" as const,
+        delaySeconds: pedestrian.waitSeconds,
       };
-    });
+    }) : [];
+    return [...this.sampledPedestrians, ...background];
   }
 
   getRoadTraffic(): RoadTrafficSnapshot[] {
-    const vehiclesBySegment = new Map<string, typeof this.vehicles>();
-    for (const vehicle of this.vehicles) {
+    const vehiclesBySegment = new Map<string, VehicleSnapshot[]>();
+    for (const vehicle of this.getVehicles()) {
       const vehicles = vehiclesBySegment.get(vehicle.segmentId) ?? [];
       vehicles.push(vehicle);
       vehiclesBySegment.set(vehicle.segmentId, vehicles);
     }
 
     return [...this.roadSegments.values()].map((segment) => {
+      if (this.expansionRoadIds.has(segment.id)) {
+        return this.expansionRoadTraffic(segment);
+      }
       const vehicles = vehiclesBySegment.get(segment.id) ?? [];
       const queuedVehicles = vehicles.filter((vehicle) => vehicle.queued).length;
       const averageSpeedMetersPerSecond = vehicles.length === 0
         ? 0
-        : vehicles.reduce((total, vehicle) => total + vehicle.speed, 0) / vehicles.length;
+        : vehicles.reduce((total, vehicle) => total + vehicle.speedMetersPerSecond, 0) / vehicles.length;
       const averageSpeedMph = averageSpeedMetersPerSecond * 2.23694;
       const representativeCapacity = Math.max(1, segment.travelLaneCount * 6);
       const loadRatio = clamp(vehicles.length / representativeCapacity, 0, 1.6);
@@ -499,7 +770,7 @@ export class LiveTrafficSystem {
       );
       const averageDelaySeconds = vehicles.length === 0
         ? 0
-        : vehicles.reduce((total, vehicle) => total + vehicle.segmentDelaySeconds, 0) / vehicles.length;
+        : vehicles.reduce((total, vehicle) => total + (vehicle.delaySeconds ?? 0), 0) / vehicles.length;
 
       return {
         segmentId: segment.id,
@@ -512,26 +783,69 @@ export class LiveTrafficSystem {
     });
   }
 
+  private expansionRoadTraffic(
+    segment: Readonly<RoadSegmentModel>,
+  ): RoadTrafficSnapshot {
+    const road = this.expansionRoads.find((candidate) => candidate.id === segment.id);
+    const dailyTrips = this.economicRoadLoad.get(segment.id) ?? 0;
+    const laneCapacity = Math.max(1, segment.travelLaneCount) * 95;
+    const loadRatio = clamp(dailyTrips / laneCapacity, 0, 1.8);
+    const crosswalks = road
+      ? this.expansionStreetObjects.filter((object) =>
+          object.kind === "crosswalk" && distanceToRoad(object.x, object.z, road) <= road.width
+        ).length
+      : 0;
+    const signals = road
+      ? this.expansionStreetObjects.filter((object) =>
+          object.kind === "traffic-signal" && distanceToRoad(object.x, object.z, road) <= road.width
+        ).length
+      : 0;
+    const congestionPercent = clamp(
+      loadRatio * 72 + Math.max(0, loadRatio - 0.75) * 48,
+      0,
+      100,
+    );
+    const activeVehicles = Math.round(dailyTrips / 18);
+    const queuedVehicles = Math.round(
+      activeVehicles * congestionPercent / 100 * 0.42,
+    );
+    const averageDelaySeconds =
+      congestionPercent * 0.52 + crosswalks * 3.5 + signals * 2.5;
+    const averageSpeedMph = dailyTrips <= 0
+      ? 0
+      : segment.speedLimitMph * clamp(1 - congestionPercent / 135, 0.2, 1);
+    return {
+      segmentId: segment.id,
+      activeVehicles,
+      queuedVehicles,
+      averageSpeedMph: roundOne(averageSpeedMph),
+      congestionPercent: roundOne(congestionPercent),
+      averageDelaySeconds: roundOne(averageDelaySeconds),
+    };
+  }
+
   getMetrics(): SimulationMetrics {
-    const queuedVehicles = this.vehicles.filter((vehicle) => vehicle.queued).length;
-    const movingVehicles = this.vehicles.filter((vehicle) => vehicle.speed > 0.25);
+    const vehicles = this.getVehicles();
+    const pedestrians = this.getPedestrians();
+    const queuedVehicles = vehicles.filter((vehicle) => vehicle.queued).length;
+    const movingVehicles = vehicles.filter((vehicle) => vehicle.speedMetersPerSecond > 0.25);
     const averageSpeedMetersPerSecond =
       movingVehicles.length === 0
         ? 0
-        : movingVehicles.reduce((sum, vehicle) => sum + vehicle.speed, 0) /
+        : movingVehicles.reduce((sum, vehicle) => sum + vehicle.speedMetersPerSecond, 0) /
           movingVehicles.length;
     const activeVehicleTravel = this.vehicles.reduce(
       (sum, vehicle) => sum + (this.elapsedSeconds - vehicle.spawnedAt),
       0,
     );
     const vehicleSampleCount =
-      this.completedVehicleTrips + this.vehicles.length;
-    const activePedestrianWait = this.pedestrians.reduce(
-      (sum, pedestrian) => sum + pedestrian.waitSeconds,
+      this.completedVehicleTrips + vehicles.length;
+    const activePedestrianWait = pedestrians.reduce(
+      (sum, pedestrian) => sum + (pedestrian.delaySeconds ?? 0),
       0,
     );
     const pedestrianSampleCount =
-      this.completedPedestrianTrips + this.pedestrians.length;
+      this.completedPedestrianTrips + pedestrians.length;
     const completedPeople =
       this.completedVehicleTrips * 1.4 + this.completedPedestrianTrips;
     const throughputPerHour =
@@ -551,8 +865,8 @@ export class LiveTrafficSystem {
         vehicleSampleCount === 0
           ? 0
           : (this.completedVehicleDelaySeconds +
-              this.vehicles.reduce(
-                (sum, vehicle) => sum + vehicle.delaySeconds,
+              vehicles.reduce(
+                (sum, vehicle) => sum + (vehicle.delaySeconds ?? 0),
                 0,
               )) /
               vehicleSampleCount,
@@ -565,9 +879,12 @@ export class LiveTrafficSystem {
       ),
       potentialConflicts: this.countPotentialConflicts(),
       throughputPerHour,
-      activeVehicles: this.vehicles.length,
-      activePedestrians: this.pedestrians.length,
+      activeVehicles: vehicles.length,
+      activePedestrians: pedestrians.length,
       crossingsCompleted: this.crossingsCompleted,
+      buildingArrivals: this.buildingArrivals,
+      trafficViolations: this.trafficViolations,
+      jaywalkingViolations: this.jaywalkingViolations,
     };
   }
 
@@ -626,19 +943,44 @@ export class LiveTrafficSystem {
     deltaSeconds: number,
     demand: number,
     speedLimitMph: number,
+    violationRiskMultiplier: number,
   ): void {
     const level = clampDemand(demand);
     this.nextVehicleSpawnSeconds -= deltaSeconds;
-    const target = VEHICLE_TARGETS[level];
+    const target = Math.max(0, VEHICLE_TARGETS[level] - this.sampledVehicles.length);
     while (this.nextVehicleSpawnSeconds <= 0 && this.vehicles.length < target) {
       const route = this.createVehicleRoute(level);
-      const kind = this.random.pick(VEHICLE_KINDS);
+      const destination = route.at(-1);
+      const freight =
+        destination !== undefined &&
+        this.buildingDestinations.some(
+          (building) =>
+            building.kind === "industrial" &&
+            building.node.id === destination.id,
+        );
+      const kind: VehicleKind = freight
+        ? "truck"
+        : this.random.pick(VEHICLE_KINDS);
       const assignment = this.laneForPath(route, 0, kind);
       if (assignment && this.canSpawnVehicle(assignment.lane.id)) {
+        const complianceProbability = sampleComplianceProbability(
+          this.random.next(),
+        );
+        const effectiveCompliance = complianceAdjustedForTime(
+          complianceProbability,
+          violationRiskMultiplier,
+        );
+        const speedFactor = driverSpeedFactor(
+          effectiveCompliance,
+          this.random.next(),
+          this.random.next(),
+        );
         const desiredSpeed =
           Math.min(speedLimitMph, assignment.segment.speedLimitMph) *
           0.44704 *
-          (0.82 + this.random.next() * 0.16);
+          speedFactor;
+        const speeding = speedFactor > 1;
+        if (speeding) this.trafficViolations += 1;
         this.vehicles.push({
           id: this.nextVehicleId,
           path: route,
@@ -655,6 +997,16 @@ export class LiveTrafficSystem {
           spawnedAt: this.elapsedSeconds,
           delaySeconds: 0,
           segmentDelaySeconds: 0,
+          complianceProbability,
+          aggressiveYellow: this.random.next() > effectiveCompliance,
+          mayRunRed:
+            this.random.next() <
+            redSignalViolationProbability(
+              complianceProbability,
+              violationRiskMultiplier,
+            ),
+          violationIntersectionId: null,
+          violatingUntilSeconds: speeding ? this.elapsedSeconds + 3 : 0,
         });
         this.nextVehicleId += 1;
       }
@@ -707,10 +1059,14 @@ export class LiveTrafficSystem {
     });
   }
 
-  private updatePedestrianSpawner(deltaSeconds: number, demand: number): void {
+  private updatePedestrianSpawner(
+    deltaSeconds: number,
+    demand: number,
+    violationRiskMultiplier: number,
+  ): void {
     const level = clampDemand(demand);
     this.nextPedestrianSpawnSeconds -= deltaSeconds;
-    const target = PEDESTRIAN_TARGETS[level];
+    const target = Math.max(0, PEDESTRIAN_TARGETS[level] - this.sampledPedestrians.length);
     while (
       this.nextPedestrianSpawnSeconds <= 0 &&
       this.pedestrians.length < target
@@ -718,6 +1074,9 @@ export class LiveTrafficSystem {
       const route = this.createPedestrianRoute(level);
       if (this.canSpawnPedestrian(route)) {
         const segmentId = segmentIdForPath(route, 0);
+        const complianceProbability = sampleComplianceProbability(
+          this.random.next(),
+        );
         this.pedestrians.push({
           id: this.nextPedestrianId,
           path: route,
@@ -733,6 +1092,15 @@ export class LiveTrafficSystem {
           waitSeconds: 0,
           committedIntersectionId: null,
           segmentId,
+          complianceProbability,
+          mayCrossAgainstSignal:
+            this.random.next() <
+            pedestrianSignalViolationProbability(
+              complianceProbability,
+              violationRiskMultiplier,
+            ),
+          signalViolationUsed: false,
+          violatingUntilSeconds: 0,
         });
         this.nextPedestrianId += 1;
       }
@@ -809,9 +1177,30 @@ export class LiveTrafficSystem {
       const controller = this.controllers.get(end.id);
       const signal = controller?.getSnapshot();
       const axis = Math.abs(end.x - start.x) > Math.abs(end.z - start.z) ? "x" : "z";
-      const canProceed =
+      const legalCanProceed =
         signal !== undefined &&
         vehicleMayProceed(signal.phase, axis, remaining, vehicle.speed);
+      const behaviorCanProceed =
+        signal !== undefined &&
+        vehicleMayProceedWithBehavior(
+          signal.phase,
+          axis,
+          remaining,
+          vehicle.speed,
+          vehicle.aggressiveYellow,
+          vehicle.mayRunRed,
+        );
+      const canProceed =
+        behaviorCanProceed && !this.intersectionHasCrossingPedestrian(end.id);
+      if (
+        canProceed &&
+        !legalCanProceed &&
+        vehicle.violationIntersectionId !== end.id
+      ) {
+        vehicle.violationIntersectionId = end.id;
+        vehicle.violatingUntilSeconds = this.elapsedSeconds + 3;
+        this.trafficViolations += 1;
+      }
       const nextKey = nextVehicleSegmentDirectionKey(vehicle);
       const downstreamBlocked =
         nextKey !== null &&
@@ -820,6 +1209,11 @@ export class LiveTrafficSystem {
         );
       if (!canProceed || downstreamBlocked) {
         targetSpeed = Math.min(targetSpeed, Math.max(0, (remaining - 6) * 0.7));
+      } else {
+        targetSpeed = Math.min(
+          targetSpeed,
+          safeIntersectionApproachSpeed(targetSpeed, remaining),
+        );
       }
     }
     const acceleration = targetSpeed > vehicle.speed ? 2.2 : 4.8;
@@ -919,6 +1313,18 @@ export class LiveTrafficSystem {
         pedestrian.committedIntersectionId = end.id;
       }
       if (
+        pedestrian.committedIntersectionId === null &&
+        !pedestrian.signalViolationUsed &&
+        pedestrian.mayCrossAgainstSignal &&
+        signal?.phase !== "pedestrian-walk"
+      ) {
+        pedestrian.committedIntersectionId = end.id;
+        pedestrian.signalViolationUsed = true;
+        pedestrian.violatingUntilSeconds = this.elapsedSeconds + 3;
+        this.trafficViolations += 1;
+        this.jaywalkingViolations += 1;
+      }
+      if (
         pedestrian.committedIntersectionId !== end.id &&
         signal?.phase !== "pedestrian-walk"
       ) {
@@ -954,6 +1360,12 @@ export class LiveTrafficSystem {
           pedestrian.path,
           pedestrian.segmentIndex,
         );
+      } else if (
+        this.buildingDestinations.some(
+          (destination) => destination.node.id === segmentEnd.id,
+        )
+      ) {
+        this.buildingArrivals += 1;
       }
     }
   }
@@ -963,6 +1375,15 @@ export class LiveTrafficSystem {
       demandLevel >= 3 ? 1.35 : demandLevel === 2 ? 1 : 0.72;
     const boundaryProbability =
       demandLevel >= 3 ? 0.76 : demandLevel === 2 ? 0.68 : 0.58;
+    if (this.buildingDestinations.length > 0 && this.random.next() < 0.72) {
+      const destination = this.random.pick(this.buildingDestinations).node;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const origin = this.randomBoundaryNode();
+        if (origin.id === destination.id) continue;
+        const route = this.findVehicleRoute(origin, destination, corridorBias);
+        if (route && route.length >= 2) return route;
+      }
+    }
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const origin =
         this.random.next() < boundaryProbability
@@ -1070,6 +1491,14 @@ export class LiveTrafficSystem {
       (pedestrian) =>
         pedestrianSegmentKey(pedestrian) === key &&
         pedestrian.distanceOnSegment < 1.5,
+    );
+  }
+
+  private intersectionHasCrossingPedestrian(intersectionId: string): boolean {
+    return this.pedestrians.some(
+      (pedestrian) =>
+        pedestrian.committedIntersectionId === intersectionId &&
+        pedestrian.speed > 0.08,
     );
   }
 
@@ -1263,6 +1692,318 @@ function nearestGridNodeFromWorld(
   return nearest;
 }
 
+function expansionRoadModel(road: Readonly<ExpansionRoad>): RoadSegmentModel {
+  const model = createRoadSegmentModel(
+    {
+      id: road.id,
+      kind: "street",
+      name: `Expansion Road ${road.id.match(/\d+$/)?.[0] ?? ""}`.trim(),
+      description: "User-built expansion road",
+      axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
+        ? "x"
+        : "z",
+      path: [
+        { longitude: 0, latitude: 0 },
+        { longitude: 0, latitude: 0 },
+      ],
+    },
+    {
+      laneDelta: road.laneDelta,
+      bikeLane: road.bikeLane,
+      laneDirection: road.laneDirection,
+    },
+  );
+  return {
+    ...model,
+    totalWidthMeters: road.width,
+    speedLimitMph: road.width >= 20 ? 25 : 20,
+    demandWeight: 0.9 + (road.laneDelta ?? 0) * 0.18,
+  };
+}
+
+function buildEconomicRouteGraph(
+  grid: readonly (readonly GridNode[])[],
+  roadSegments: ReadonlyMap<string, RoadSegmentModel>,
+  expansionRoads: readonly ExpansionRoad[],
+): {
+  nodes: Map<string, EconomicRouteNode>;
+  expansionSegmentNodes: Map<string, Set<string>>;
+  connectedNodeIds: Set<string>;
+} {
+  const nodes = new Map<string, EconomicRouteNode>();
+  const expansionSegmentNodes = new Map<string, Set<string>>();
+  const addNode = (id: string, x: number, z: number, staticNode: boolean): EconomicRouteNode => {
+    const existing = nodes.get(id);
+    if (existing) return existing;
+    const node = { id, x, z, staticNode, edges: [] };
+    nodes.set(id, node);
+    return node;
+  };
+  const addEdge = (from: string, to: string, segmentId: string, cost: number): void => {
+    const node = nodes.get(from);
+    if (!node || node.edges.some((edge) => edge.to === to && edge.segmentId === segmentId)) return;
+    node.edges.push({ to, segmentId, cost });
+  };
+
+  for (const gridNode of grid.flat()) {
+    addNode(gridNode.id, gridNode.x, gridNode.z, true);
+  }
+  for (const gridNode of grid.flat()) {
+    for (const neighbor of adjacentNodes(grid, gridNode)) {
+      const segmentId = segmentIdBetween(
+        gridNode.column,
+        gridNode.row,
+        neighbor.column,
+        neighbor.row,
+      );
+      const segment = roadSegments.get(segmentId);
+      if (!segment) continue;
+      const direction = travelDirectionBetween(
+        gridNode.column,
+        gridNode.row,
+        neighbor.column,
+        neighbor.row,
+      );
+      if (!roadAllowsDirection(segment, direction)) continue;
+      addEdge(
+        gridNode.id,
+        neighbor.id,
+        segmentId,
+        distance(gridNode, neighbor) / Math.max(0.65, segment.demandWeight),
+      );
+    }
+  }
+
+  const pointsByRoad = new Map<string, Array<{ x: number; z: number; t: number }>>();
+  for (const road of expansionRoads) {
+    pointsByRoad.set(road.id, [
+      { x: road.startX, z: road.startZ, t: 0 },
+      { x: road.endX, z: road.endZ, t: 1 },
+    ]);
+  }
+  for (let leftIndex = 0; leftIndex < expansionRoads.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < expansionRoads.length; rightIndex += 1) {
+      const intersection = roadIntersection(
+        expansionRoads[leftIndex],
+        expansionRoads[rightIndex],
+      );
+      if (!intersection) continue;
+      pointsByRoad.get(expansionRoads[leftIndex].id)?.push({
+        ...intersection,
+        t: roadPosition(expansionRoads[leftIndex], intersection.x, intersection.z),
+      });
+      pointsByRoad.get(expansionRoads[rightIndex].id)?.push({
+        ...intersection,
+        t: roadPosition(expansionRoads[rightIndex], intersection.x, intersection.z),
+      });
+    }
+  }
+
+  const routeNodeForPoint = (x: number, z: number): EconomicRouteNode => {
+    const nearestStatic = nearestGridNodeFromWorld(grid, x, z);
+    if (Math.hypot(nearestStatic.x - x, nearestStatic.z - z) <= 75) {
+      return nodes.get(nearestStatic.id) as EconomicRouteNode;
+    }
+    const id = `expansion-node:${Math.round(x * 10)}:${Math.round(z * 10)}`;
+    return addNode(id, x, z, false);
+  };
+
+  for (const road of expansionRoads) {
+    const segment = roadSegments.get(road.id);
+    if (!segment) continue;
+    const uniquePoints = [...new Map(
+      (pointsByRoad.get(road.id) ?? []).map((point) => [
+        `${Math.round(point.x * 10)}:${Math.round(point.z * 10)}`,
+        point,
+      ]),
+    ).values()].sort((left, right) => left.t - right.t);
+    const routeNodes = uniquePoints.map((point) => routeNodeForPoint(point.x, point.z));
+    expansionSegmentNodes.set(road.id, new Set(routeNodes.map((node) => node.id)));
+    for (let index = 0; index < routeNodes.length - 1; index += 1) {
+      const start = routeNodes[index];
+      const end = routeNodes[index + 1];
+      if (start.id === end.id) continue;
+      const cost = Math.hypot(end.x - start.x, end.z - start.z)
+        / Math.max(0.65, segment.demandWeight);
+      if (segment.directionality !== "reverse") addEdge(start.id, end.id, road.id, cost);
+      if (segment.directionality !== "forward") addEdge(end.id, start.id, road.id, cost);
+    }
+  }
+
+  const connectedNodeIds = new Set<string>();
+  const queue = [...nodes.values()].filter((node) => node.staticNode).map((node) => node.id);
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    if (connectedNodeIds.has(id)) continue;
+    connectedNodeIds.add(id);
+    const node = nodes.get(id);
+    if (!node) continue;
+    for (const edge of node.edges) {
+      if (!connectedNodeIds.has(edge.to)) queue.push(edge.to);
+    }
+    for (const candidate of nodes.values()) {
+      if (candidate.edges.some((edge) => edge.to === id) && !connectedNodeIds.has(candidate.id)) {
+        queue.push(candidate.id);
+      }
+    }
+  }
+  return { nodes, expansionSegmentNodes, connectedNodeIds };
+}
+
+function economicRouteSegmentIds(
+  nodes: ReadonlyMap<string, EconomicRouteNode>,
+  expansionRoads: readonly ExpansionRoad[],
+  expansionSegmentNodes: ReadonlyMap<string, ReadonlySet<string>>,
+  grid: readonly (readonly GridNode[])[],
+  from: TrafficRouteEndpoint,
+  to: TrafficRouteEndpoint,
+): string[] {
+  const originIds = economicEndpointNodes(
+    nodes,
+    expansionRoads,
+    expansionSegmentNodes,
+    grid,
+    from,
+  );
+  const destinationIds = new Set(economicEndpointNodes(
+    nodes,
+    expansionRoads,
+    expansionSegmentNodes,
+    grid,
+    to,
+  ));
+  if (originIds.length === 0 || destinationIds.size === 0) return [];
+  const open = new Set(originIds);
+  const costs = new Map(originIds.map((id) => [id, 0]));
+  const previous = new Map<string, { nodeId: string; segmentId: string }>();
+  let destination: string | null = null;
+  while (open.size > 0) {
+    let current: string | null = null;
+    let currentCost = Number.POSITIVE_INFINITY;
+    for (const candidate of open) {
+      const cost = costs.get(candidate) ?? Number.POSITIVE_INFINITY;
+      if (cost < currentCost) {
+        current = candidate;
+        currentCost = cost;
+      }
+    }
+    if (!current) break;
+    if (destinationIds.has(current)) {
+      destination = current;
+      break;
+    }
+    open.delete(current);
+    for (const edge of nodes.get(current)?.edges ?? []) {
+      const nextCost = currentCost + edge.cost;
+      if (nextCost >= (costs.get(edge.to) ?? Number.POSITIVE_INFINITY)) continue;
+      costs.set(edge.to, nextCost);
+      previous.set(edge.to, { nodeId: current, segmentId: edge.segmentId });
+      open.add(edge.to);
+    }
+  }
+  if (!destination) return [];
+  const segments: string[] = [];
+  let current = destination;
+  while (previous.has(current)) {
+    const step = previous.get(current) as { nodeId: string; segmentId: string };
+    if (segments[0] !== step.segmentId) segments.unshift(step.segmentId);
+    current = step.nodeId;
+  }
+  return segments;
+}
+
+function economicEndpointNodes(
+  nodes: ReadonlyMap<string, EconomicRouteNode>,
+  expansionRoads: readonly ExpansionRoad[],
+  expansionSegmentNodes: ReadonlyMap<string, ReadonlySet<string>>,
+  grid: readonly (readonly GridNode[])[],
+  endpoint: TrafficRouteEndpoint,
+): string[] {
+  if (typeof endpoint === "string") {
+    const boundary = grid.flat().filter((node) =>
+      node.column === 0 || node.row === 0
+      || node.column === grid.length - 1
+      || node.row === grid[0].length - 1
+    );
+    const node = endpoint === "outside-market" ? boundary[0] : boundary.at(-1);
+    return node ? [node.id] : [];
+  }
+  const nearestRoad = expansionRoads
+    .map((road) => ({ road, distance: distanceToRoad(endpoint.x, endpoint.z, road) }))
+    .sort((left, right) => left.distance - right.distance)[0];
+  if (nearestRoad && nearestRoad.distance <= Math.max(55, nearestRoad.road.width * 2.5)) {
+    return [...(expansionSegmentNodes.get(nearestRoad.road.id) ?? [])]
+      .sort((left, right) => {
+        const leftNode = nodes.get(left);
+        const rightNode = nodes.get(right);
+        return Math.hypot((leftNode?.x ?? 0) - endpoint.x, (leftNode?.z ?? 0) - endpoint.z)
+          - Math.hypot((rightNode?.x ?? 0) - endpoint.x, (rightNode?.z ?? 0) - endpoint.z);
+      })
+      .slice(0, 1);
+  }
+  const nearestStatic = nearestGridNodeFromWorld(grid, endpoint.x, endpoint.z);
+  const xs = grid.flat().map((node) => node.x);
+  const zs = grid.flat().map((node) => node.z);
+  const insideCore = endpoint.x >= Math.min(...xs) - 100
+    && endpoint.x <= Math.max(...xs) + 100
+    && endpoint.z >= Math.min(...zs) - 100
+    && endpoint.z <= Math.max(...zs) + 100;
+  return insideCore ? [nearestStatic.id] : [];
+}
+
+function roadAllowsDirection(
+  segment: Readonly<RoadSegmentModel>,
+  direction: LaneTravelDirection,
+): boolean {
+  return segment.lanes.some((lane) =>
+    (lane.type === "general" || lane.type === "turn" || lane.type === "bus")
+    && lane.direction === direction
+  );
+}
+
+function roadIntersection(
+  left: Readonly<ExpansionRoad>,
+  right: Readonly<ExpansionRoad>,
+): { x: number; z: number } | null {
+  const leftHorizontal = Math.abs(left.endX - left.startX) >= Math.abs(left.endZ - left.startZ);
+  const rightHorizontal = Math.abs(right.endX - right.startX) >= Math.abs(right.endZ - right.startZ);
+  if (leftHorizontal === rightHorizontal) return null;
+  const horizontal = leftHorizontal ? left : right;
+  const vertical = leftHorizontal ? right : left;
+  const x = vertical.startX;
+  const z = horizontal.startZ;
+  const withinHorizontal = x >= Math.min(horizontal.startX, horizontal.endX) - 1
+    && x <= Math.max(horizontal.startX, horizontal.endX) + 1;
+  const withinVertical = z >= Math.min(vertical.startZ, vertical.endZ) - 1
+    && z <= Math.max(vertical.startZ, vertical.endZ) + 1;
+  return withinHorizontal && withinVertical ? { x, z } : null;
+}
+
+function roadPosition(
+  road: Readonly<ExpansionRoad>,
+  x: number,
+  z: number,
+): number {
+  const dx = road.endX - road.startX;
+  const dz = road.endZ - road.startZ;
+  const lengthSquared = dx * dx + dz * dz;
+  return lengthSquared <= 0
+    ? 0
+    : clamp(((x - road.startX) * dx + (z - road.startZ) * dz) / lengthSquared, 0, 1);
+}
+
+function distanceToRoad(
+  x: number,
+  z: number,
+  road: Readonly<ExpansionRoad>,
+): number {
+  const t = roadPosition(road, x, z);
+  return Math.hypot(
+    x - (road.startX + (road.endX - road.startX) * t),
+    z - (road.startZ + (road.endZ - road.startZ) * t),
+  );
+}
+
 function createManhattanPath(
   nodes: readonly (readonly GridNode[])[],
   origin: GridNode,
@@ -1347,7 +2088,7 @@ function phaseDuration(
   return timing.allRedSeconds;
 }
 
-function vehicleMayProceed(
+export function vehicleMayProceed(
   phase: SignalPhase,
   axis: "x" | "z",
   distanceToStopLine: number,
@@ -1361,6 +2102,95 @@ function vehicleMayProceed(
   if (!matchingYellow) return false;
   const comfortableStopDistance = speed * speed / (2 * 3.8) + 2;
   return distanceToStopLine <= comfortableStopDistance;
+}
+
+export function vehicleMayProceedWithBehavior(
+  phase: SignalPhase,
+  axis: "x" | "z",
+  distanceToStopLine: number,
+  speed: number,
+  aggressiveYellow: boolean,
+  mayRunRed: boolean,
+): boolean {
+  if (vehicleMayProceed(phase, axis, distanceToStopLine, speed)) return true;
+  const matchingYellow =
+    (axis === "z" && phase === "ns-yellow") ||
+    (axis === "x" && phase === "ew-yellow");
+  if (matchingYellow && aggressiveYellow) {
+    const comfortableStopDistance = speed * speed / (2 * 3.8) + 2;
+    return distanceToStopLine <= comfortableStopDistance + 12;
+  }
+  const facingRedOnOpposingGreen =
+    (axis === "z" && phase === "ew-green") ||
+    (axis === "x" && phase === "ns-green");
+  return facingRedOnOpposingGreen && mayRunRed;
+}
+
+export function sampleComplianceProbability(sample: number): number {
+  const normalized = clamp(sample, 0, 1);
+  return 0.7 + 0.3 * (1 - Math.pow(1 - normalized, 3));
+}
+
+export function complianceAdjustedForTime(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const nonCompliance =
+    (1 - clamp(complianceProbability, 0, 1)) *
+    clamp(violationRiskMultiplier, 0.5, 2.5);
+  return clamp(1 - nonCompliance, 0.45, 1);
+}
+
+export function pedestrianSignalViolationProbability(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const baseProbability =
+    0.03 + (1 - clamp(complianceProbability, 0, 1)) * 0.18;
+  return clamp(baseProbability * violationRiskMultiplier, 0.03, 0.22);
+}
+
+export function redSignalViolationProbability(
+  complianceProbability: number,
+  violationRiskMultiplier: number,
+): number {
+  const baseProbability =
+    0.001 + (1 - clamp(complianceProbability, 0, 1)) * 0.018;
+  return clamp(baseProbability * violationRiskMultiplier, 0.001, 0.03);
+}
+
+export function driverSpeedFactor(
+  complianceProbability: number,
+  complianceDecision: number,
+  magnitudeSample: number,
+): number {
+  const magnitude = clamp(magnitudeSample, 0, 1);
+  if (complianceDecision > complianceProbability) {
+    return 1.02 + magnitude * 0.16;
+  }
+  return 0.82 + magnitude * 0.16;
+}
+
+export function safeIntersectionApproachSpeed(
+  desiredSpeed: number,
+  distanceToIntersection: number,
+): number {
+  if (distanceToIntersection >= 30) return desiredSpeed;
+  const urbanIntersectionCap = 20 * 0.44704;
+  const approachFactor = clamp((distanceToIntersection - 6) / 24, 0.35, 1);
+  return Math.min(desiredSpeed, urbanIntersectionCap * approachFactor);
+}
+
+export function physicalLaneCount(laneDelta: -1 | 0 | 1): 1 | 2 {
+  return laneDelta === 1 ? 2 : 1;
+}
+
+export function laneDirectionAllowsMovement(
+  direction: LaneDirection,
+  forward: boolean,
+): boolean {
+  if (direction === "two-way") return true;
+  return direction === "forward" ? forward : !forward;
 }
 
 function positionVehicle(vehicle: VehicleAgent): PositionedAgent {
@@ -1496,6 +2326,7 @@ function vehicleLength(kind: VehicleKind): number {
   if (kind === "suv") return 4.8;
   if (kind === "van") return 5.4;
   if (kind === "bus") return 9.8;
+  if (kind === "truck") return 8.4;
   return 4.4;
 }
 

@@ -14,6 +14,7 @@ import type {
   HouseholdFinancialStatus,
   PersonActivity,
   PersonNeed,
+  PersonMobilityOutcome,
   PersonScheduleItem,
   TravelMode,
 } from "../models/entityTypes";
@@ -23,6 +24,7 @@ const OUTSIDE_WORK = "outside-work";
 const OUTSIDE_MARKET = "outside-market";
 const MAX_EVENTS = 36;
 const MAX_HISTORY_POINTS = 24;
+const RAW_TO_WHOLESALE_YIELD = 2.4;
 
 export interface EntityPolicy {
   roadCapacityScale: number;
@@ -32,6 +34,7 @@ export interface EntityPolicy {
   accessibilityByBuilding?: ReadonlyMap<string, BuildingAccessibility>;
   externalJobCapacityScale?: number;
   externalSupplyScale?: number;
+  mobilityOutcomesByPerson?: ReadonlyMap<string, PersonMobilityOutcome>;
 }
 
 interface ScheduledDemand {
@@ -62,6 +65,123 @@ export function createDetailedEntityState(
     ...state,
     events: [],
     lastUpdatedDay: 0,
+  };
+}
+
+export function syncDetailedEntityBuildings(
+  state: Readonly<DetailedEntityState>,
+  definitions: readonly EntityBuildingDefinition[],
+): DetailedEntityState {
+  const previousById = new Map(
+    state.buildings.map((building) => [building.id, building]),
+  );
+  const buildings = definitions.map((definition) => {
+    const previous = previousById.get(definition.id);
+    const fresh = createBuilding(definition);
+    if (!previous || previous.function !== definition.function) return fresh;
+    return {
+      ...previous,
+      ...definition,
+      residentCapacity: fresh.residentCapacity,
+      jobCapacity: fresh.jobCapacity,
+      residentIds: [...previous.residentIds],
+      employeeIds: [...previous.employeeIds],
+      accessibility: { ...previous.accessibility },
+      accounting: { ...previous.accounting },
+      history: [...previous.history],
+    };
+  });
+  const buildingById = new Map(buildings.map((building) => [building.id, building]));
+  const people = state.people.map((person) => ({
+    ...person,
+    schedule: person.schedule.map((item) => ({ ...item })),
+    mobility: { ...person.mobility },
+  }));
+  const peopleById = new Map(people.map((person) => [person.id, person]));
+  const households: DetailedHousehold[] = [];
+  const removedPeople = new Set<string>();
+  const assignedResidents = new Map<string, number>();
+
+  for (const household of state.households) {
+    const current = buildingById.get(household.homeBuildingId);
+    let home = current?.function === "housing" && current.developmentStage !== "construction"
+      ? current
+      : undefined;
+    if (!home) {
+      home = buildings
+        .filter((building) =>
+          building.function === "housing" && building.developmentStage !== "construction"
+        )
+        .sort((left, right) =>
+          right.accessibility.services - left.accessibility.services
+          || left.rentDaily - right.rentDaily
+        )
+        .find((building) =>
+          building.residentCapacity - (assignedResidents.get(building.id) ?? 0)
+            >= household.memberIds.length
+        );
+    }
+    if (!home) {
+      household.memberIds.forEach((personId) => removedPeople.add(personId));
+      continue;
+    }
+    assignedResidents.set(
+      home.id,
+      (assignedResidents.get(home.id) ?? 0) + household.memberIds.length,
+    );
+    households.push({
+      ...household,
+      homeBuildingId: home.id,
+      memberIds: [...household.memberIds],
+      dailyExpenses: { ...household.dailyExpenses },
+      moveReason: current
+        ? household.moveReason
+        : "The household relocated after its previous residence was redeveloped.",
+      history: [...household.history],
+    });
+    for (const personId of household.memberIds) {
+      const person = peopleById.get(personId);
+      if (!person) continue;
+      const previousHome = person.homeBuildingId;
+      person.homeBuildingId = home.id;
+      if (person.currentBuildingId === previousHome) person.currentBuildingId = home.id;
+    }
+  }
+
+  const retainedPeople = people.filter((person) => !removedPeople.has(person.id));
+  for (const person of retainedPeople) {
+    const workplace = person.workBuildingId
+      ? buildingById.get(person.workBuildingId)
+      : undefined;
+    if (person.employment === "local" && (!workplace || workplace.jobCapacity <= 0)) {
+      person.employment = "unemployed";
+      person.workBuildingId = undefined;
+      person.dailyWage = 0;
+      person.unemployedDays = Math.max(1, person.unemployedDays);
+    }
+    if (person.schoolBuildingId && !buildingById.has(person.schoolBuildingId)) {
+      person.schoolBuildingId = undefined;
+    }
+  }
+
+  for (const building of buildings) {
+    building.residentIds = [];
+    building.employeeIds = [];
+  }
+  for (const person of retainedPeople) {
+    buildingById.get(person.homeBuildingId)?.residentIds.push(person.id);
+    if (person.employment === "local" && person.workBuildingId) {
+      buildingById.get(person.workBuildingId)?.employeeIds.push(person.id);
+    }
+  }
+
+  return {
+    buildings,
+    people: retainedPeople,
+    households,
+    connections: rebuildEntityConnections(retainedPeople, buildings),
+    events: [...state.events],
+    lastUpdatedDay: state.lastUpdatedDay,
   };
 }
 
@@ -133,6 +253,16 @@ export function rebuildEntityConnections(
 
   const suppliers = buildings.filter((building) => building.function === "industrial");
   for (const building of buildings) {
+    if (building.developmentStage === "construction") {
+      add(
+        "delivery",
+        OUTSIDE_MARKET,
+        building.id,
+        undefined,
+        Math.max(2, building.floors * 3),
+      );
+      continue;
+    }
     if (building.accounting.externalCustomers > 0) {
       add("visit", OUTSIDE_MARKET, building.id, undefined, building.accounting.externalCustomers);
     }
@@ -148,6 +278,9 @@ export function rebuildEntityConnections(
 
 function createBuilding(definition: EntityBuildingDefinition): DetailedBuilding {
   const floorArea = definition.width * definition.depth * definition.floors;
+  const constructionDays = definition.source === "expansion"
+    ? Math.min(18, 3 + Math.ceil(definition.floors / 2))
+    : 0;
   const residentCapacity = definition.function === "housing"
     ? clamp(Math.round(floorArea / 2_300), 10, 32)
     : 0;
@@ -161,17 +294,33 @@ function createBuilding(definition: EntityBuildingDefinition): DetailedBuilding 
   const requiredWorkers = requiredWorkersFor({ id: definition.id, jobCapacity, function: definition.function }, 0);
   return {
     ...definition,
+    developmentStage: definition.source === "expansion" ? "construction" : "established",
+    constructionDaysRemaining: constructionDays,
+    constructionDaysTotal: constructionDays,
+    constructionCost: definition.source === "expansion"
+      ? round(floorArea * (definition.function === "industrial" ? 42 : isCivic(definition.function) ? 58 : 48))
+      : 0,
     residentCapacity,
     residentIds: [],
     jobCapacity,
     employeeIds: [],
     landValue: round(landValue),
     rentDaily: definition.function === "housing" ? round(32 + landValue * 0.11) : 0,
-    goodsInventory: requiresSupplies(definition.function) ? 24 + Math.round(hashUnit(`${definition.id}:stock`) * 80) : 0,
+    goodsInventory: definition.function === "retail"
+      ? 24 + Math.round(hashUnit(`${definition.id}:stock`) * 80)
+      : definition.function === "industrial"
+        ? 8 + Math.round(hashUnit(`${definition.id}:stock`) * 20)
+        : 0,
     cashReserve: 2_000 + Math.round(hashUnit(`${definition.id}:cash`) * 14_000),
     closedDaysRemaining: 0,
     accessibility: defaultAccessibility(),
-    accounting: emptyAccounting(requiredWorkers),
+    accounting: definition.source === "expansion"
+      ? {
+          ...emptyAccounting(0),
+          status: "construction",
+          diagnosis: `${constructionDays} construction days remain before residents, workers, and customers can use this building.`,
+        }
+      : emptyAccounting(requiredWorkers),
     history: [],
   };
 }
@@ -181,9 +330,16 @@ function createPopulation(buildings: DetailedBuilding[], congestionPercent: numb
   people: DetailedPerson[];
   households: DetailedHousehold[];
 } {
-  const homes = buildings.filter((building) => building.function === "housing");
-  const workplaces = buildings.filter((building) => building.jobCapacity > 0);
-  const schools = buildings.filter((building) => building.function === "school" || building.function === "university");
+  const homes = buildings.filter((building) =>
+    building.function === "housing" && building.developmentStage !== "construction"
+  );
+  const workplaces = buildings.filter((building) =>
+    building.jobCapacity > 0 && building.developmentStage !== "construction"
+  );
+  const schools = buildings.filter((building) =>
+    building.developmentStage !== "construction"
+    && (building.function === "school" || building.function === "university")
+  );
   const services = serviceBuildings(buildings);
   const people: DetailedPerson[] = [];
   const households: DetailedHousehold[] = [];
@@ -237,7 +393,23 @@ function createPopulation(buildings: DetailedBuilding[], congestionPercent: numb
           dailyWage: employment === "external" ? 185 : 0,
           dailySpending: 0,
           commuteCost: employment === "external" ? 18 : 0,
+          dailyTravelDelayMinutes: 0,
           money: 220 + hashUnit(`${personId}:money`) * 1_800,
+          mobility: {
+            phase: "inside",
+            mode: "walk",
+            activity: "home",
+            fromBuildingId: home.id,
+            destinationBuildingId: home.id,
+            routeProgress: 1,
+            departureMinute: 0,
+            scheduledArrivalMinute: 0,
+            expectedArrivalMinute: 0,
+            delayMinutes: 0,
+            x: home.x,
+            z: home.z,
+            heading: 0,
+          },
           migrationStatus: "staying",
           migrationReason: "Employment, housing, and services are currently stable.",
           unemployedDays: employment === "unemployed" ? 1 : 0,
@@ -292,6 +464,7 @@ function advanceDetailedDay(
     ...person,
     needs: { ...person.needs },
     happinessComponents: { ...person.happinessComponents },
+    mobility: { ...person.mobility },
   }));
   const households = state.households.map((household) => ({
     ...household,
@@ -307,6 +480,36 @@ function advanceDetailedDay(
       ?? defaultAccessibility(),
     accounting: { ...building.accounting },
   }));
+
+  buildings = buildings.map((building) => {
+    if (building.developmentStage !== "construction") return building;
+    const constructionDaysRemaining = Math.max(0, building.constructionDaysRemaining - 1);
+    const opened = constructionDaysRemaining === 0;
+    if (opened && recordEvents) {
+      events.push(event(
+        day,
+        "business",
+        "info",
+        `${building.name} completed construction and opened with vacant capacity.`,
+        building.id,
+      ));
+    }
+    const dailyCapitalCost = round(
+      building.constructionCost / Math.max(1, building.constructionDaysTotal),
+    );
+    return {
+      ...building,
+      developmentStage: opened ? "open" : "construction",
+      constructionDaysRemaining,
+      accounting: opened ? building.accounting : {
+        ...emptyAccounting(0),
+        status: "construction",
+        operatingCost: dailyCapitalCost,
+        profit: -dailyCapitalCost,
+        diagnosis: `${constructionDaysRemaining} construction days remain before residents, workers, and customers can use this building.`,
+      },
+    };
+  });
 
   const buildingById = new Map(buildings.map((building) => [building.id, building]));
   relocateHouseholds(households, people, buildings, buildingById, day, events, recordEvents);
@@ -329,7 +532,11 @@ function advanceDetailedDay(
       householdById.get(person.householdId)?.financialStatus ?? "stable",
     );
   }
-  const demand = countScheduledDemand(people, householdById);
+  const demand = countScheduledDemand(
+    people,
+    householdById,
+    policy.mobilityOutcomesByPerson,
+  );
   const rentChargedByHousehold = new Map<string, number>();
   const rentPaidByHousehold = new Map<string, number>();
   const rentCollectedByBuilding = new Map<string, number>();
@@ -373,16 +580,30 @@ function advanceDetailedDay(
   const serviceCostByPerson = new Map<string, number>();
 
   for (const person of people) {
+    const sampledOutcome = policy.mobilityOutcomesByPerson?.get(person.id);
+    const mobilityOutcome = sampledOutcome && (
+      sampledOutcome.delayMinutes > 0
+      || sampledOutcome.extraTransportCost > 0
+      || sampledOutcome.attendanceRatio < 1
+      || sampledOutcome.visitCompletionRatio < 1
+    ) ? sampledOutcome : undefined;
+    const attendanceRatio = mobilityOutcome?.attendanceRatio ?? 1;
     const workplace = person.workBuildingId ? updatedBuildingById.get(person.workBuildingId) : undefined;
     if (person.employment === "local" && workplace && workplace.accounting.status !== "closed") {
       person.dailyWage = person.schedule.some(
         (item) => item.activity === "work" && item.buildingId === workplace.id,
-      ) ? workplace.accounting.averageWage : 0;
+      ) ? mobilityOutcome
+          ? round(workplace.accounting.averageWage * attendanceRatio)
+          : workplace.accounting.averageWage
+        : 0;
       person.unemployedDays = 0;
     } else if (person.employment === "external") {
       person.dailyWage = person.schedule.some(
         (item) => item.activity === "work" && item.buildingId === OUTSIDE_WORK,
-      ) ? externalDailyWage(policy) : 0;
+      ) ? mobilityOutcome
+          ? round(externalDailyWage(policy) * attendanceRatio)
+          : externalDailyWage(policy)
+        : 0;
       person.unemployedDays = 0;
     } else if (person.employment === "local") {
       person.employment = "unemployed";
@@ -400,7 +621,13 @@ function advanceDetailedDay(
     const services = dailyServiceCost(person, updatedBuildingById, demand);
     goodsCostByPerson.set(person.id, goods);
     serviceCostByPerson.set(person.id, services);
-    person.commuteCost = commuteCost(person, updatedBuildingById, policy);
+    person.dailyTravelDelayMinutes = mobilityOutcome?.delayMinutes ?? 0;
+    person.commuteCost = mobilityOutcome
+      ? round(
+          commuteCost(person, updatedBuildingById, policy)
+            + mobilityOutcome.extraTransportCost,
+        )
+      : commuteCost(person, updatedBuildingById, policy);
     person.dailySpending = round(perPersonHousing + goods + services + person.commuteCost);
   }
 
@@ -474,7 +701,8 @@ function advanceDetailedDay(
       educationNeed: person.needs.education,
       communityNeed: person.needs.community,
       recreationNeed: person.needs.recreation,
-      travelMinutes: sum(person.schedule.map((item) => item.travelMinutes)),
+      travelMinutes: sum(person.schedule.map((item) => item.travelMinutes))
+        + person.dailyTravelDelayMinutes,
       needsScore: person.happinessComponents.needs,
       financialSecurityScore: person.happinessComponents.financialSecurity,
       employmentScore: person.happinessComponents.employment,
@@ -548,6 +776,7 @@ function buildingHistoryPoint(
     customers: accounting.customers,
     externalCustomers: accounting.externalCustomers,
     goodsDemanded: accounting.goodsDemanded,
+    goodsProduced: accounting.goodsProduced,
     goodsSold: accounting.goodsSold,
     serviceDemand: accounting.serviceDemand,
     serviceDelivered: accounting.serviceDelivered,
@@ -696,7 +925,10 @@ function allocateLabor(
   recordEvents: boolean,
 ): void {
   const eligible = people.filter((person) => person.age >= 18 && person.age < 68 && person.employment !== "student");
-  const requiredWorkers = new Map(buildings.map((building) => [building.id, requiredWorkersFor(building, day)]));
+  const requiredWorkers = new Map(buildings.map((building) => [
+    building.id,
+    building.developmentStage === "construction" ? 0 : requiredWorkersFor(building, day),
+  ]));
   const externalJobSlots = Math.round(
     eligible.length * 0.16 * clamp(policy.externalJobCapacityScale ?? 1, 0.45, 1.4),
   );
@@ -796,6 +1028,7 @@ function advanceBuilding(
   events: EntityEvent[],
   recordEvents: boolean,
 ): DetailedBuilding {
+  if (building.developmentStage === "construction") return building;
   const previous = building.accounting;
   let closedDaysRemaining = Math.max(0, building.closedDaysRemaining - 1);
   const closed = closedDaysRemaining > 0;
@@ -811,24 +1044,47 @@ function advanceBuilding(
   const privateBusiness = !civic && !housing;
   const rentIncome = housing ? round(collectedRent) : 0;
   const operatingScale = closed ? 0 : dynamicOperatingScale(previous, privateBusiness);
-  const plannedMaintenance = housing
-    ? Math.max(maintenanceCostFor(building), rentIncome * 0.88)
-    : maintenanceCostFor(building);
-  const maintenanceDeferralRate = privateBusiness && (
+  const plannedMaintenance = maintenanceCostFor(building);
+  const housingMaintenanceBudget = rentIncome + Math.max(0, building.cashReserve) / 90;
+  const housingDeferralRate = housing
+    ? clamp(1 - housingMaintenanceBudget / Math.max(1, plannedMaintenance), 0, 0.55)
+    : 0;
+  const businessDeferralRate = privateBusiness && (
     previous.lossStreak >= 2 || building.cashReserve < plannedMaintenance * 8
   ) ? clamp(0.1 + previous.lossStreak * 0.04, 0, 0.55) : 0;
-  const maintenanceCost = round(plannedMaintenance * (1 - maintenanceDeferralRate));
-  const maintenanceRecovery = previous.profit > 0
-    ? Math.min(previous.maintenanceDeferred, plannedMaintenance * 0.12)
+  const maintenanceDeferralRate = housing ? housingDeferralRate : businessDeferralRate;
+  const mothballScale = building.function === "parking" && employees === 0
+    ? 0.1
+    : 1;
+  const routineMaintenanceCost = plannedMaintenance
+    * (1 - maintenanceDeferralRate)
+    * mothballScale;
+  const maintenanceRecovery = previous.profit > 0 && building.cashReserve > plannedMaintenance * 2
+    ? Math.min(previous.maintenanceDeferred, plannedMaintenance * 0.08)
     : 0;
+  const retailOperatingOverhead = building.function === "retail"
+    ? previous.salesRevenue * 0.05
+    : 0;
+  const maintenanceCost = round(
+    routineMaintenanceCost
+      + (housing ? maintenanceRecovery : 0)
+      + retailOperatingOverhead,
+  );
   const maintenanceDeferred = round(Math.max(
     0,
-    previous.maintenanceDeferred + plannedMaintenance - maintenanceCost - maintenanceRecovery,
+    previous.maintenanceDeferred + plannedMaintenance - routineMaintenanceCost - maintenanceRecovery,
   ));
+  const routineCoverage = routineMaintenanceCost / Math.max(1, plannedMaintenance);
+  const repairRate = maintenanceRecovery / Math.max(1, plannedMaintenance);
   const buildingCondition = round(clamp(
-    previous.buildingCondition
-      - maintenanceDeferralRate * 0.025
-      + (maintenanceDeferralRate === 0 ? 0.0025 : 0),
+    housing
+      ? previous.buildingCondition
+        - (1 - routineCoverage) * 0.035
+        + repairRate * 0.06
+        + (routineCoverage >= 0.999 && previous.maintenanceDeferred === 0 ? 0.0015 : 0)
+      : previous.buildingCondition
+        - maintenanceDeferralRate * 0.025
+        + (maintenanceDeferralRate === 0 ? 0.0025 : 0),
     0.55,
     1,
   ));
@@ -855,10 +1111,13 @@ function advanceBuilding(
   const externalPriceResponse = basePrice > 0
     ? clamp(Math.pow(basePrice / Math.max(basePrice * 0.55, priorPrice), 1.35), 0.35, 1.35)
     : 1;
+  const externalCustomerCapacity = building.function === "parking"
+    ? clamp(Math.round(building.width * building.depth * building.floors / 1_200), 8, 36)
+    : building.jobCapacity;
   const externalCustomers = closed || !isConsumerDestination(building.function)
     ? 0
     : Math.round(
-        building.jobCapacity
+        externalCustomerCapacity
           * clamp((accessibility.customers - 48) / 42, 0, 1)
           * externalPriceResponse
           * operatingScale
@@ -873,17 +1132,19 @@ function advanceBuilding(
     : 1;
   const retailLocalDemand = scheduledRetailUnits * servedLocalRatio;
   const retailExternalDemand = externalCustomers * 4.6;
-  const projectedUnits = building.function === "retail"
+  const desiredOutput = building.function === "retail"
     ? retailLocalDemand + retailExternalDemand
     : building.function === "office" ? activeWorkers * 1.45 * operatingScale * buildingCondition
       : building.function === "industrial" ? activeWorkers * 5.3 * operatingScale * buildingCondition
-        : building.function === "parking" ? (activeWorkers * 5 + 5) * operatingScale
+        : building.function === "parking" ? customers
           : building.function === "culture" || building.function === "recreation"
             ? scheduledPaidServiceVisits * servedLocalRatio + externalCustomers
             : 0;
   const requestedSupplies = building.function === "retail"
-    ? clamp(Math.max(0, projectedUnits - building.goodsInventory * 0.3), 2, 85)
-    : (8 + building.jobCapacity * 1.7) * operatingScale;
+    ? clamp(Math.max(0, desiredOutput - building.goodsInventory * 0.3), 2, 85)
+    : building.function === "industrial"
+      ? clamp(Math.max(0, desiredOutput / RAW_TO_WHOLESALE_YIELD * 3 - building.goodsInventory), 2, 85)
+      : (8 + building.jobCapacity * 1.7) * operatingScale;
   const deliverableSupplies = requiresSupplies(building.function)
     ? requestedSupplies * laborCapacity * deliveryReliability
     : 0;
@@ -907,16 +1168,33 @@ function advanceBuilding(
       * congestionMultiplier
       * accessCostMultiplier,
   );
-  const serviceDemand = civic ? scheduledCustomers + building.residentIds.length * 0.05 : 0;
+  const availableIndustrialInputs = building.function === "industrial"
+    ? building.goodsInventory + goodsReceived
+    : 0;
+  const goodsProduced = building.function === "industrial"
+    ? round(Math.min(desiredOutput, availableIndustrialInputs * RAW_TO_WHOLESALE_YIELD))
+    : 0;
+  const serviceDemand = civic
+    ? scheduledCustomers + building.residentIds.length * 0.05
+    : building.function === "office" || building.function === "parking" ? desiredOutput : 0;
   const serviceDelivered = civic
     ? round(serviceDemand * laborCapacity * clamp(accessibility.services / 82, 0.55, 1.05))
-    : 0;
+    : building.function === "office"
+      ? round(desiredOutput)
+      : building.function === "parking"
+        ? round(Math.min(serviceDemand, activeWorkers * 14 * operatingScale * buildingCondition))
+        : 0;
   const serviceQuality = civic && serviceDemand > 0 ? clamp(serviceDelivered / serviceDemand, 0, 1) : civic ? staffingRatio : 0;
   const projectedOperatingCost = round(dailyWages + supplyCost + transportCost + maintenanceCost);
+  const billableUnits = building.function === "industrial"
+    ? goodsProduced
+    : building.function === "office" || building.function === "parking"
+      ? serviceDelivered
+      : desiredOutput;
   const unitPrice = round(dynamicPrice(
     building,
     previous,
-    projectedUnits,
+    billableUnits,
     projectedOperatingCost,
     targetMargin,
     city,
@@ -924,21 +1202,21 @@ function advanceBuilding(
   let goodsSold = 0;
   let localSalesRevenue = 0;
   let externalSalesRevenue = 0;
-  if (!closed && (activeStaffingRatio > 0 || building.function === "parking")) {
+  if (!closed && activeStaffingRatio > 0) {
     if (building.function === "retail") {
-      goodsSold = round(Math.min(building.goodsInventory + goodsReceived, projectedUnits));
-      const fulfillment = projectedUnits > 0 ? goodsSold / projectedUnits : 0;
+      goodsSold = round(Math.min(building.goodsInventory + goodsReceived, desiredOutput));
+      const fulfillment = desiredOutput > 0 ? goodsSold / desiredOutput : 0;
       localSalesRevenue = round(retailLocalDemand * fulfillment * unitPrice);
       externalSalesRevenue = round(retailExternalDemand * fulfillment * unitPrice);
     } else if (building.function === "office") {
-      goodsSold = round(projectedUnits);
-      externalSalesRevenue = round(goodsSold * unitPrice);
+      externalSalesRevenue = round(serviceDelivered * unitPrice);
     } else if (building.function === "industrial") {
-      goodsSold = round(projectedUnits);
+      goodsSold = goodsProduced;
       externalSalesRevenue = round(goodsSold * unitPrice);
     } else if (building.function === "parking") {
-      goodsSold = round(projectedUnits);
-      externalSalesRevenue = round(goodsSold * unitPrice);
+      const externalShare = customers > 0 ? externalCustomers / customers : 0;
+      localSalesRevenue = round(serviceDelivered * (1 - externalShare) * unitPrice);
+      externalSalesRevenue = round(serviceDelivered * externalShare * unitPrice);
     } else if (building.function === "culture" || building.function === "recreation") {
       const localPaidVisits = scheduledPaidServiceVisits * servedLocalRatio;
       localSalesRevenue = round(localPaidVisits * unitPrice);
@@ -1015,6 +1293,14 @@ function advanceBuilding(
     buildingCondition,
     maintenanceDeferred,
   );
+  const rawInputsUsed = building.function === "industrial"
+    ? goodsProduced / RAW_TO_WHOLESALE_YIELD
+    : 0;
+  const goodsInventory = building.function === "retail"
+    ? building.goodsInventory + goodsReceived - goodsSold
+    : building.function === "industrial"
+      ? building.goodsInventory + goodsReceived - rawInputsUsed
+      : 0;
 
   return {
     ...building,
@@ -1022,7 +1308,7 @@ function advanceBuilding(
     rentDaily,
     cashReserve,
     closedDaysRemaining,
-    goodsInventory: round(Math.max(0, building.goodsInventory + goodsReceived - goodsSold)),
+    goodsInventory: round(Math.max(0, goodsInventory)),
     accounting: {
       status,
       requiredWorkers,
@@ -1056,7 +1342,8 @@ function advanceBuilding(
       goodsReceived,
       localSupplies,
       importedSupplies,
-      goodsDemanded: round(projectedUnits),
+      goodsDemanded: round(desiredOutput),
+      goodsProduced,
       goodsSold,
       workforceChange: round(workforceChange),
       lossStreak,
@@ -1104,7 +1391,8 @@ function updateNeedsAndMigration(
     0,
     100,
   );
-  const travelMinutes = sum(person.schedule.map((scheduleItem) => scheduleItem.travelMinutes));
+  const travelMinutes = sum(person.schedule.map((scheduleItem) => scheduleItem.travelMinutes))
+    + person.dailyTravelDelayMinutes;
   const commuteBurden = person.commuteCost / Math.max(30, person.dailyWage || household.dailyIncome / Math.max(1, household.memberIds.length));
   const travelScore = clamp(100 - travelMinutes * 1.05 - commuteBurden * 95, 8, 98);
   person.happinessComponents = {
@@ -1219,11 +1507,12 @@ function createSchedule(
 }
 
 function serviceBuildings(buildings: readonly DetailedBuilding[]) {
+  const open = buildings.filter((building) => building.developmentStage !== "construction");
   return {
-    retail: buildings.filter((building) => building.function === "retail"),
-    library: buildings.filter((building) => building.function === "library" || building.function === "culture"),
-    clinic: buildings.filter((building) => building.function === "clinic"),
-    recreation: buildings.filter((building) => building.function === "recreation" || building.function === "culture"),
+    retail: open.filter((building) => building.function === "retail"),
+    library: open.filter((building) => building.function === "library" || building.function === "culture"),
+    clinic: open.filter((building) => building.function === "clinic"),
+    recreation: open.filter((building) => building.function === "recreation" || building.function === "culture"),
   };
 }
 
@@ -1308,6 +1597,7 @@ function activityAt(schedule: readonly PersonScheduleItem[], minute: number): Pe
 function countScheduledDemand(
   people: readonly DetailedPerson[],
   households: ReadonlyMap<string, DetailedHousehold>,
+  mobilityOutcomes?: ReadonlyMap<string, PersonMobilityOutcome>,
 ): ScheduledDemand {
   const visits = new Map<string, number>();
   const retailUnits = new Map<string, number>();
@@ -1319,6 +1609,9 @@ function countScheduledDemand(
     map.set(buildingId, (map.get(buildingId) ?? 0) + amount);
   };
   for (const person of people) {
+    const outcome = mobilityOutcomes?.get(person.id);
+    const visitCompletion = outcome?.visitCompletionRatio ?? 1;
+    const attendance = outcome?.attendanceRatio ?? 1;
     const financialStatus = households.get(person.householdId)?.financialStatus ?? "stable";
     const purchaseScale: Record<HouseholdFinancialStatus, number> = {
       stable: 1,
@@ -1334,19 +1627,22 @@ function countScheduledDemand(
     };
     for (const visit of person.schedule) {
       if (["shop", "library", "healthcare", "leisure", "school"].includes(visit.activity)) {
-        add(visits, visit.buildingId);
+        add(visits, visit.buildingId, visitCompletion);
       }
       if (visit.activity === "shop") {
-        const units = retailPurchaseUnits(person) * purchaseScale[financialStatus];
+        const units = retailPurchaseUnits(person) * purchaseScale[financialStatus]
+          * visitCompletion;
         add(retailUnits, visit.buildingId, units);
         retailUnitsByPerson.set(person.id, units);
       }
       if (visit.activity === "leisure") {
-        const weight = paidServiceScale[financialStatus];
+        const weight = paidServiceScale[financialStatus] * visitCompletion;
         add(paidServiceVisits, visit.buildingId, weight);
         paidServiceWeightByPerson.set(person.id, weight);
       }
-      if (visit.activity === "work" && visit.buildingId !== OUTSIDE_WORK) add(activeWorkers, visit.buildingId);
+      if (visit.activity === "work" && visit.buildingId !== OUTSIDE_WORK) {
+        add(activeWorkers, visit.buildingId, attendance);
+      }
     }
   }
   return {
@@ -1415,10 +1711,22 @@ function projectedDailyWage(
 ): number {
   const works = person.schedule.some((scheduleItem) => scheduleItem.activity === "work");
   if (!works) return 0;
-  if (person.employment === "external") return externalDailyWage(policy);
+  const sampledOutcome = policy.mobilityOutcomesByPerson?.get(person.id);
+  const outcome = sampledOutcome && (
+    sampledOutcome.delayMinutes > 0
+    || sampledOutcome.extraTransportCost > 0
+    || sampledOutcome.attendanceRatio < 1
+  ) ? sampledOutcome : undefined;
+  const attendance = outcome?.attendanceRatio ?? 1;
+  if (person.employment === "external") {
+    return outcome
+      ? round(externalDailyWage(policy) * attendance)
+      : externalDailyWage(policy);
+  }
   const workplace = person.workBuildingId ? buildings.get(person.workBuildingId) : undefined;
   if (!workplace || workplace.accounting.status === "closed") return 0;
-  return workplace.accounting.averageWage || baseWage(workplace.function);
+  const wage = workplace.accounting.averageWage || baseWage(workplace.function);
+  return outcome ? round(wage * attendance) : wage;
 }
 
 function financialStatusFor(
@@ -1642,7 +1950,11 @@ function travelTime(
   return Math.max(2, Math.round(baseMinutes * delayMultiplier));
 }
 
-function jobCapacityFor(buildingFunction: BuildingFunction, floorArea: number, source: "block" | "landmark"): number {
+function jobCapacityFor(
+  buildingFunction: BuildingFunction,
+  floorArea: number,
+  source: EntityBuildingDefinition["source"],
+): number {
   if (buildingFunction === "housing") return 0;
   if (buildingFunction === "parking") return 1;
   const divisor = buildingFunction === "retail" ? 6_000
@@ -1651,7 +1963,9 @@ function jobCapacityFor(buildingFunction: BuildingFunction, floorArea: number, s
         : 6_000;
   const maximum = source === "landmark"
     ? buildingFunction === "university" || buildingFunction === "clinic" ? 12 : 10
-    : buildingFunction === "retail" ? 5 : buildingFunction === "office" ? 7 : 6;
+    : source === "expansion"
+      ? buildingFunction === "retail" ? 12 : buildingFunction === "office" ? 16 : 14
+      : buildingFunction === "retail" ? 5 : buildingFunction === "office" ? 7 : 6;
   return clamp(Math.round(floorArea / divisor), source === "landmark" ? 4 : 2, maximum);
 }
 
@@ -1660,12 +1974,16 @@ function baseWage(buildingFunction: BuildingFunction): number {
   if (buildingFunction === "university" || buildingFunction === "office") return 205;
   if (buildingFunction === "school" || buildingFunction === "library") return 176;
   if (buildingFunction === "industrial") return 168;
+  if (buildingFunction === "parking") return 120;
   return 142;
 }
 
 function maintenanceCostFor(building: Readonly<DetailedBuilding>): number {
   if (building.function === "housing") {
-    return round(building.residentCapacity / 2.4 * building.rentDaily * 0.68);
+    const unitScale = building.residentCapacity * 17;
+    const footprintScale = Math.min(70, Math.sqrt(building.width * building.depth) * 0.45);
+    const floorScale = Math.min(40, building.floors * 1.5);
+    return round(32 + unitScale + footprintScale + floorScale);
   }
   const base = building.function === "industrial" ? 32
     : building.function === "parking" ? 14
@@ -1724,6 +2042,7 @@ function emptyAccounting(requiredWorkers: number): BuildingAccounting {
     localSupplies: 0,
     importedSupplies: 0,
     goodsDemanded: 0,
+    goodsProduced: 0,
     goodsSold: 0,
     workforceChange: 0,
     lossStreak: 0,

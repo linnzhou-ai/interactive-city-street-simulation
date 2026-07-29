@@ -5,24 +5,47 @@ import {
   type BuildingIssueCategory,
 } from "./core/buildingIssues";
 import { Simulation } from "./core/simulation";
+import { deriveBuildingRole } from "./core/buildingActivity";
+import {
+  buildingKindForFunction,
+  defaultFunctionForKind,
+  functionForPlacedBuilding,
+} from "./core/expansionEconomy";
+import {
+  EditHistory,
+  PROJECT_STATE_VERSION,
+  parseProjectSnapshot,
+  type EditorSnapshot,
+  type ProjectSnapshot,
+} from "./core/projectState";
+import { getPhillyCrashRiskProfile } from "./data/phillyCrashProfile";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
   AppMode,
+  BuildingKind,
+  BuildWorkspace,
   BuildTool,
   CameraMode,
   DesignImpact,
   DistrictFeature,
   EnvironmentMode,
+  ExpansionRoad,
+  ExpansionStreetObject,
+  ExpansionStreetObjectKind,
   FeatureDesign,
   LaneDirection,
   ManualSignalTarget,
   MapOverlayMode,
+  MobilityDetailMode,
+  PlacedBuilding,
   SceneHoverSelection,
   SignalControlMode,
   SignalTiming,
+  WeatherMode,
 } from "./models/types";
 import type {
   BuildingConnectionKind,
+  BuildingFunction,
   BuildingHistoryPoint,
   BuildingTrafficAttribution,
   DetailedBuilding,
@@ -56,6 +79,40 @@ const runButton = requireElement<HTMLButtonElement>("run-button");
 const pauseButton = requireElement<HTMLButtonElement>("pause-button");
 const resetButton = requireElement<HTMLButtonElement>("reset-button");
 const resetDesignButton = requireElement<HTMLButtonElement>("reset-design-button");
+const saveProjectButton = requireElement<HTMLButtonElement>("save-project-button");
+const loadProjectButton = requireElement<HTMLButtonElement>("load-project-button");
+const exportProjectButton = requireElement<HTMLButtonElement>("export-project-button");
+const importProjectButton = requireElement<HTMLButtonElement>("import-project-button");
+const importProjectFile = requireElement<HTMLInputElement>("import-project-file");
+const undoEditButton = requireElement<HTMLButtonElement>("undo-edit-button");
+const redoEditButton = requireElement<HTMLButtonElement>("redo-edit-button");
+const cityEditWorkspace = requireElement<HTMLButtonElement>("city-edit-workspace");
+const expansionWorkspace = requireElement<HTMLButtonElement>("expansion-workspace");
+const buildWorkspaceHelp = requireElement<HTMLElement>("build-workspace-help");
+const buildSelectionName = requireElement<HTMLElement>("build-selection-name");
+const buildActionStatus = requireElement<HTMLElement>("build-action-status");
+const drawExpansionRoadButton = requireElement<HTMLButtonElement>("draw-expansion-road-button");
+const placeExpansionCrosswalkButton = requireElement<HTMLButtonElement>("place-expansion-crosswalk-button");
+const placeExpansionSignalButton = requireElement<HTMLButtonElement>("place-expansion-signal-button");
+const eraseExpansionButton = requireElement<HTMLButtonElement>("erase-expansion-button");
+const expansionRoadCount = requireElement<HTMLElement>("expansion-road-count");
+const expansionRoadEditor = requireElement<HTMLElement>("expansion-road-editor");
+const deleteExpansionRoadButton = requireElement<HTMLButtonElement>("delete-expansion-road-button");
+const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
+const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
+const buildingEditor = requireElement<HTMLElement>("building-editor");
+const buildingPositionOutput = requireElement<HTMLElement>("building-position-output");
+const selectedBuildingKind = requireElement<HTMLSelectElement>("selected-building-kind");
+const selectedBuildingFloors = requireElement<HTMLInputElement>("selected-building-floors");
+const selectedBuildingColor = requireElement<HTMLInputElement>("selected-building-color");
+const rotateBuildingButton = requireElement<HTMLButtonElement>("rotate-building-button");
+const deleteBuildingButton = requireElement<HTMLButtonElement>("delete-building-button");
+const buildingResidentsOutput = requireElement<HTMLElement>("building-residents-output");
+const buildingJobsOutput = requireElement<HTMLElement>("building-jobs-output");
+const buildingVisitorsOutput = requireElement<HTMLElement>("building-visitors-output");
+const buildingFreightOutput = requireElement<HTMLElement>("building-freight-output");
+const buildingBuildTimeOutput = requireElement<HTMLElement>("building-build-time-output");
+const buildingProjectCostOutput = requireElement<HTMLElement>("building-project-cost-output");
 const timeRateControl = requireElement<HTMLInputElement>("time-rate-control");
 const timeRateOutput = requireElement<HTMLOutputElement>("time-rate-output");
 const vehicleVolumeOutput = requireElement<HTMLOutputElement>("vehicle-volume-output");
@@ -68,6 +125,12 @@ const freightTripShare = requireElement<HTMLElement>("freight-trip-share");
 const speedLimitControl = requireElement<HTMLInputElement>("speed-limit-control");
 const signalCycleControl = requireElement<HTMLInputElement>("signal-cycle-control");
 const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-control");
+const timeOfDayControl = requireElement<HTMLInputElement>("time-of-day-control");
+const timeOfDayOutput = requireElement<HTMLOutputElement>("time-of-day-output");
+const weatherControl = requireElement<HTMLSelectElement>("weather-control");
+const violationRiskOutput = requireElement<HTMLElement>("violation-risk-output");
+const pedestrianMarkersControl = requireElement<HTMLInputElement>("pedestrian-markers-control");
+const vehicleMarkersControl = requireElement<HTMLInputElement>("vehicle-markers-control");
 const signalEditor = requireElement<HTMLElement>("signal-editor");
 const signalModeControl = requireElement<HTMLSelectElement>("signal-mode-control");
 const signalNorthSouthGreen = requireElement<HTMLInputElement>("signal-ns-green");
@@ -93,6 +156,9 @@ const vehicleTime = requireElement<HTMLElement>("vehicle-time");
 const pedestrianWait = requireElement<HTMLElement>("pedestrian-wait");
 const conflicts = requireElement<HTMLElement>("conflicts");
 const throughput = requireElement<HTMLElement>("throughput");
+const buildingArrivals = requireElement<HTMLElement>("building-arrivals");
+const trafficViolations = requireElement<HTMLElement>("traffic-violations");
+const jaywalkingViolations = requireElement<HTMLElement>("jaywalking-violations");
 const cityOutput = requireElement<HTMLElement>("city-output");
 const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
 const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
@@ -146,6 +212,15 @@ const searchRestoreButton = requireElement<HTMLButtonElement>("search-restore-bu
 const buildToolButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>("[data-build-tool]"),
 );
+const buildingToolButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-building-tool]"),
+);
+const expansionRoadToolButtons = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-expansion-road-tool]"),
+);
+const buildWorkspaceSections = Array.from(
+  document.querySelectorAll<HTMLElement>("[data-build-workspace-section]"),
+);
 
 const TIME_RATE_PRESETS: readonly {
   label: string;
@@ -153,14 +228,19 @@ const TIME_RATE_PRESETS: readonly {
   timeHorizon: TimeHorizon;
   description: string;
 }[] = [
-  { label: "30 min/sec", simulationSpeed: 0.5, timeHorizon: "day", description: "Slower pacing for watching street-level movement." },
-  { label: "1 hr/sec", simulationSpeed: 1, timeHorizon: "day", description: "Balanced pacing for observing daily activity." },
-  { label: "6 hr/sec", simulationSpeed: 1, timeHorizon: "week", description: "Weekly pacing keeps daily schedules visible." },
-  { label: "1 day/sec", simulationSpeed: 1, timeHorizon: "month", description: "Monthly pacing emphasizes economic changes." },
-  { label: "1 week/sec", simulationSpeed: 1, timeHorizon: "year", description: "Long-term pacing emphasizes migration and land value." },
+  { label: "Real time", simulationSpeed: 1 / 3_600, timeHorizon: "day", description: "Residents and the city clock move at real-world speed." },
+  { label: "10 sec/sec", simulationSpeed: 1 / 360, timeHorizon: "day", description: "Watch residents complete each part of their daily routes." },
+  { label: "1 min/sec", simulationSpeed: 1 / 60, timeHorizon: "day", description: "Daily movement stays visible while routines progress more quickly." },
+  { label: "30 min/sec", simulationSpeed: 0.5, timeHorizon: "day", description: "Fast daily observation with continuous sampled movement." },
+  { label: "6 hr/sec", simulationSpeed: 1, timeHorizon: "week", description: "Schedules are deterministically interpolated between destinations." },
+  { label: "1 day/sec", simulationSpeed: 1, timeHorizon: "month", description: "Completed trips feed daily attendance, spending, and delay outcomes." },
+  { label: "1 week/sec", simulationSpeed: 1, timeHorizon: "year", description: "Skipped days resolve as outcomes; the map shows the current sampled instant." },
 ];
 
 const simulation = new Simulation();
+const initialTimeRate = TIME_RATE_PRESETS[Number(timeRateControl.value)]!;
+simulation.setSimulationSpeed(initialTimeRate.simulationSpeed);
+simulation.setTimeHorizon(initialTimeRate.timeHorizon);
 simulation.setSimulationSeed(createSessionSeed());
 simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
 const renderer = new ThreeRenderer(canvas);
@@ -177,8 +257,24 @@ const visibleFlowKinds = new Set<BuildingConnectionKind>([
 let lastLiveHistorySlot = -1;
 installStatTooltips(statTooltip, resolveStatInsight);
 const designs = new Map<string, FeatureDesign>();
+const placedBuildings = new Map<string, PlacedBuilding>();
+const expansionRoads = new Map<string, ExpansionRoad>();
+const expansionStreetObjects = new Map<string, ExpansionStreetObject>();
+const editHistory = new EditHistory();
+const PROJECT_SAVE_KEY = "penn-campus-simulator:linn-project";
 const features = renderer.getFeatures();
 let appMode: AppMode = "simulate";
+let buildWorkspace: BuildWorkspace = "city-edit";
+let activeBuildingTool: BuildingKind | null = null;
+let expansionRoadToolActive = false;
+let expansionEraseToolActive = false;
+let activeExpansionStreetObjectTool: ExpansionStreetObjectKind | null = null;
+let selectedPlacedBuildingId: string | null = null;
+let selectedExpansionRoadId: string | null = null;
+let movingBuildingId: string | null = null;
+let nextBuildingId = 1;
+let nextExpansionRoadId = 1;
+let nextExpansionStreetObjectId = 1;
 let cameraMode: CameraMode = "orbit";
 let metricView: "baseline" | "modified" = "modified";
 let selectedFeature: DistrictFeature | undefined =
@@ -200,6 +296,7 @@ let walkPlacementActive = false;
 let walkMarkerPointerId: number | null = null;
 let walkMarkerMoved = false;
 let walkMarkerStart = { x: 0, y: 0 };
+let restoreInspectorAfterBuild = false;
 let previousTimestamp = performance.now();
 
 buildModeButton.addEventListener("click", () => {
@@ -214,6 +311,55 @@ simulateModeButton.addEventListener("click", () => {
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
 flyCameraButton.addEventListener("click", () => setCameraMode("fly"));
 walkCameraButton.addEventListener("click", beginWalkPlacement);
+undoEditButton.addEventListener("click", undoEdit);
+redoEditButton.addEventListener("click", redoEdit);
+saveProjectButton.addEventListener("click", saveProject);
+loadProjectButton.addEventListener("click", loadProject);
+exportProjectButton.addEventListener("click", exportProject);
+importProjectButton.addEventListener("click", () => importProjectFile.click());
+importProjectFile.addEventListener("change", () => void importProject());
+cityEditWorkspace.addEventListener("click", () => setBuildWorkspace("city-edit"));
+expansionWorkspace.addEventListener("click", () => setBuildWorkspace("expansion"));
+drawExpansionRoadButton.addEventListener("click", () => {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  setExpansionRoadToolActive(!expansionRoadToolActive);
+});
+placeExpansionCrosswalkButton.addEventListener("click", () =>
+  selectExpansionStreetObjectTool("crosswalk"),
+);
+placeExpansionSignalButton.addEventListener("click", () =>
+  selectExpansionStreetObjectTool("traffic-signal"),
+);
+eraseExpansionButton.addEventListener("click", () => {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  setExpansionEraseToolActive(!expansionEraseToolActive);
+});
+
+for (const button of buildingToolButtons) {
+  button.addEventListener("click", () => {
+    const kind = button.dataset.buildingTool;
+    if (isBuildingKind(kind)) selectBuildingTool(kind);
+  });
+}
+
+for (const button of expansionRoadToolButtons) {
+  button.addEventListener("click", () => {
+    const tool = button.dataset.expansionRoadTool;
+    if (isBuildTool(tool)) applyExpansionRoadTool(tool);
+  });
+}
+
+buildingFloorsControl.addEventListener("change", () => {
+  buildingFloorsControl.value = String(
+    clampFloors(Number(buildingFloorsControl.value)),
+  );
+});
+selectedBuildingFloors.addEventListener("change", updateSelectedBuilding);
+selectedBuildingColor.addEventListener("change", updateSelectedBuilding);
+selectedBuildingKind.addEventListener("change", updateSelectedBuilding);
+rotateBuildingButton.addEventListener("click", rotateSelectedBuilding);
+deleteBuildingButton.addEventListener("click", deleteSelectedBuilding);
+deleteExpansionRoadButton.addEventListener("click", deleteSelectedExpansionRoad);
 
 walkStartMarker.addEventListener("pointerdown", (event) => {
   if (!walkPlacementActive) return;
@@ -280,9 +426,26 @@ resetButton.addEventListener("click", () => {
 });
 
 resetDesignButton.addEventListener("click", () => {
+  if (
+    designs.size === 0 &&
+    placedBuildings.size === 0 &&
+    expansionRoads.size === 0 &&
+    expansionStreetObjects.size === 0
+  ) return;
+  recordEdit();
   designs.clear();
+  placedBuildings.clear();
+  expansionRoads.clear();
+  expansionStreetObjects.clear();
+  selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = null;
+  nextBuildingId = 1;
+  nextExpansionRoadId = 1;
+  nextExpansionStreetObjectId = 1;
+  syncExpansion();
   syncDesign();
-  selectionStatus.textContent = "All campus street interventions were reset.";
+  finishEdit();
+  setBuildFeedback("All street edits and expansion items were reset.", "success");
 });
 
 timeRateControl.addEventListener("input", () => {
@@ -312,6 +475,24 @@ simulationSeedControl.addEventListener("change", () => {
   updateInterface();
 });
 
+timeOfDayControl.addEventListener("input", () => {
+  simulation.setTimeOfDay(Number(timeOfDayControl.value));
+  syncEnvironmentControls();
+});
+
+weatherControl.addEventListener("change", () => {
+  simulation.setWeather(weatherControl.value as WeatherMode);
+  syncEnvironmentControls();
+});
+
+pedestrianMarkersControl.addEventListener("change", () => {
+  renderer.setPedestrianMarkersVisible(pedestrianMarkersControl.checked);
+});
+
+vehicleMarkersControl.addEventListener("change", () => {
+  renderer.setVehicleMarkersVisible(vehicleMarkersControl.checked);
+});
+
 highContrastControl.addEventListener("change", applyDisplayAccessibility);
 reducedMotionControl.addEventListener("change", applyDisplayAccessibility);
 uiScaleControl.addEventListener("change", applyDisplayAccessibility);
@@ -323,7 +504,7 @@ signalModeControl.addEventListener("change", () => {
     signalModeControl.value as SignalControlMode,
   );
   updateSelectedSignalStatus();
-  selectionStatus.textContent = `${formatSignalMode(signalModeControl.value as SignalControlMode)} control enabled at ${selectedFeature.name}.`;
+  setBuildFeedback(`${formatSignalMode(signalModeControl.value as SignalControlMode)} control enabled at ${selectedFeature.name}.`, "success");
 });
 
 for (const input of [
@@ -350,8 +531,12 @@ for (const button of buildToolButtons) {
   button.addEventListener("click", () => {
     const tool = button.dataset.buildTool;
     if (isBuildTool(tool)) {
+      if (buildWorkspace !== "city-edit") setBuildWorkspace("city-edit");
+      if (!validateBuildToolTarget(tool)) return;
+      recordEdit();
       captureInterventionBaseline();
       applyBuildTool(tool);
+      finishEdit();
       interventionFeedback = interventionPreview(tool);
       entityInterfaceSignature = "";
       updateEntityInterface();
@@ -392,6 +577,26 @@ document.addEventListener("pointerdown", (event) => {
   if (!notificationCenter.contains(event.target)) setNotificationOpen(false);
 });
 document.addEventListener("keydown", (event) => {
+  const commandKey = event.metaKey || event.ctrlKey;
+  if (
+    commandKey &&
+    event.key.toLowerCase() === "z" &&
+    !isTextEntryTarget(event.target)
+  ) {
+    event.preventDefault();
+    if (event.shiftKey) redoEdit();
+    else undoEdit();
+    return;
+  }
+  if (
+    event.key.toLowerCase() === "r" &&
+    selectedPlacedBuildingId &&
+    !isTextEntryTarget(event.target)
+  ) {
+    event.preventDefault();
+    rotateSelectedBuilding();
+    return;
+  }
   if (event.key === "/" && !isTextEntryTarget(event.target)) {
     event.preventDefault();
     locationSearch.hidden = false;
@@ -482,8 +687,12 @@ entityInspector.addEventListener("click", (event) => {
       simulation.pause();
       setAppMode("build");
     }
+    if (buildWorkspace !== "city-edit") setBuildWorkspace("city-edit");
+    if (!validateBuildToolTarget(buildTool)) return;
+    recordEdit();
     captureInterventionBaseline();
     applyBuildTool(buildTool);
+    finishEdit();
     interventionFeedback = interventionPreview(buildTool);
     entityInterfaceSignature = "";
     updateEntityInterface();
@@ -636,6 +845,97 @@ renderer.setEntityHoverHandler((selection, clientX, clientY) => {
   updateEntityTooltip(selection, clientX, clientY);
 });
 
+renderer.setBuildingInteractionHandlers({
+  place: placeBuilding,
+  select: (id) => {
+    if (appMode === "simulate" && id) {
+      selectedPlacedBuildingId = id;
+      selectedEntity = { kind: "building", id };
+      selectedTrafficFeature = null;
+      selectedFeature = undefined;
+      inspectorTab = "overview";
+      renderer.setSelectedPlacedBuilding(id);
+      renderer.setSelectedEntity(selectedEntity);
+      syncEntitySelectionState();
+      entityInterfaceSignature = "";
+      updateEntityInterface();
+      return;
+    }
+    selectPlacedBuilding(id);
+  },
+  move: (id, x, z, rotation, finished) => {
+    if (movingBuildingId !== id) {
+      recordEdit();
+      movingBuildingId = id;
+    }
+    const building = placedBuildings.get(id);
+    if (building) {
+      placedBuildings.set(id, { ...building, x, z, rotation });
+      if (selectedPlacedBuildingId === id) {
+        buildingPositionOutput.textContent = formatBuildingPosition(x, z);
+      }
+    }
+    if (finished) {
+      movingBuildingId = null;
+      syncExpansion();
+      finishEdit();
+    }
+  },
+});
+
+renderer.setExpansionRoadInteractionHandlers({
+  create: (roadData) => {
+    if (appMode !== "build" || buildWorkspace !== "expansion") return;
+    const validation = renderer.validateExpansionRoad(roadData);
+    if (!validation.valid) {
+      setBuildFeedback(validation.reason, "error");
+      return;
+    }
+    recordEdit();
+    const road: ExpansionRoad = {
+      id: `expansion-road-${nextExpansionRoadId++}`,
+      ...roadData,
+    };
+    expansionRoads.set(road.id, road);
+    syncExpansion();
+    selectExpansionRoad(road.id);
+    finishEdit();
+    setBuildFeedback(
+      "Expansion road added. Draw road remains active for the next segment.",
+      "success",
+    );
+  },
+  select: selectExpansionRoad,
+});
+
+renderer.setExpansionStreetObjectInteractionHandlers({
+  place: (objectData) => {
+    if (appMode !== "build" || buildWorkspace !== "expansion") return;
+    recordEdit();
+    const object: ExpansionStreetObject = {
+      id: `expansion-object-${nextExpansionStreetObjectId++}`,
+      ...objectData,
+    };
+    expansionStreetObjects.set(object.id, object);
+    syncExpansion();
+    finishEdit();
+    setBuildFeedback(
+      object.kind === "crosswalk"
+        ? "Crosswalk placed on the expansion road."
+        : "Traffic signal placed on the expansion road.",
+      "success",
+    );
+  },
+});
+
+renderer.setExpansionEraseInteractionHandlers((target, id) => {
+  eraseExpansionObject(target, id);
+});
+
+renderer.setExpansionStatusHandler((message, tone = "info") => {
+  setBuildFeedback(message, tone);
+});
+
 renderer.setEnvironmentStatusHandler((mode, detail) => {
   updateEnvironmentStatus(mode, detail);
 });
@@ -654,22 +954,766 @@ function animationFrame(timestamp: number): void {
   window.requestAnimationFrame(animationFrame);
 }
 
+function setBuildFeedback(
+  message: string,
+  tone: "info" | "success" | "warning" | "error" = "info",
+): void {
+  selectionStatus.textContent = message;
+  buildActionStatus.textContent = message;
+  buildActionStatus.dataset.tone = tone;
+}
+
+function updateBuildSelectionName(): void {
+  if (buildWorkspace === "city-edit") {
+    buildSelectionName.textContent = selectedFeature?.name ?? "No street selected";
+    return;
+  }
+  const building = selectedPlacedBuildingId
+    ? placedBuildings.get(selectedPlacedBuildingId)
+    : undefined;
+  if (building) {
+    buildSelectionName.textContent = formatBuildingFunction(
+      functionForPlacedBuilding(building),
+    );
+    return;
+  }
+  if (selectedExpansionRoadId) {
+    buildSelectionName.textContent =
+      `Expansion road ${selectedExpansionRoadId.match(/\d+$/)?.[0] ?? ""}`.trim();
+    return;
+  }
+  if (activeBuildingTool) {
+    buildSelectionName.textContent = `New ${formatBuildingKind(activeBuildingTool).toLowerCase()}`;
+    return;
+  }
+  if (activeExpansionStreetObjectTool) {
+    buildSelectionName.textContent = activeExpansionStreetObjectTool === "crosswalk"
+      ? "New crosswalk"
+      : "New traffic signal";
+    return;
+  }
+  buildSelectionName.textContent = expansionEraseToolActive
+    ? "User-built item"
+    : "Expansion area";
+}
+
+function setBuildWorkspace(workspace: BuildWorkspace): void {
+  buildWorkspace = workspace;
+  document.body.dataset.buildWorkspace = workspace;
+  const expansion = workspace === "expansion";
+  cityEditWorkspace.setAttribute("aria-pressed", String(!expansion));
+  expansionWorkspace.setAttribute("aria-pressed", String(expansion));
+  for (const section of buildWorkspaceSections) {
+    section.hidden = section.dataset.buildWorkspaceSection !== workspace;
+  }
+  renderer.setExpansionMode(appMode === "build" && expansion);
+  if (expansion) {
+    renderer.setSelectedFeature(null);
+    buildWorkspaceHelp.textContent =
+      "Build on the green edge outside the city outline. Draw roads first so new buildings are reachable.";
+    updateBuildSelectionName();
+    if (!activeBuildingTool && !activeExpansionStreetObjectTool) {
+      setExpansionRoadToolActive(true);
+    } else {
+      syncExpansionToolState();
+    }
+  } else {
+    expansionRoadToolActive = false;
+    expansionEraseToolActive = false;
+    activeExpansionStreetObjectTool = null;
+    activeBuildingTool = null;
+    renderer.setSelectedPlacedBuilding(null);
+    renderer.setSelectedExpansionRoad(null);
+    selectedPlacedBuildingId = null;
+    selectedExpansionRoadId = null;
+    buildingEditor.hidden = true;
+    expansionRoadEditor.hidden = true;
+    selectedFeature = selectedFeature && features.some(
+      (feature) => feature.id === selectedFeature?.id,
+    )
+      ? selectedFeature
+      : features.find((feature) => feature.kind === "street") ?? features[0];
+    selectedTrafficFeature = selectedFeature ?? null;
+    selectedEntity = null;
+    renderer.setSelectedEntity(null);
+    buildWorkspaceHelp.textContent =
+      "Click a highlighted street or intersection, then apply an edit below.";
+    renderer.setSelectedFeature(selectedFeature?.id ?? null);
+    syncExpansionToolState();
+    updateBuildSelectionName();
+    updateSelectionPanel();
+    setBuildFeedback(
+      selectedFeature
+        ? `${selectedFeature.name} is ready to edit.`
+        : "Select a highlighted street or intersection to begin.",
+    );
+  }
+}
+
+function setExpansionRoadToolActive(active: boolean): void {
+  expansionRoadToolActive = active && buildWorkspace === "expansion";
+  if (expansionRoadToolActive) {
+    expansionEraseToolActive = false;
+    activeExpansionStreetObjectTool = null;
+    activeBuildingTool = null;
+  }
+  syncExpansionToolState();
+  updateBuildSelectionName();
+  setBuildFeedback(
+    expansionRoadToolActive
+      ? "Draw road active: click a start point, then an end point on green expansion ground."
+      : "Choose an expansion tool.",
+  );
+}
+
+function selectExpansionStreetObjectTool(
+  tool: ExpansionStreetObjectKind,
+): void {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  activeExpansionStreetObjectTool =
+    activeExpansionStreetObjectTool === tool ? null : tool;
+  expansionRoadToolActive = false;
+  expansionEraseToolActive = false;
+  activeBuildingTool = null;
+  syncExpansionToolState();
+  updateBuildSelectionName();
+  setBuildFeedback(
+    activeExpansionStreetObjectTool === "crosswalk"
+      ? "Crosswalk active: click directly on a user-built road."
+      : activeExpansionStreetObjectTool === "traffic-signal"
+        ? "Traffic signal active: click directly on a user-built road."
+        : "Choose an expansion tool.",
+  );
+}
+
+function setExpansionEraseToolActive(active: boolean): void {
+  expansionEraseToolActive = active && buildWorkspace === "expansion";
+  if (expansionEraseToolActive) {
+    expansionRoadToolActive = false;
+    activeExpansionStreetObjectTool = null;
+    activeBuildingTool = null;
+  }
+  syncExpansionToolState();
+  updateBuildSelectionName();
+  if (expansionEraseToolActive) {
+    setBuildFeedback(
+      "Bulldoze active: click a user-built road, object, or building.",
+      "warning",
+    );
+  } else {
+    setBuildFeedback("Choose an expansion tool.");
+  }
+}
+
+function selectBuildingTool(kind: BuildingKind): void {
+  if (buildWorkspace !== "expansion") setBuildWorkspace("expansion");
+  activeBuildingTool = activeBuildingTool === kind ? null : kind;
+  expansionRoadToolActive = false;
+  expansionEraseToolActive = false;
+  activeExpansionStreetObjectTool = null;
+  if (activeBuildingTool) {
+    buildingColorControl.value = defaultBuildingColor(activeBuildingTool);
+  }
+  syncExpansionToolState();
+  updateBuildSelectionName();
+  setBuildFeedback(
+    activeBuildingTool
+      ? `Place ${formatBuildingKind(activeBuildingTool).toLowerCase()}: click green expansion ground outside the city outline.`
+      : "Choose an expansion tool.",
+  );
+}
+
+function syncExpansionToolState(): void {
+  const active =
+    appMode === "build" &&
+    buildWorkspace === "expansion" &&
+    cameraMode === "orbit";
+  renderer.setExpansionMode(appMode === "build" && buildWorkspace === "expansion");
+  renderer.setExpansionRoadDrawEnabled(active && expansionRoadToolActive);
+  renderer.setExpansionEraseEnabled(active && expansionEraseToolActive);
+  renderer.setExpansionStreetObjectPlacementTool(
+    active ? activeExpansionStreetObjectTool : null,
+  );
+  renderer.setBuildingPlacementEnabled(active && activeBuildingTool !== null);
+  canvas.dataset.buildInteraction = !active
+    ? "none"
+    : expansionEraseToolActive
+      ? "erase"
+      : expansionRoadToolActive
+        ? "road"
+        : activeExpansionStreetObjectTool
+          ? "street-object"
+          : activeBuildingTool
+            ? "building"
+            : "none";
+  drawExpansionRoadButton.setAttribute(
+    "aria-pressed",
+    String(expansionRoadToolActive),
+  );
+  eraseExpansionButton.setAttribute(
+    "aria-pressed",
+    String(expansionEraseToolActive),
+  );
+  placeExpansionCrosswalkButton.setAttribute(
+    "aria-pressed",
+    String(activeExpansionStreetObjectTool === "crosswalk"),
+  );
+  placeExpansionSignalButton.setAttribute(
+    "aria-pressed",
+    String(activeExpansionStreetObjectTool === "traffic-signal"),
+  );
+  for (const button of buildingToolButtons) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.buildingTool === activeBuildingTool),
+    );
+  }
+}
+
+function placeBuilding(x: number, z: number): void {
+  if (
+    appMode !== "build" ||
+    buildWorkspace !== "expansion" ||
+    !activeBuildingTool
+  ) return;
+  const requestedBuilding: PlacedBuilding = {
+    id: `placed-building-${nextBuildingId}`,
+    kind: activeBuildingTool,
+    function: defaultFunctionForKind(activeBuildingTool),
+    x,
+    z,
+    rotation: 0,
+    floors: clampFloors(Number(buildingFloorsControl.value)),
+    color: buildingColorControl.value,
+  };
+  const building = renderer.resolveExpansionBuildingPlacement(requestedBuilding);
+  if (!building) {
+    setBuildFeedback(
+      "Place buildings near a user-built road with enough open roadside space.",
+      "error",
+    );
+    return;
+  }
+  const validation = renderer.validateBuildingPlacement(building);
+  if (!validation.valid) {
+    setBuildFeedback(validation.reason, "error");
+    return;
+  }
+  recordEdit();
+  nextBuildingId += 1;
+  placedBuildings.set(building.id, building);
+  syncExpansion();
+  selectPlacedBuilding(building.id);
+  finishEdit();
+  const access = simulation.getExpansionBuildingAccess(building.id);
+  setBuildFeedback(
+    `${formatBuildingKind(building.kind)} placed. Drag it to move; use the editor below to change its use, floors, or rotation. ${access?.connected ? "Transport network connected." : "Draw a road nearby to connect it."}`,
+    "success",
+  );
+}
+
+function selectPlacedBuilding(id: string | null): void {
+  selectedPlacedBuildingId = id;
+  selectedExpansionRoadId = null;
+  renderer.setSelectedPlacedBuilding(id);
+  renderer.setSelectedExpansionRoad(null);
+  expansionRoadEditor.hidden = true;
+  const building = id ? placedBuildings.get(id) : undefined;
+  buildingEditor.hidden = !building;
+  updateBuildSelectionName();
+  if (!building) return;
+  selectedBuildingKind.value = functionForPlacedBuilding(building);
+  selectedBuildingFloors.value = String(building.floors);
+  selectedBuildingColor.value = building.color;
+  buildingPositionOutput.textContent = formatBuildingPosition(
+    building.x,
+    building.z,
+  );
+  const role = deriveBuildingRole(building);
+  buildingResidentsOutput.textContent = role.residents.toLocaleString();
+  buildingJobsOutput.textContent = role.jobs.toLocaleString();
+  buildingVisitorsOutput.textContent = role.dailyVisitors.toLocaleString();
+  buildingFreightOutput.textContent = role.dailyFreightTrips.toLocaleString();
+  const detailed = simulation.getState().entities.buildings.find(
+    (candidate) => candidate.id === building.id,
+  );
+  buildingBuildTimeOutput.textContent = detailed
+    ? `${detailed.constructionDaysRemaining} days`
+    : "Pending";
+  buildingProjectCostOutput.textContent = detailed
+    ? formatDetailedMoney(detailed.constructionCost)
+    : "Pending";
+  const access = simulation.getExpansionBuildingAccess(building.id);
+  setBuildFeedback(
+    access?.connected
+      ? `Connected to the transport network. Walking support +${access.walkingBonus}; cycling support +${access.cyclingBonus}.`
+      : "Not connected. Draw a road close to this building so deliveries, workers, customers, and residents can reach it.",
+    access?.connected ? "success" : "warning",
+  );
+}
+
+function updateSelectedBuilding(): void {
+  if (!selectedPlacedBuildingId) return;
+  const current = placedBuildings.get(selectedPlacedBuildingId);
+  if (!current) return;
+  const updated: PlacedBuilding = {
+    ...current,
+    kind: buildingKindForFunction(selectedBuildingKind.value as BuildingFunction),
+    function: selectedBuildingKind.value as BuildingFunction,
+    floors: clampFloors(Number(selectedBuildingFloors.value)),
+    color: selectedBuildingColor.value,
+  };
+  const resolved = renderer.resolveExpansionBuildingPlacement(updated);
+  if (!resolved) {
+    setBuildFeedback(
+      "The selected building no longer fits on this roadside parcel.",
+      "error",
+    );
+    selectPlacedBuilding(current.id);
+    return;
+  }
+  const validation = renderer.validateBuildingPlacement(resolved);
+  if (!validation.valid) {
+    setBuildFeedback(validation.reason, "error");
+    selectPlacedBuilding(current.id);
+    return;
+  }
+  recordEdit();
+  placedBuildings.set(resolved.id, resolved);
+  syncExpansion();
+  selectPlacedBuilding(resolved.id);
+  finishEdit();
+}
+
+function rotateSelectedBuilding(): void {
+  if (!selectedPlacedBuildingId) return;
+  const current = placedBuildings.get(selectedPlacedBuildingId);
+  if (!current) return;
+  const updated = {
+    ...current,
+    rotation: (current.rotation + Math.PI / 2) % (Math.PI * 2),
+  };
+  const validation = renderer.validateBuildingPlacement(updated);
+  if (!validation.valid) {
+    setBuildFeedback(validation.reason, "error");
+    return;
+  }
+  recordEdit();
+  placedBuildings.set(updated.id, updated);
+  syncExpansion();
+  selectPlacedBuilding(updated.id);
+  finishEdit();
+}
+
+function deleteSelectedBuilding(): void {
+  if (!selectedPlacedBuildingId) return;
+  eraseExpansionObject("building", selectedPlacedBuildingId);
+}
+
+function selectExpansionRoad(id: string | null): void {
+  selectedExpansionRoadId = id;
+  selectedPlacedBuildingId = null;
+  renderer.setSelectedExpansionRoad(id);
+  renderer.setSelectedPlacedBuilding(null);
+  if (appMode === "simulate" && id) {
+    const road = expansionRoads.get(id);
+    if (!road) return;
+    selectedEntity = null;
+    selectedFeature = undefined;
+    selectedTrafficFeature = {
+      id: road.id,
+      kind: "street",
+      name: `Expansion Road ${road.id.match(/\d+$/)?.[0] ?? ""}`.trim(),
+      description: `${Math.round(Math.hypot(road.endX - road.startX, road.endZ - road.startZ))} m user-built road`,
+      axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
+        ? "x"
+        : "z",
+      path: [],
+    };
+    inspectorTab = "overview";
+    syncEntitySelectionState();
+    entityInterfaceSignature = "";
+    updateEntityInterface();
+    return;
+  }
+  buildingEditor.hidden = true;
+  expansionRoadEditor.hidden = id === null;
+  updateBuildSelectionName();
+  if (id) {
+    setBuildFeedback(
+      "Road selected. Adjust its capacity and walking or cycling support below.",
+    );
+  }
+}
+
+function applyExpansionRoadTool(tool: BuildTool): void {
+  if (!selectedExpansionRoadId) {
+    setBuildFeedback("Select a user-built road before applying a road edit.", "error");
+    return;
+  }
+  const road = expansionRoads.get(selectedExpansionRoadId);
+  if (!road) return;
+  const updated = { ...road };
+  const laneDelta = updated.laneDelta ?? 0;
+  recordEdit();
+  if (tool === "add-lane") updated.laneDelta = laneDelta === 1 ? 0 : 1;
+  if (tool === "remove-lane") updated.laneDelta = laneDelta === -1 ? 0 : -1;
+  if (tool === "bike-lane") updated.bikeLane = !updated.bikeLane;
+  if (tool === "sidewalk") updated.widenedSidewalk = !updated.widenedSidewalk;
+  if (tool === "direction") {
+    updated.laneDirection = nextDirection(updated.laneDirection ?? "two-way");
+  }
+  expansionRoads.set(updated.id, updated);
+  syncExpansion();
+  selectExpansionRoad(updated.id);
+  finishEdit();
+  setBuildFeedback(`${formatTool(tool)} applied to the selected expansion road.`, "success");
+}
+
+function deleteSelectedExpansionRoad(): void {
+  if (!selectedExpansionRoadId) return;
+  eraseExpansionObject("road", selectedExpansionRoadId);
+}
+
+function eraseExpansionObject(
+  target: "road" | "street-object" | "building",
+  id: string,
+): void {
+  if (target === "road") {
+    const validation = renderer.validateExpansionRoadRemoval(id);
+    if (!validation.valid) {
+      setBuildFeedback(validation.reason, "error");
+      return;
+    }
+  }
+  recordEdit();
+  let changed: boolean;
+  if (target === "building") {
+    changed = placedBuildings.delete(id);
+    if (selectedPlacedBuildingId === id) selectPlacedBuilding(null);
+  } else if (target === "street-object") {
+    changed = expansionStreetObjects.delete(id);
+  } else {
+    const road = expansionRoads.get(id);
+    changed = expansionRoads.delete(id);
+    if (road) {
+      for (const object of [...expansionStreetObjects.values()]) {
+        if (
+          distanceToSegment(
+            object.x,
+            object.z,
+            road.startX,
+            road.startZ,
+            road.endX,
+            road.endZ,
+          ) <= road.width
+        ) {
+          expansionStreetObjects.delete(object.id);
+        }
+      }
+    }
+    if (selectedExpansionRoadId === id) selectExpansionRoad(null);
+  }
+  if (!changed) {
+    editHistory.undo(captureEditorSnapshot());
+    updateHistoryButtons();
+    return;
+  }
+  syncExpansion();
+  finishEdit();
+  setBuildFeedback("User-built item erased. Undo is available.", "success");
+}
+
+function syncExpansion(): void {
+  const buildings = [...placedBuildings.values()];
+  const roads = [...expansionRoads.values()];
+  const streetObjects = [...expansionStreetObjects.values()];
+  renderer.setExpansionRoads(roads);
+  renderer.setPlacedBuildings(buildings);
+  renderer.setExpansionStreetObjects(streetObjects);
+  simulation.setExpansionDesign(buildings, roads, streetObjects);
+  const crosswalks = streetObjects.filter(
+    (object) => object.kind === "crosswalk",
+  ).length;
+  expansionRoadCount.textContent =
+    `${expansionRoads.size} roads · ${crosswalks} crosswalks · ${expansionStreetObjects.size - crosswalks} signals`;
+}
+
+function captureEditorSnapshot(): EditorSnapshot {
+  return {
+    designs: [...designs].map(([id, design]) => [id, { ...design }]),
+    buildings: [...placedBuildings.values()].map((building) => ({ ...building })),
+    expansionRoads: [...expansionRoads.values()].map((road) => ({ ...road })),
+    expansionStreetObjects: [...expansionStreetObjects.values()].map(
+      (object) => ({ ...object }),
+    ),
+    nextBuildingId,
+    nextExpansionRoadId,
+    nextExpansionStreetObjectId,
+  };
+}
+
+function captureProjectSnapshot(): ProjectSnapshot {
+  const state = simulation.getState();
+  return {
+    version: PROJECT_STATE_VERSION,
+    savedAt: new Date().toISOString(),
+    ...captureEditorSnapshot(),
+    settings: { ...simulation.getSettings() },
+    timeOfDayHours: state.timeOfDayHours,
+    weather: state.weather,
+  };
+}
+
+function applyEditorSnapshot(snapshot: EditorSnapshot): void {
+  designs.clear();
+  placedBuildings.clear();
+  expansionRoads.clear();
+  expansionStreetObjects.clear();
+  for (const [id, design] of snapshot.designs) designs.set(id, { ...design });
+  for (const road of snapshot.expansionRoads) {
+    expansionRoads.set(road.id, { ...road });
+  }
+  renderer.setPlacedBuildings([]);
+  renderer.setExpansionRoads([...expansionRoads.values()]);
+  const alignedBuildings: PlacedBuilding[] = [];
+  for (const building of snapshot.buildings) {
+    renderer.setPlacedBuildings(alignedBuildings);
+    alignedBuildings.push(
+      renderer.resolveExpansionBuildingPlacement(building) ?? { ...building },
+    );
+  }
+  for (const building of alignedBuildings) {
+    placedBuildings.set(building.id, building);
+  }
+  for (const object of snapshot.expansionStreetObjects) {
+    expansionStreetObjects.set(object.id, { ...object });
+  }
+  nextBuildingId = snapshot.nextBuildingId;
+  nextExpansionRoadId = snapshot.nextExpansionRoadId;
+  nextExpansionStreetObjectId = snapshot.nextExpansionStreetObjectId;
+  selectedPlacedBuildingId = null;
+  selectedExpansionRoadId = null;
+  buildingEditor.hidden = true;
+  expansionRoadEditor.hidden = true;
+  renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedExpansionRoad(null);
+  syncExpansion();
+  syncDesign();
+}
+
+function applyProjectSnapshot(snapshot: ProjectSnapshot): void {
+  applyEditorSnapshot(snapshot);
+  simulation.setSimulationSpeed(snapshot.settings.simulationSpeed);
+  simulation.setTimeHorizon(snapshot.settings.timeHorizon ?? "day");
+  timeRateControl.value = String(nearestTimeRatePresetIndex(
+    simulation.getSettings().simulationSpeed,
+    simulation.getSettings().timeHorizon,
+  ));
+  simulation.setSpeedLimit(snapshot.settings.speedLimitMph);
+  simulation.setSignalCycle(snapshot.settings.signalCycleSeconds);
+  simulation.setSimulationSeed(snapshot.settings.simulationSeed);
+  simulation.setTransitHeadway(snapshot.settings.transitHeadwayMinutes ?? 12);
+  simulation.setRoadCapacity(snapshot.settings.roadCapacity ?? 100);
+  simulation.setZoningStrictness(snapshot.settings.zoningStrictness ?? 1);
+  simulation.setTimeOfDay(snapshot.timeOfDayHours);
+  simulation.setWeather(snapshot.weather);
+  speedLimitControl.value = String(simulation.getSettings().speedLimitMph);
+  signalCycleControl.value = String(simulation.getSettings().signalCycleSeconds);
+  simulationSeedControl.value = String(simulation.getSettings().simulationSeed);
+  transitHeadwayControl.value = String(
+    simulation.getSettings().transitHeadwayMinutes,
+  );
+  syncEnvironmentControls();
+  editHistory.clear();
+  updateHistoryButtons();
+}
+
+function recordEdit(): void {
+  editHistory.record(captureEditorSnapshot());
+  updateHistoryButtons();
+}
+
+function finishEdit(): void {
+  localStorage.setItem(PROJECT_SAVE_KEY, JSON.stringify(captureProjectSnapshot()));
+  updateHistoryButtons();
+}
+
+function undoEdit(): void {
+  const snapshot = editHistory.undo(captureEditorSnapshot());
+  if (!snapshot) return;
+  applyEditorSnapshot(snapshot);
+  finishEdit();
+}
+
+function redoEdit(): void {
+  const snapshot = editHistory.redo(captureEditorSnapshot());
+  if (!snapshot) return;
+  applyEditorSnapshot(snapshot);
+  finishEdit();
+}
+
+function updateHistoryButtons(): void {
+  undoEditButton.disabled = !editHistory.canUndo;
+  redoEditButton.disabled = !editHistory.canRedo;
+}
+
+function saveProject(): void {
+  localStorage.setItem(PROJECT_SAVE_KEY, JSON.stringify(captureProjectSnapshot()));
+  setBuildFeedback("Project saved in this browser.", "success");
+}
+
+function loadProject(): void {
+  const raw = localStorage.getItem(PROJECT_SAVE_KEY);
+  if (!raw) {
+    setBuildFeedback("No saved project was found in this browser.", "warning");
+    return;
+  }
+  try {
+    applyProjectSnapshot(parseProjectSnapshot(raw));
+    setBuildFeedback("Saved project loaded.", "success");
+  } catch (error) {
+    setBuildFeedback(
+      error instanceof Error ? error.message : "The saved project could not be loaded.",
+      "error",
+    );
+  }
+}
+
+function exportProject(): void {
+  const blob = new Blob(
+    [JSON.stringify(captureProjectSnapshot(), null, 2)],
+    { type: "application/json" },
+  );
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "penn-campus-simulator-linn.json";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importProject(): Promise<void> {
+  const file = importProjectFile.files?.[0];
+  if (!file) return;
+  try {
+    applyProjectSnapshot(parseProjectSnapshot(await file.text()));
+    finishEdit();
+    setBuildFeedback(`${file.name} imported.`, "success");
+  } catch (error) {
+    setBuildFeedback(
+      error instanceof Error ? error.message : "The project file could not be imported.",
+      "error",
+    );
+  } finally {
+    importProjectFile.value = "";
+  }
+}
+
+function syncEnvironmentControls(): void {
+  const state = simulation.getState();
+  timeOfDayControl.value = String(state.timeOfDayHours);
+  timeOfDayOutput.value = formatTimeOfDay(state.timeOfDayHours);
+  weatherControl.value = state.weather;
+  const risk = getPhillyCrashRiskProfile(state.timeOfDayHours);
+  violationRiskOutput.textContent =
+    `Philly crash index: traffic ${risk.trafficMultiplier.toFixed(2)}× · pedestrian ${risk.pedestrianMultiplier.toFixed(2)}×`;
+  renderer.setTimeOfDay(state.timeOfDayHours);
+  renderer.setWeather(state.weather);
+}
+
+function formatTimeOfDay(hours: number): string {
+  const totalMinutes = Math.round(hours * 60) % 1440;
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
+}
+
+function formatBuildingPosition(x: number, z: number): string {
+  return `X ${x.toFixed(0)} · Z ${z.toFixed(0)}`;
+}
+
+function formatBuildingKind(kind: BuildingKind): string {
+  return `${kind.charAt(0).toUpperCase()}${kind.slice(1)} building`;
+}
+
+function defaultBuildingColor(kind: BuildingKind): string {
+  if (kind === "commercial") return "#5f8ca8";
+  if (kind === "industrial") return "#9b7654";
+  if (kind === "civic") return "#c9aa62";
+  return "#bf765f";
+}
+
+function clampFloors(value: number): number {
+  return Math.max(1, Math.min(20, Math.round(value || 1)));
+}
+
+function isBuildingKind(value: string | undefined): value is BuildingKind {
+  return (
+    value === "residential" ||
+    value === "commercial" ||
+    value === "industrial" ||
+    value === "civic"
+  );
+}
+
+function distanceToSegment(
+  x: number,
+  z: number,
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+): number {
+  const dx = endX - startX;
+  const dz = endZ - startZ;
+  const lengthSquared = dx * dx + dz * dz;
+  if (lengthSquared === 0) return Math.hypot(x - startX, z - startZ);
+  const t = Math.max(
+    0,
+    Math.min(1, ((x - startX) * dx + (z - startZ) * dz) / lengthSquared),
+  );
+  return Math.hypot(x - (startX + dx * t), z - (startZ + dz * t));
+}
+
 function setAppMode(mode: AppMode): void {
   cancelWalkPlacement();
+  const enteringBuild = mode === "build" && appMode !== "build";
+  const leavingBuild = mode === "simulate" && appMode === "build";
   appMode = mode;
   document.body.dataset.appMode = mode;
   const building = mode === "build";
+  if (building && cameraMode !== "orbit") setCameraMode("orbit");
   buildModeButton.setAttribute("aria-pressed", String(building));
   simulateModeButton.setAttribute("aria-pressed", String(!building));
-  renderer.setBuildMode(false);
+  flyCameraButton.disabled = building;
+  walkCameraButton.disabled = building;
+  flyCameraButton.title = building ? "Fly is available in Live mode" : "Fly camera";
+  walkCameraButton.title = building ? "Walk is available in Live mode" : "Choose a walking start";
+  renderer.setBuildMode(building);
+  renderer.setExpansionMode(building && buildWorkspace === "expansion");
+  renderer.setExpansionSelectionEnabled(true);
+  syncExpansionToolState();
   renderer.setMapOverlay(analysisOverlay.value as MapOverlayMode);
   renderer.setSelectedEntity(selectedEntity);
   syncEntitySelectionState();
   if (building) {
     setNotificationOpen(false);
-    orbitCameraHint.textContent = "Planning paused · Select a road, building, or person";
+    if (enteringBuild) restoreInspectorAfterBuild = !cityInspectorPanel.hidden;
+    cityInspectorPanel.hidden = true;
+    cityInspectorRestoreButton.hidden = false;
+    document.body.dataset.cityInspector = "minimized";
+    setBuildWorkspace(buildWorkspace);
+    orbitCameraHint.textContent = "Planning paused · Top-down building controls active";
     updateSelectionPanel();
   } else {
+    if (leavingBuild && restoreInspectorAfterBuild) {
+      cityInspectorPanel.hidden = false;
+      cityInspectorRestoreButton.hidden = true;
+      document.body.dataset.cityInspector = "open";
+    }
+    restoreInspectorAfterBuild = false;
     orbitCameraHint.textContent = "Live city · Select any road, building, or person";
     simulationTitle.textContent = "Penn · University City";
     sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
@@ -686,6 +1730,7 @@ function setCameraMode(mode: CameraMode): void {
   flyCameraButton.setAttribute("aria-pressed", String(mode === "fly"));
   walkCameraButton.setAttribute("aria-pressed", String(mode === "walk"));
   renderer.setCameraMode(mode);
+  syncExpansionToolState();
 }
 
 function beginWalkPlacement(): void {
@@ -733,6 +1778,8 @@ function clearInspectorSelection(): void {
   interventionFeedback = "";
   renderer.setSelectedEntity(null);
   renderer.setSelectedFeature(null);
+  renderer.setSelectedPlacedBuilding(null);
+  renderer.setSelectedExpansionRoad(null);
   entityTooltip.hidden = true;
   syncEntitySelectionState();
   updateSelectionPanel();
@@ -769,6 +1816,9 @@ function updateMetrics(): void {
   pedestrianWait.textContent = `${metrics.pedestrianWaitSeconds.toFixed(1)} s`;
   conflicts.textContent = String(metrics.potentialConflicts);
   throughput.textContent = metrics.throughputPerHour.toLocaleString();
+  buildingArrivals.textContent = metrics.buildingArrivals.toLocaleString();
+  trafficViolations.textContent = metrics.trafficViolations.toLocaleString();
+  jaywalkingViolations.textContent = metrics.jaywalkingViolations.toLocaleString();
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
   cityDate.textContent = state.cityActivity.dateLabel;
   cityClock.textContent = state.cityActivity.clockLabel;
@@ -784,6 +1834,7 @@ function updateMetrics(): void {
   cityUnemployment.textContent = `${cityMetrics.unemploymentPercent.toFixed(1)}%`;
   cityTrafficCost.textContent = `${formatCurrency(cityMetrics.congestionCostDaily)}/day`;
   cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
+  syncEnvironmentControls();
   updateSelectedSignalStatus();
   updateEntityInterface();
 }
@@ -799,6 +1850,7 @@ function setMetricView(view: "baseline" | "modified"): void {
 
 function updateSelectionPanel(): void {
   if (!selectedFeature) return;
+  updateBuildSelectionName();
   const design = getDesign(selectedFeature.id);
   selectionTitle.textContent = selectedFeature.name;
   selectionDescription.textContent = selectedFeature.description;
@@ -843,7 +1895,9 @@ function updateSelectionPanel(): void {
       return tag;
     }),
   );
-  selectionStatus.textContent = "Changes appear directly in the 3D street and update simulation results.";
+  setBuildFeedback(
+    `${selectedFeature.name} selected. Available edits are enabled below.`,
+  );
 }
 
 function updateSelectedSignalTiming(): void {
@@ -865,7 +1919,7 @@ function updateSelectedSignalTiming(): void {
     signalPedestrian.value = String(signal.timing.pedestrianSeconds);
   }
   updateSelectedSignalStatus();
-  selectionStatus.textContent = `Live signal timing updated at ${selectedFeature.name}.`;
+  setBuildFeedback(`Live signal timing updated at ${selectedFeature.name}.`, "success");
 }
 
 function requestManualSignal(target: ManualSignalTarget): void {
@@ -873,7 +1927,7 @@ function requestManualSignal(target: ManualSignalTarget): void {
   simulation.requestManualSignal(selectedFeature.id, target);
   signalModeControl.value = "manual";
   updateSelectedSignalStatus();
-  selectionStatus.textContent = `${formatSignalPhase(target)} requested with a safe yellow and all-red transition.`;
+  setBuildFeedback(`${formatSignalPhase(target)} requested with a safe yellow and all-red transition.`, "success");
 }
 
 function updateSelectedSignalStatus(): void {
@@ -914,18 +1968,32 @@ function signalCycleSeconds(intersectionId: string): number {
   );
 }
 
-function applyBuildTool(tool: BuildTool): void {
-  if (!selectedFeature) return;
+function validateBuildToolTarget(tool: BuildTool): boolean {
   const streetTool = ["add-lane", "remove-lane", "bike-lane", "sidewalk", "direction"].includes(
     tool,
   );
+  if (!selectedFeature) {
+    setBuildFeedback(
+      `Select a ${streetTool ? "street segment" : "intersection"} first.`,
+      "error",
+    );
+    return false;
+  }
   if (
     (streetTool && selectedFeature.kind !== "street") ||
     (!streetTool && selectedFeature.kind !== "intersection")
   ) {
-    selectionStatus.textContent = `Select a ${streetTool ? "street segment" : "intersection"} first.`;
-    return;
+    setBuildFeedback(
+      `Select a ${streetTool ? "street segment" : "intersection"} first.`,
+      "error",
+    );
+    return false;
   }
+  return true;
+}
+
+function applyBuildTool(tool: BuildTool): void {
+  if (!validateBuildToolTarget(tool) || !selectedFeature) return;
 
   const design = getDesign(selectedFeature.id);
   if (tool === "add-lane") design.laneDelta = design.laneDelta === 1 ? 0 : 1;
@@ -938,7 +2006,10 @@ function applyBuildTool(tool: BuildTool): void {
 
   designs.set(selectedFeature.id, design);
   syncDesign();
-  selectionStatus.textContent = `${formatTool(tool)} applied to ${selectedFeature.name}.`;
+  setBuildFeedback(
+    `${formatTool(tool)} applied to ${selectedFeature.name}.`,
+    "success",
+  );
 }
 
 function syncDesign(): void {
@@ -1006,7 +2077,7 @@ function updateEntityInterface(): void {
   const state = simulation.getState();
   const favoriteSignature = state.entities.people
     .filter((person) => favoritePersonIds.has(person.id))
-    .map((person) => `${person.id}-${person.currentActivity}-${person.currentBuildingId}-${Math.round(person.happiness)}`)
+    .map((person) => `${person.id}-${person.mobility.phase}-${person.mobility.destinationBuildingId}-${Math.round(person.mobility.routeProgress * 20)}-${Math.round(person.happiness)}`)
     .join(",");
   const selectedPerson = selectedEntity?.kind === "person"
     ? state.entities.people.find((person) => person.id === selectedEntity?.id)
@@ -1027,6 +2098,10 @@ function updateEntityInterface(): void {
   const signature = [
     state.entities.lastUpdatedDay,
     selectedPerson?.currentActivity ?? "static",
+    selectedPerson?.mobility.phase ?? "stationary",
+    Math.round((selectedPerson?.mobility.routeProgress ?? 0) * 20),
+    selectedPerson?.mobility.delayMinutes ?? 0,
+    state.mobilityDetailMode,
     selectedEntity?.kind ?? "none",
     selectedEntity?.id ?? "none",
     selectedTrafficFeature?.id ?? "no-road",
@@ -1105,6 +2180,8 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   };
   const civic = isCivicFunction(building.function);
   const housing = building.function === "housing";
+  const residentPeople = state.entities.people.filter((person) => person.homeBuildingId === building.id);
+  const residentHouseholds = state.entities.households.filter((household) => household.homeBuildingId === building.id);
   const revenueLabel = housing ? "Rent" : civic
     ? accounting.salesRevenue > 0 ? "Public + earned" : "Public grant"
     : "Revenue";
@@ -1115,7 +2192,14 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   const generatedTrips = traffic
     ? traffic.workVehicleTripsDaily + traffic.visitVehicleTripsDaily + traffic.deliveryVehicleTripsDaily
     : connectionTotals.work + connectionTotals.visit;
-  const primaryStats = housing
+  const primaryStats = building.developmentStage === "construction"
+    ? [
+        ["Stage", "Under construction", "developmentStage"],
+        ["Opens in", `${building.constructionDaysRemaining} days`, "constructionDaysRemaining"],
+        ["Project cost", formatDetailedMoney(building.constructionCost), "constructionCost"],
+        ["Daily deliveries", Math.round(connectionTotals.delivery).toLocaleString(), "deliveryUnits"],
+      ]
+    : housing
     ? [
         ["Residents", `${residents} / ${building.residentCapacity}`, "residents"],
         ["Monthly rent", formatDetailedMoney(building.rentDaily * 30.4), "rentMonthly"],
@@ -1129,27 +2213,41 @@ function renderBuildingInspector(building: DetailedBuilding): void {
           ["Service quality", `${Math.round(accounting.serviceQuality * 100)}%`, "serviceQuality"],
           ["Public grant", formatDetailedMoney(accounting.municipalFunding), "municipalFunding"],
         ]
-      : [
+      : building.function === "retail"
+        ? [
           ["Employees", `${employees} / ${accounting.requiredWorkers}`, "employees"],
           ["Customers", accounting.customers.toLocaleString(), "customers"],
-          ["Unit price", formatDetailedMoney(accounting.unitPrice), "unitPrice"],
+          ["Consumer goods sold", accounting.goodsSold.toFixed(0), "goodsSold"],
+          ["Shelf price", formatDetailedMoney(accounting.unitPrice), "unitPrice"],
+        ]
+        : building.function === "industrial"
+          ? [
+          ["Employees", `${employees} / ${accounting.requiredWorkers}`, "employees"],
+          ["Finished output", `${accounting.goodsProduced.toFixed(0)} units`, "goodsProduced"],
+          ["Raw stock", `${building.goodsInventory.toFixed(0)} units`, "goodsInventory"],
+          ["Wholesale price", formatDetailedMoney(accounting.unitPrice), "unitPrice"],
+        ]
+          : building.function === "office"
+            ? [
+          ["Employees", `${employees} / ${accounting.requiredWorkers}`, "employees"],
+          ["Service output", `${accounting.serviceDelivered.toFixed(0)} units`, "serviceDelivered"],
+          ["Contract value", formatDetailedMoney(accounting.unitPrice), "unitPrice"],
           ["Workday wage", formatDetailedMoney(accounting.averageWage), "averageWage"],
+        ]
+            : [
+          ["Staff", `${employees} / ${accounting.requiredWorkers}`, "employees"],
+          ["Paid parking uses", accounting.serviceDelivered.toFixed(0), "serviceDelivered"],
+          ["Parking fee", formatDetailedMoney(accounting.unitPrice), "unitPrice"],
+          ["Daily revenue", formatDetailedMoney(accounting.salesRevenue), "salesRevenue"],
         ];
-  const mapModeContext = analysisOverlay.value === "wellbeing" && residents > 0
-    ? renderHappinessAccounting(
-        state.entities.people.filter((person) => person.homeBuildingId === building.id),
-        "Resident happiness",
-      )
-    : analysisOverlay.value === "affordability" && housing
-      ? renderAffordabilityAccounting(
-          building,
-          state.entities.households.filter((household) => household.homeBuildingId === building.id),
-        )
-      : "";
+  const residentContext = housing
+    ? `${renderHappinessAccounting(residentPeople, "Resident happiness")}${renderAffordabilityAccounting(building, residentHouseholds)}`
+    : "";
   const overview = `
     <div class="inspector-stat-grid">${primaryStats.map(([label, value, key]) => statCell(label, value, "building", key, renderBuildingTrend(building, key))).join("")}</div>
+    ${building.developmentStage === "construction" ? `<section class="public-funding-section"><h4>Development</h4><p>${civic ? "Municipal capital funding" : "Private development capital"} pays the ${formatDetailedMoney(building.constructionCost)} project cost. Material deliveries create freight traffic now; occupancy, hiring, services, and sales begin only after opening.</p></section>` : ""}
     ${renderBuildingBenchmark(building, state.entities.buildings)}
-    ${mapModeContext}
+    ${residentContext}
     <section class="accounting-section">
       <h4>${civic ? "Service accounting" : housing ? "Housing accounting" : "Business accounting"}</h4>
       <div class="accounting-flow">
@@ -1166,6 +2264,7 @@ function renderBuildingInspector(building: DetailedBuilding): void {
         ${inlineStat("Maintenance", formatDetailedMoney(accounting.maintenanceCost), "building", "maintenanceCost")}
       </div>
       ${renderSupplyAccounting(building)}
+      ${!civic && !housing ? renderBusinessOutputAccounting(building) : ""}
       ${!civic && !housing ? `<details class="inspector-details"><summary>Operating details</summary><div class="cost-breakdown business-response-grid">
         ${inlineStat("Local sales", formatDetailedMoney(accounting.localSalesRevenue), "building", "localSalesRevenue")}
         ${inlineStat("Outside sales", formatDetailedMoney(accounting.externalSalesRevenue), "building", "externalSalesRevenue")}
@@ -1254,13 +2353,17 @@ function renderSupplyAccounting(building: Readonly<DetailedBuilding>): string {
   const importShare = delivered > 0 ? accounting.importedSupplies / delivered : 0;
   const localShare = delivered > 0 ? accounting.localSupplies / delivered : 0;
   const landedCost = accounting.supplyCost + accounting.transportCost;
+  const inputLabel = building.function === "industrial"
+    ? "Raw material inputs"
+    : building.function === "retail" ? "Consumer stock purchases" : "Operating inputs";
+  const unitLabel = building.function === "industrial" ? "raw units" : "units";
   const diagnosis = delivered > 0
     ? accounting.importedSupplies > 0
-      ? `${accounting.importedSupplies.toFixed(0)} units came from outside the city section. Imports cost ${formatDetailedMoney(accounting.importedSupplyCost)} before ${formatDetailedMoney(accounting.transportCost)} in delivery costs.`
-      : `All ${accounting.localSupplies.toFixed(0)} delivered units were sourced inside the city section.`
+      ? `${accounting.importedSupplies.toFixed(0)} ${unitLabel} came from outside the city section. Imports cost ${formatDetailedMoney(accounting.importedSupplyCost)} before ${formatDetailedMoney(accounting.transportCost)} in delivery costs.`
+      : `All ${accounting.localSupplies.toFixed(0)} delivered ${unitLabel} were sourced inside the city section.`
     : "No input delivery arrived today; operations must use existing inventory or reduce output.";
   return `<div class="supply-accounting-section">
-    <h4><span>Supply purchases</span><strong>${Math.round(importShare * 100)}% imported</strong></h4>
+    <h4><span>${inputLabel}</span><strong>${Math.round(importShare * 100)}% imported</strong></h4>
     <div class="supply-source-grid">
       <span data-stat="localSupplies" data-stat-scope="building" tabindex="0">
         <small>Local supply</small><b data-stat-value>${accounting.localSupplies.toFixed(0)} units</b><em>${formatDetailedMoney(accounting.localSupplyCost)}</em>
@@ -1280,6 +2383,33 @@ function renderSupplyAccounting(building: Readonly<DetailedBuilding>): string {
     </div>
     <p>${escapeHtml(diagnosis)}</p>
   </div>`;
+}
+
+function renderBusinessOutputAccounting(building: Readonly<DetailedBuilding>): string {
+  const accounting = building.accounting;
+  if (building.function === "industrial") {
+    return `<div class="business-output-flow"><h4>Production</h4><div class="impact-chain">
+      ${statCell("Raw stock after production", `${building.goodsInventory.toFixed(0)} units`, "building", "goodsInventory")}<i>→</i>
+      ${statCell("Finished goods", `${accounting.goodsProduced.toFixed(0)} units`, "building", "goodsProduced")}<i>→</i>
+      ${statCell("Wholesale sales", formatDetailedMoney(accounting.salesRevenue), "building", "salesRevenue")}
+    </div></div>`;
+  }
+  if (building.function === "retail") {
+    return `<div class="business-output-flow"><h4>Consumer goods</h4><div class="impact-chain">
+      ${statCell("Stock available", `${(building.goodsInventory + accounting.goodsSold).toFixed(0)} units`, "building", "goodsInventory")}<i>→</i>
+      ${statCell("Goods sold", `${accounting.goodsSold.toFixed(0)} units`, "building", "goodsSold")}<i>→</i>
+      ${statCell("Retail sales", formatDetailedMoney(accounting.salesRevenue), "building", "salesRevenue")}
+    </div></div>`;
+  }
+  const outputLabel = building.function === "parking" ? "Paid parking uses" : "Service output";
+  const inputValue = building.function === "parking"
+    ? `${accounting.customers} drivers`
+    : `${accounting.activeWorkers} active staff`;
+  return `<div class="business-output-flow"><h4>${building.function === "parking" ? "Parking service" : "Business services"}</h4><div class="impact-chain">
+    ${statCell(building.function === "parking" ? "Demand" : "Labor", inputValue, "building", building.function === "parking" ? "customers" : "activeWorkers")}<i>→</i>
+    ${statCell(outputLabel, `${accounting.serviceDelivered.toFixed(0)} units`, "building", "serviceDelivered")}<i>→</i>
+    ${statCell("Service revenue", formatDetailedMoney(accounting.salesRevenue), "building", "salesRevenue")}
+  </div></div>`;
 }
 
 function renderHappinessAccounting(
@@ -1436,7 +2566,32 @@ function renderPersonInspector(person: DetailedPerson): void {
   const net = person.dailyWage - person.dailySpending;
   const maxFlow = Math.max(1, person.dailyWage, person.dailySpending);
   const favorite = favoritePersonIds.has(person.id);
+  const mobility = person.mobility;
+  const originName = buildingById.get(mobility.fromBuildingId)?.name
+    ?? outsideLocationName(mobility.fromBuildingId);
+  const destinationName = buildingById.get(mobility.destinationBuildingId)?.name
+    ?? outsideLocationName(mobility.destinationBuildingId);
+  const mobilityOverview = mobility.phase === "inside" || mobility.phase === "outside"
+    ? `<section class="accounting-section current-trip-section">
+        <h4>Current location</h4>
+        <p class="entity-diagnosis"><b>${escapeHtml(destinationName)}</b> · ${formatActivity(mobility.activity)}. This location is the resident's literal simulated position.</p>
+      </section>`
+    : `<section class="accounting-section current-trip-section">
+        <h4>Current trip <strong>${Math.round(mobility.routeProgress * 100)}%</strong></h4>
+        <div class="accounting-flow journey-flow">
+          <span class="accounting-node income"><small>From</small><b>${escapeHtml(originName)}</b></span><i>→</i>
+          <span class="accounting-node cost"><small>${formatMode(mobility.mode)}</small><b>${formatActivity(mobility.activity)}</b></span><i>→</i>
+          <span class="accounting-node income"><small>To</small><b>${escapeHtml(destinationName)}</b></span>
+        </div>
+        <div class="cost-breakdown">
+          ${inlineStat("Departed", formatMinute(mobility.departureMinute), "person", "travelMinutes")}
+          ${inlineStat("Expected", formatMinute(mobility.expectedArrivalMinute), "person", "travelMinutes")}
+          ${inlineStat("Route delay", `${mobility.delayMinutes.toFixed(1)} min`, "person", "networkDelay")}
+          ${inlineStat("Simulation detail", formatMobilityDetail(state.mobilityDetailMode), "person", "travelMinutes")}
+        </div>
+      </section>`;
   const overview = `
+    ${mobilityOverview}
     <section class="schedule-section">
       <h4>Daily route</h4>
       <div class="schedule-timeline">${person.schedule.map((item) => {
@@ -1495,7 +2650,7 @@ function renderPersonInspector(person: DetailedPerson): void {
         <div><small>${person.age} years old · ${formatEmployment(person.employment)}</small><h3>${escapeHtml(person.name)}</h3></div>
         <div class="entity-heading-actions">
           <button type="button" class="favorite-person-button" data-favorite-person="${escapeHtml(person.id)}" aria-pressed="${favorite}" aria-label="${favorite ? "Remove from" : "Add to"} favourite people" title="${favorite ? "Remove from" : "Add to"} favourite people">${favorite ? "&#9733;" : "&#9734;"}</button>
-          <span data-migration="${person.migrationStatus}">${formatActivity(person.currentActivity)}</span>
+          <span data-migration="${person.migrationStatus}">${formatMobilityStatus(person)}</span>
         </div>
       </header>
       <p class="heading-diagnosis">${escapeHtml(person.migrationReason)}</p>
@@ -1517,7 +2672,9 @@ function renderFavoritePeople(): void {
     state.entities.buildings.map((building) => [building.id, building.name]),
   );
   trackedPeopleList.innerHTML = favorites.map((person) => {
-    const location = buildingById.get(person.currentBuildingId) ?? "Outside the district";
+    const location = person.mobility.phase === "inside"
+      ? buildingById.get(person.currentBuildingId) ?? "Outside the district"
+      : `${formatMode(person.mobility.mode)} to ${buildingById.get(person.mobility.destinationBuildingId) ?? outsideLocationName(person.mobility.destinationBuildingId)}`;
     return `<button type="button" data-tracked-person="${escapeHtml(person.id)}" aria-label="Find ${escapeHtml(person.name)} on the map">
       <span class="tracked-person-marker" aria-hidden="true"><i></i></span>
       <span><b>${escapeHtml(person.name)}</b><small>${formatActivity(person.currentActivity)} · ${escapeHtml(location)}</small></span>
@@ -1622,6 +2779,10 @@ function renderBuildingTrend(building: Readonly<DetailedBuilding>, stat: string)
     serviceQuality: (point) => point.serviceQuality * 100,
     municipalFunding: (point) => point.municipalFunding,
     customers: (point) => point.customers,
+    goodsProduced: (point) => point.goodsProduced,
+    goodsSold: (point) => point.goodsSold,
+    goodsInventory: (point) => point.goodsInventory,
+    salesRevenue: (point) => point.salesRevenue,
     unitPrice: (point) => point.unitPrice,
     averageWage: (point) => point.averageWage,
   };
@@ -1743,14 +2904,14 @@ function renderAccessibilityBreakdown(building: Readonly<DetailedBuilding>): str
 }
 
 function renderFlowControls(): string {
-  const labels: Record<BuildingConnectionKind, string> = {
-    work: "Work trips",
-    visit: "Visits",
-    delivery: "Deliveries",
+  const labels: Record<BuildingConnectionKind, readonly [string, string]> = {
+    work: ["Work", "Home → workplace"],
+    visit: ["Visits", "Person → destination"],
+    delivery: ["Freight", "Supplier → receiver"],
   };
   return `<fieldset class="flow-controls inspector-flow-controls">
     <legend>Moving flows</legend>
-    ${(["work", "visit", "delivery"] as const).map((kind) => `<label data-flow="${kind}"><input type="checkbox" data-flow-kind="${kind}" ${visibleFlowKinds.has(kind) ? "checked" : ""} /> ${labels[kind]}</label>`).join("")}
+    ${(["work", "visit", "delivery"] as const).map((kind) => `<label data-flow="${kind}"><input type="checkbox" data-flow-kind="${kind}" ${visibleFlowKinds.has(kind) ? "checked" : ""} /><span><b>${labels[kind][0]}</b><small>${labels[kind][1]}</small></span></label>`).join("")}
   </fieldset>`;
 }
 
@@ -1957,7 +3118,13 @@ function updateEntityTooltip(
   } else if (selection.kind === "person") {
     const person = state.entities.people.find((candidate) => candidate.id === selection.id);
     if (!person) return;
-    entityTooltip.innerHTML = `<strong>${escapeHtml(person.name)}</strong><span>${formatActivity(person.currentActivity)} · ${person.happiness.toFixed(0)}% happiness</span><small>${escapeHtml(person.migrationReason)}</small>`;
+    const destination = state.entities.buildings.find(
+      (building) => building.id === person.mobility.destinationBuildingId,
+    )?.name ?? outsideLocationName(person.mobility.destinationBuildingId);
+    entityTooltip.innerHTML = `<strong>${escapeHtml(person.name)}</strong><span>${formatMobilityStatus(person)} · ${person.happiness.toFixed(0)}% happiness</span><small>${person.mobility.phase === "inside"
+      ? escapeHtml(destination)
+      : `${Math.round(person.mobility.routeProgress * 100)}% to ${escapeHtml(destination)} · ${person.mobility.delayMinutes.toFixed(1)} min delay`
+    }</small>`;
   } else {
     const building = state.entities.buildings.find((candidate) => candidate.id === selection.id);
     if (!building) return;
@@ -2002,7 +3169,13 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
   const traffic = simulation.getBuildingTrafficAttribution(building.id);
   let value = `${formatBuildingFunction(building.function)} · ${formatEntityStatus(accounting.status)}`;
   let why = accounting.diagnosis;
-  if (mode === "profitability") value = `${formatDetailedMoney(accounting.operatingRevenue)} revenue − ${formatDetailedMoney(accounting.operatingCost)} costs = ${formatDetailedMoney(accounting.profit)}`;
+  if (mode === "none" && building.function === "housing" && residents.length > 0 && households.length > 0) {
+    const happiness = sumNumbers(residents.map((person) => person.happiness)) / residents.length;
+    const averageIncome = sumNumbers(households.map((household) => household.dailyIncome)) / households.length;
+    const rentBurden = building.rentDaily / Math.max(25, averageIncome);
+    value = `${happiness.toFixed(0)}% resident happiness · ${Math.round(rentBurden * 100)}% rent burden`;
+    why = `Needs ${averageHappinessComponent(residents, "needs").toFixed(0)}, finances ${averageHappinessComponent(residents, "financialSecurity").toFixed(0)}, employment ${averageHappinessComponent(residents, "employment").toFixed(0)}, housing ${averageHappinessComponent(residents, "housing").toFixed(0)}, and travel ${averageHappinessComponent(residents, "travel").toFixed(0)} determine wellbeing. Rent is ${formatDetailedMoney(building.rentDaily)} per day.`;
+  } else if (mode === "profitability") value = `${formatDetailedMoney(accounting.operatingRevenue)} revenue − ${formatDetailedMoney(accounting.operatingCost)} costs = ${formatDetailedMoney(accounting.profit)}`;
   else if (mode === "affordability") {
     if (building.function === "housing" && households.length > 0) {
       const averageIncome = sumNumbers(households.map((household) => household.dailyIncome)) / households.length;
@@ -2028,7 +3201,21 @@ function buildingTooltip(building: DetailedBuilding, mode: MapOverlayMode): stri
     why = residents.length > 0
       ? `Needs ${averageHappinessComponent(residents, "needs").toFixed(0)}, finances ${averageHappinessComponent(residents, "financialSecurity").toFixed(0)}, employment ${averageHappinessComponent(residents, "employment").toFixed(0)}, housing ${averageHappinessComponent(residents, "housing").toFixed(0)}, and travel ${averageHappinessComponent(residents, "travel").toFixed(0)} combine into this score.`
       : accounting.diagnosis;
-  } else if (mode === "goods") value = `${building.goodsInventory.toFixed(0)} units in stock · ${accounting.importedSupplies.toFixed(0)} imported`;
+  } else if (mode === "goods") {
+    if (building.function === "industrial") {
+      value = `${accounting.goodsProduced.toFixed(0)} finished goods · ${building.goodsInventory.toFixed(0)} raw units in stock`;
+      why = `${accounting.goodsReceived.toFixed(0)} raw units arrived today and labor converted them into wholesale output; ${accounting.goodsSold.toFixed(0)} finished units were sold.`;
+    } else if (building.function === "retail") {
+      value = `${building.goodsInventory.toFixed(0)} consumer goods in stock · ${accounting.goodsSold.toFixed(0)} sold`;
+      why = `${accounting.goodsReceived.toFixed(0)} consumer-ready units arrived today, including ${accounting.importedSupplies.toFixed(0)} imported units.`;
+    } else if (building.function === "office" || building.function === "parking") {
+      value = `${accounting.serviceDelivered.toFixed(0)} service units delivered · ${formatDetailedMoney(accounting.salesRevenue)} revenue`;
+      why = `${accounting.activeWorkers} active staff turn demand into billable services; this building does not sell physical consumer goods.`;
+    } else {
+      value = `${accounting.goodsReceived.toFixed(0)} operating inputs received · ${accounting.serviceDelivered.toFixed(0)} services delivered`;
+      why = accounting.diagnosis;
+    }
+  }
   else if (mode === "congestion") {
     const workLegs = sumNumbers(trips.filter((trip) => trip.kind === "work").map((trip) => trip.volume));
     const visitLegs = sumNumbers(trips.filter((trip) => trip.kind === "visit").map((trip) => trip.volume));
@@ -2309,8 +3496,8 @@ function buildingStatInsight(stat: string, current: string): StatInsight | null 
   const traffic = simulation.getBuildingTrafficAttribution(building.id);
   const titles: Record<string, string> = {
     residents: "Residents and capacity", rentMonthly: "Monthly rent", landValue: "Land value", connectedTrips: "Attributed vehicle trips",
-    employees: "Staffing", serviceDelivered: "Service visits delivered", serviceQuality: "Service quality", averageWage: "Average workday wage",
-    customers: "Daily customers", goodsSold: "Goods sold", unitPrice: "Unit price", operatingRevenue: "Operating revenue", operatingCost: "Operating costs", profit: "Net result",
+    employees: "Staffing", activeWorkers: "Active staff today", serviceDelivered: "Service output delivered", serviceQuality: "Service quality", averageWage: "Average workday wage",
+    customers: "Daily customers", goodsProduced: "Finished goods produced", goodsSold: "Goods sold", goodsInventory: "Stock on hand", unitPrice: "Unit price", operatingRevenue: "Operating revenue", operatingCost: "Operating costs", profit: "Net result",
     municipalFunding: "City operating grant", salesRevenue: "Earned revenue", taxRevenueDaily: "City tax revenue", municipalBalance: "Municipal balance",
     dailyWages: "Payroll", supplyCost: "Purchased input cost", localSupplyCost: "Local input cost", importedSupplyCost: "Imported input cost", landedSupplyCost: "Landed supply cost", transportCost: "Delivery transport cost", maintenanceCost: "Maintenance cost",
     goodsReceived: "Inputs received", localSupplies: "Local supply", importedSupplies: "Imported supply",
@@ -2325,11 +3512,14 @@ function buildingStatInsight(stat: string, current: string): StatInsight | null 
     landValue: (point) => point.landValue,
     connectedTrips: (point) => point.workLegs + point.visitLegs,
     employees: (point) => point.employees,
+    activeWorkers: (point) => point.activeWorkers,
     serviceDelivered: (point) => point.serviceDelivered,
     serviceQuality: (point) => point.serviceQuality * 100,
     averageWage: (point) => point.averageWage,
     customers: (point) => point.customers,
+    goodsProduced: (point) => point.goodsProduced,
     goodsSold: (point) => point.goodsSold,
+    goodsInventory: (point) => point.goodsInventory,
     unitPrice: (point) => point.unitPrice,
     operatingRevenue: (point) => point.operatingRevenue,
     operatingCost: (point) => point.operatingCost,
@@ -2374,6 +3564,9 @@ function buildingStatInsight(stat: string, current: string): StatInsight | null 
     landValue: "A slowly adjusting value based on access, staffing, wellbeing, and congestion.",
     rentMonthly: "The monthly equivalent of the daily housing charge used by the accounting simulation.",
     employees: "Filled positions compared with the building's current labor requirement.",
+    activeWorkers: "Assigned employees who are scheduled to work today.",
+    goodsProduced: "Finished wholesale goods created from raw material inputs and active industrial labor today.",
+    goodsInventory: "Consumer stock for retailers or raw-material stock for industrial buildings.",
     unitPrice: "A market price that responds gradually to customer demand, inventory, input costs, and the city price level.",
     municipalFunding: "A city operating grant based on budgeted staffing, operating costs, tax capacity, and municipal finances.",
     salesRevenue: "Revenue earned from purchases or service fees, kept separate from public funding.",
@@ -2456,7 +3649,7 @@ function buildingFactors(
       factor("Housing capacity", `${building.residentCapacity} residents`, true),
     ];
   }
-  if (["employees", "serviceDelivered", "serviceQuality", "customers", "goodsSold"].includes(stat)) return [
+  if (["employees", "activeWorkers", "serviceDelivered", "serviceQuality", "customers", "goodsProduced", "goodsSold", "goodsInventory"].includes(stat)) return [
     factor("Staffing", staffing, accounting.staffingRatio >= 0.8),
     factor("Scheduled demand", `${accounting.customers || accounting.serviceDemand.toFixed(0)} visits today`, true),
     factor("Available goods", `${building.goodsInventory.toFixed(0)} in inventory; ${accounting.goodsReceived.toFixed(0)} delivered`, building.goodsInventory > 15),
@@ -2704,6 +3897,28 @@ function selectedTimeRatePreset(): (typeof TIME_RATE_PRESETS)[number] {
   return TIME_RATE_PRESETS[index]!;
 }
 
+function nearestTimeRatePresetIndex(
+  simulationSpeed: number,
+  timeHorizon: TimeHorizon,
+): number {
+  let bestIndex = 0;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < TIME_RATE_PRESETS.length; index += 1) {
+    const preset = TIME_RATE_PRESETS[index]!;
+    const horizonPenalty = preset.timeHorizon === timeHorizon ? 0 : 100;
+    const speedDifference = Math.abs(
+      Math.log(Math.max(simulationSpeed, 1 / 3_600))
+        - Math.log(preset.simulationSpeed),
+    );
+    const score = horizonPenalty + speedDifference;
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
 function accountingNode(
   label: string,
   value: number,
@@ -2759,6 +3974,25 @@ function formatActivity(value: DetailedPerson["currentActivity"]): string {
 
 function formatMode(value: DetailedPerson["schedule"][number]["mode"]): string {
   return value === "transit" ? "Transit" : capitalize(value);
+}
+
+function formatMobilityStatus(person: Readonly<DetailedPerson>): string {
+  if (person.mobility.phase === "walking") return `Walking to ${formatActivity(person.currentActivity)}`;
+  if (person.mobility.phase === "driving") return `Driving to ${formatActivity(person.currentActivity)}`;
+  if (person.mobility.phase === "transit") return `Transit to ${formatActivity(person.currentActivity)}`;
+  return formatActivity(person.currentActivity);
+}
+
+function formatMobilityDetail(value: MobilityDetailMode): string {
+  return value === "continuous"
+    ? "Continuous movement"
+    : value === "interpolated" ? "Schedule interpolation" : "Daily outcomes";
+}
+
+function outsideLocationName(buildingId: string): string {
+  return buildingId === "outside-work"
+    ? "Jobs outside the section"
+    : buildingId === "outside-market" ? "Regional market" : "Outside University City";
 }
 
 function formatMigration(value: DetailedPerson["migrationStatus"]): string {
@@ -3025,6 +4259,9 @@ function clearStatMapEmphasis(): void {
 
 renderer.resize();
 renderer.setSelectedFeature(selectedFeature?.id ?? null);
+syncExpansion();
+updateHistoryButtons();
+syncEnvironmentControls();
 initializeSearch();
 updateControlPreviews();
 setCameraMode(cameraMode);

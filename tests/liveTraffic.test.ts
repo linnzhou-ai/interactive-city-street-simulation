@@ -151,4 +151,110 @@ describe("LiveTrafficSystem", () => {
     expect(coverage.vehicleSegments.size).toBeGreaterThan(70);
     expect(coverage.pedestrianSegments.size).toBeGreaterThan(90);
   });
+
+  it("sends freight vehicles toward placed industrial buildings", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    traffic.setBuildingDestinations([
+      {
+        id: "industry",
+        kind: "industrial",
+        floors: 8,
+        x: 0,
+        z: 0,
+        rotation: 0,
+        color: "#a66b4e",
+      },
+    ]);
+
+    traffic.update(90, settings);
+
+    expect(
+      traffic.getVehicles().some((vehicle) => vehicle.kind === "truck"),
+    ).toBe(true);
+  });
+
+  it("routes economic trips over connected expansion roads", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const road = {
+      id: "expansion-road-1",
+      startX: 700,
+      startZ: -390,
+      endX: 900,
+      endZ: -390,
+      width: 18,
+      laneDelta: 0 as const,
+      bikeLane: true,
+      widenedSidewalk: true,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork(
+      [road],
+      [{ id: "crosswalk-1", kind: "crosswalk", x: 800, z: -390, rotation: 0 }],
+      [{
+        id: "placed-building-1",
+        kind: "commercial",
+        function: "retail",
+        floors: 5,
+        x: 860,
+        z: -350,
+        rotation: 0,
+        color: "#ffffff",
+      }],
+    );
+
+    const route = traffic.getRouteSegmentIds(
+      { x: 860, z: -350 },
+      "outside-market",
+    );
+    expect(route).toContain(road.id);
+    expect(traffic.getEndpointMobilitySupport({ x: 860, z: -350 })).toMatchObject({
+      connected: true,
+      walkingBonus: 13,
+      cyclingBonus: 7,
+    });
+
+    traffic.setEconomicRoadLoad(new Map([[road.id, 150]]));
+    const snapshot = traffic.getRoadTraffic().find((candidate) => candidate.segmentId === road.id);
+    expect(snapshot?.activeVehicles).toBeGreaterThan(0);
+    expect(snapshot?.congestionPercent).toBeGreaterThan(0);
+    expect(snapshot?.averageDelaySeconds).toBeGreaterThan(0);
+  });
+
+  it("marks isolated expansion parcels as disconnected", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    traffic.setExpansionNetwork(
+      [{
+        id: "isolated-road",
+        startX: 1_900,
+        startZ: 1_700,
+        endX: 2_100,
+        endZ: 1_700,
+        width: 16,
+      }],
+      [],
+      [],
+    );
+
+    expect(traffic.getRouteSegmentIds({ x: 2_000, z: 1_730 }, "outside-work")).toEqual([]);
+    expect(traffic.getEndpointMobilitySupport({ x: 2_000, z: 1_730 }).connected).toBe(false);
+  });
+
+  it("exposes active rule violations for renderer feedback", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    let sawActiveViolation = false;
+    for (let step = 0; step < 60; step += 1) {
+      traffic.update(0.5, {
+        vehicleVolume: 3,
+        pedestrianVolume: 2,
+        speedLimitMph: 25,
+      });
+      sawActiveViolation ||= [
+        ...traffic.getVehicles(),
+        ...traffic.getPedestrians(),
+      ].some((agent) => agent.violating);
+    }
+
+    expect(traffic.getMetrics().trafficViolations).toBeGreaterThan(0);
+    expect(sawActiveViolation).toBe(true);
+  });
 });

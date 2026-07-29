@@ -10,6 +10,9 @@ import type {
 import type { RoadTrafficSnapshot } from "../models/types";
 
 type RouteResolver = (connection: Readonly<EntityConnection>) => readonly string[];
+type RoadDescriptionResolver = (
+  segmentId: string,
+) => { name: string; description: string } | undefined;
 
 interface MutableRoadImpact extends Omit<BuildingRoadTrafficImpact, "kinds"> {
   kinds: Set<BuildingConnectionKind>;
@@ -22,6 +25,7 @@ export function calculateBuildingTrafficAttribution(
   roadTraffic: readonly RoadTrafficSnapshot[],
   cityCongestionPercent: number,
   resolveRoute: RouteResolver,
+  resolveRoad?: RoadDescriptionResolver,
 ): BuildingTrafficAttribution | null {
   const building = entities.buildings.find((candidate) => candidate.id === buildingId);
   if (!building) return null;
@@ -54,12 +58,13 @@ export function calculateBuildingTrafficAttribution(
     for (const segmentId of segments) {
       const traffic = trafficById.get(segmentId);
       const feature = featureById.get(segmentId);
-      if (!traffic || !feature) continue;
+      const roadDescription = resolveRoad?.(segmentId);
+      if (!traffic || (!feature && !roadDescription)) continue;
       routeDelaySeconds += traffic.averageDelaySeconds;
       const existing = impacts.get(segmentId) ?? {
         segmentId,
-        roadName: feature.name,
-        description: feature.description,
+        roadName: feature?.name ?? roadDescription?.name ?? segmentId,
+        description: feature?.description ?? roadDescription?.description ?? "User-built road",
         kinds: new Set<BuildingConnectionKind>(),
         roadTripsDaily: 0,
         congestionPercent: traffic.congestionPercent,

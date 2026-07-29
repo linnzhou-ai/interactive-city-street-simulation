@@ -5,6 +5,52 @@ import { PENN_BUILDINGS } from "../src/data/pennBuildings";
 import type { BuildingAccessibility } from "../src/models/entityTypes";
 
 describe("University City entities", () => {
+  it("adds expansion buildings without resetting existing residents", () => {
+    const simulation = new Simulation();
+    const before = simulation.getState();
+    const resident = before.entities.people[0];
+    const money = resident.money;
+
+    simulation.setExpansionDesign(
+      [{
+        id: "placed-building-1",
+        kind: "commercial",
+        function: "retail",
+        x: 860,
+        z: -350,
+        rotation: 0,
+        floors: 6,
+        color: "#bf765f",
+      }],
+      [{
+        id: "expansion-road-1",
+        startX: 700,
+        startZ: -390,
+        endX: 900,
+        endZ: -390,
+        width: 18,
+      }],
+      [],
+    );
+
+    const after = simulation.getState();
+    const expansion = after.entities.buildings.find(
+      (building) => building.id === "placed-building-1",
+    );
+    expect(after.entities.people.find((person) => person.id === resident.id)?.money).toBe(money);
+    expect(expansion).toMatchObject({
+      source: "expansion",
+      function: "retail",
+      developmentStage: "construction",
+    });
+    expect(expansion?.employeeIds).toHaveLength(0);
+    expect(expansion?.accounting.status).toBe("construction");
+    expect(expansion?.accounting.salesRevenue).toBe(0);
+    expect(after.entities.connections.some((connection) =>
+      connection.kind === "delivery" && connection.toBuildingId === expansion?.id
+    )).toBe(true);
+  });
+
   it("assigns a function and stable identity to Main's rendered buildings", () => {
     expect(PENN_BUILDINGS.length).toBeGreaterThan(100);
     expect(new Set(PENN_BUILDINGS.map((building) => building.id)).size).toBe(
@@ -73,6 +119,73 @@ describe("University City entities", () => {
       expect(building.accounting.importedSupplyCost).toBeGreaterThanOrEqual(0);
       expect(building.accounting.transportCost).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("separates raw-material production, consumer stock, and business services", () => {
+    const buildings = new Simulation().getState().entities.buildings;
+    const industrial = buildings.find((building) =>
+      building.function === "industrial" && building.accounting.activeWorkers > 0);
+    const retailer = buildings.find((building) => building.function === "retail");
+    const office = buildings.find((building) =>
+      building.function === "office" && building.accounting.activeWorkers > 0);
+
+    expect(industrial).toBeDefined();
+    expect(industrial?.accounting.goodsProduced).toBeGreaterThan(0);
+    expect(industrial?.accounting.goodsSold).toBeLessThanOrEqual(
+      industrial?.accounting.goodsProduced ?? 0,
+    );
+    expect(retailer?.accounting.goodsProduced).toBe(0);
+    expect(office).toBeDefined();
+    expect(office?.accounting.goodsSold).toBe(0);
+    expect(office?.accounting.serviceDelivered).toBeGreaterThan(0);
+  });
+
+  it("does not let unstaffed private businesses earn sales revenue", () => {
+    const simulation = new Simulation();
+    const initial = simulation.getState();
+    const weekend = advanceDetailedTime(initial.entities, initial.city, 5, 0, {
+      roadCapacityScale: 1,
+      transitServiceScale: 1,
+      zoningStrictness: 1,
+      congestionPercent: initial.city.metrics.congestionPercent,
+    });
+    const unstaffed = weekend.buildings.filter((building) =>
+      ["retail", "office", "industrial", "parking"].includes(building.function)
+      && building.accounting.activeWorkers === 0);
+
+    expect(unstaffed.length).toBeGreaterThan(0);
+    for (const building of unstaffed) {
+      expect(building.accounting.salesRevenue).toBe(0);
+      expect(building.accounting.goodsProduced).toBe(0);
+      expect(building.accounting.serviceDelivered).toBe(0);
+    }
+  });
+
+  it("bases housing maintenance on the building rather than its rent", () => {
+    const simulation = new Simulation();
+    const initial = simulation.getState();
+    const homeId = initial.entities.buildings.find((building) => building.function === "housing")?.id;
+    expect(homeId).toBeDefined();
+    if (!homeId) return;
+    const maintenanceAtRent = (rentDaily: number): number => {
+      const entities = structuredClone(initial.entities);
+      const home = entities.buildings.find((building) => building.id === homeId);
+      if (!home) return -1;
+      home.rentDaily = rentDaily;
+      home.cashReserve = 100_000;
+      for (const household of entities.households.filter((candidate) => candidate.homeBuildingId === homeId)) {
+        household.money = 10_000;
+      }
+      const advanced = advanceDetailedTime(entities, initial.city, 1, 0, {
+        roadCapacityScale: 1,
+        transitServiceScale: 1,
+        zoningStrictness: 1,
+        congestionPercent: initial.city.metrics.congestionPercent,
+      });
+      return advanced.buildings.find((building) => building.id === homeId)?.accounting.maintenanceCost ?? -1;
+    };
+
+    expect(maintenanceAtRent(110)).toBe(maintenanceAtRent(22));
   });
 
   it("advances detailed labor and accounting on long time scales", () => {

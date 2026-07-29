@@ -2,6 +2,7 @@ import type {
   CityActivitySnapshot,
   DesignImpact,
   ManualSignalTarget,
+  MobilityDetailMode,
   ScenarioSettings,
   SignalControlMode,
   SignalSnapshot,
@@ -9,6 +10,10 @@ import type {
   SimulationMetrics,
   SimulationState,
   FeatureDesign,
+  ExpansionRoad,
+  ExpansionStreetObject,
+  PlacedBuilding,
+  WeatherMode,
 } from "../models/types";
 import type {
   CityPolicySettings,
@@ -21,6 +26,8 @@ import type {
   BuildingTrafficAttribution,
   EntityBuildingDefinition,
   EntityConnection,
+  PersonMobilityOutcome,
+  TravelMode,
 } from "../models/entityTypes";
 import { PENN_BUILDINGS } from "../data/pennBuildings";
 import type { RoadSegmentModel } from "../data/roadLanes";
@@ -31,16 +38,25 @@ import {
 } from "./cityModel";
 import { LiveTrafficSystem } from "./liveTraffic";
 import type { TrafficRouteEndpoint } from "./liveTraffic";
+import {
+  EMPTY_BUILDING_ACTIVITY,
+  summarizeBuildingActivity,
+  type BuildingActivitySummary,
+} from "./buildingActivity";
+import { getPhillyCrashRiskProfile } from "../data/phillyCrashProfile";
 import { calculateBuildingTrafficAttribution } from "./trafficAttribution";
 import {
   advanceDetailedTime,
   createDetailedEntityState,
+  syncDetailedEntityBuildings,
 } from "./entitySimulation";
+import { placedBuildingToDefinition } from "./expansionEconomy";
 import {
   cityMinutesPerSecond,
   formatClockTime,
   formatLongDate,
 } from "./timeScale";
+import { SampledMobilitySystem } from "./sampledMobility";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSpeed: 1,
@@ -57,6 +73,7 @@ export const DEFAULT_SETTINGS: ScenarioSettings = {
 
 const START_MINUTE = 7 * 60;
 const MAX_CITY_EVENTS = 8;
+const SLOW_STREET_ANIMATION_SCALE = 0.65;
 
 const EMPTY_DESIGN_IMPACT: DesignImpact = {
   laneCapacityDelta: 0,
@@ -88,6 +105,9 @@ export function createInitialState(
     elapsedSeconds: 0,
     cityElapsedMinutes: 0,
     timeHorizon: DEFAULT_SETTINGS.timeHorizon,
+    mobilityDetailMode: mobilityDetailModeForHorizon(DEFAULT_SETTINGS.timeHorizon),
+    timeOfDayHours: START_MINUTE / 60,
+    weather: "clear",
     signalPhase: signals[0]?.phase ?? "ns-green",
     signals,
     vehicles: traffic.getVehicles(),
@@ -104,9 +124,17 @@ export function createInitialState(
 export class Simulation {
   private settings: ScenarioSettings = { ...DEFAULT_SETTINGS };
   private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
+  private readonly sampledMobility = new SampledMobilitySystem();
   private state: SimulationState;
+  private mobilityOutcomes: ReadonlyMap<string, PersonMobilityOutcome> = new Map();
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
+  private buildingActivity: BuildingActivitySummary = {
+    ...EMPTY_BUILDING_ACTIVITY,
+  };
   private lastDetailedTimeSlot = 0;
+  private expansionBuildings: PlacedBuilding[] = [];
+  private expansionRoads: ExpansionRoad[] = [];
+  private expansionStreetObjects: ExpansionStreetObject[] = [];
 
   constructor(
     private readonly cityDefinition: CitySectionDefinition =
@@ -133,6 +161,19 @@ export class Simulation {
     return calculateMetrics(this.settings, EMPTY_DESIGN_IMPACT);
   }
 
+  getBuildingActivity(): Readonly<BuildingActivitySummary> {
+    return this.buildingActivity;
+  }
+
+  getExpansionBuildingAccess(buildingId: string): {
+    connected: boolean;
+    walkingBonus: number;
+    cyclingBonus: number;
+  } | null {
+    const building = this.expansionBuildings.find((candidate) => candidate.id === buildingId);
+    return building ? this.traffic.getEndpointMobilitySupport(building) : null;
+  }
+
   getSignal(intersectionId: string): SignalSnapshot | undefined {
     return this.traffic.getSignal(intersectionId);
   }
@@ -148,6 +189,7 @@ export class Simulation {
       this.state.roadTraffic,
       this.state.city.metrics.congestionPercent,
       (connection) => this.routeForConnection(connection),
+      (segmentId) => this.traffic.getRoadDescription(segmentId),
     );
   }
 
@@ -167,17 +209,46 @@ export class Simulation {
       activity.vehicleDemandLevel,
       activity.pedestrianDemandLevel,
     );
-    this.state = createInitialState(this.traffic, city, this.buildingDefinitions);
+    const definitions = [
+      ...this.buildingDefinitions,
+      ...this.expansionBuildings.map(placedBuildingToDefinition),
+    ];
+    this.state = createInitialState(this.traffic, city, definitions);
+    this.traffic.setExpansionNetwork(
+      this.expansionRoads,
+      this.expansionStreetObjects,
+      this.expansionBuildings,
+    );
     this.state.timeHorizon = this.settings.timeHorizon;
+    this.state.mobilityDetailMode = mobilityDetailModeForHorizon(
+      this.settings.timeHorizon,
+    );
     this.lastDetailedTimeSlot = 0;
+    this.mobilityOutcomes = new Map();
     this.syncDemandFromCity();
+    this.sampledMobility.invalidateRoutes();
   }
 
   setSimulationSpeed(speed: number): void {
     this.settings = {
       ...this.settings,
-      simulationSpeed: Math.min(2, Math.max(0.5, speed)),
+      simulationSpeed: Math.min(2, Math.max(1 / 3_600, speed)),
     };
+  }
+
+  setTimeOfDay(hours: number): void {
+    const day = Math.floor(this.state.cityElapsedMinutes / 1440);
+    this.state.cityElapsedMinutes =
+      day * 1440 +
+      normalizeHour(hours - START_MINUTE / 60) * 60;
+    this.state.timeOfDayHours = normalizeHour(hours);
+    this.syncDemandFromCity();
+    this.refreshSampledMobility();
+    this.syncTrafficState();
+  }
+
+  setWeather(weather: WeatherMode): void {
+    this.state.weather = weather;
   }
 
   setTimeHorizon(timeHorizon: TimeHorizon): void {
@@ -186,6 +257,9 @@ export class Simulation {
     }
     this.settings = { ...this.settings, timeHorizon };
     this.state.timeHorizon = timeHorizon;
+    this.state.mobilityDetailMode = mobilityDetailModeForHorizon(timeHorizon);
+    this.refreshSampledMobility();
+    this.syncTrafficState();
   }
 
   setSpeedLimit(speedLimitMph: number): void {
@@ -266,7 +340,42 @@ export class Simulation {
     designs: ReadonlyMap<string, Readonly<FeatureDesign>>,
   ): void {
     this.traffic.setRoadDesigns(designs);
+    this.sampledMobility.invalidateRoutes();
+    this.refreshSampledMobility();
     this.syncTrafficState();
+  }
+
+  setPlacedBuildings(buildings: readonly PlacedBuilding[]): void {
+    this.setExpansionDesign(
+      buildings,
+      this.expansionRoads,
+      this.expansionStreetObjects,
+    );
+  }
+
+  setExpansionDesign(
+    buildings: readonly PlacedBuilding[],
+    roads: readonly ExpansionRoad[],
+    streetObjects: readonly ExpansionStreetObject[],
+  ): void {
+    this.expansionBuildings = buildings.map((building) => ({ ...building }));
+    this.expansionRoads = roads.map((road) => ({ ...road }));
+    this.expansionStreetObjects = streetObjects.map((object) => ({ ...object }));
+    this.buildingActivity = summarizeBuildingActivity(buildings);
+    const definitions = [
+      ...this.buildingDefinitions,
+      ...this.expansionBuildings.map(placedBuildingToDefinition),
+    ];
+    this.state.entities = syncDetailedEntityBuildings(
+      this.state.entities,
+      definitions,
+    );
+    this.traffic.setExpansionNetwork(roads, streetObjects, buildings);
+    this.sampledMobility.invalidateRoutes();
+    this.refreshSampledMobility();
+    this.syncEconomicRoadLoad();
+    this.syncTrafficState();
+    this.updateMetrics();
   }
 
   update(deltaSeconds: number): void {
@@ -278,6 +387,9 @@ export class Simulation {
     );
     this.state.cityElapsedMinutes +=
       simulationDelta * cityMinutesPerSecond(this.settings.timeHorizon);
+    this.state.timeOfDayHours = normalizeHour(
+      (START_MINUTE + this.state.cityElapsedMinutes) / 60,
+    );
     const completedDays = Math.floor(this.state.cityElapsedMinutes / 1440);
     if (completedDays > previousCompletedDays) {
       const cityUpdate = advanceCitySection(
@@ -290,6 +402,7 @@ export class Simulation {
         ...cityUpdate.events,
         ...this.state.cityEvents,
       ].slice(0, MAX_CITY_EVENTS);
+      this.refreshSampledMobility();
     }
     const detailedTimeSlot = Math.floor(this.state.cityElapsedMinutes / 5);
     if (detailedTimeSlot !== this.lastDetailedTimeSlot) {
@@ -320,25 +433,89 @@ export class Simulation {
             0.4,
             1.35,
           ),
+          mobilityOutcomesByPerson: this.mobilityOutcomes,
         },
       );
+      this.syncEconomicRoadLoad();
     }
+    this.refreshSampledMobility();
     this.syncDemandFromCity();
-    this.traffic.update(simulationDelta, this.settings);
+    const timeDemand = getTimeDemandAdjustment(this.state.timeOfDayHours);
+    const crashRisk = getPhillyCrashRiskProfile(this.state.timeOfDayHours);
+    const weatherDemand =
+      this.state.weather === "rain"
+        ? { vehicle: 0.15, pedestrian: -0.65, speed: 0.78 }
+        : this.state.weather === "fog"
+          ? { vehicle: -0.1, pedestrian: -0.25, speed: 0.86 }
+          : { vehicle: 0, pedestrian: 0, speed: 1 };
+    const expansionDemand = this.expansionDemand();
+    const showBackground = this.state.mobilityDetailMode !== "outcome";
+    this.traffic.setBackgroundTrafficVisible(showBackground);
+    const trafficDelta = showBackground
+      ? this.settings.simulationSpeed < 0.5
+        ? deltaSeconds * SLOW_STREET_ANIMATION_SCALE
+        : simulationDelta
+      : Math.min(simulationDelta, 0.1);
+    this.traffic.update(trafficDelta, {
+      ...this.settings,
+      speedLimitMph: this.settings.speedLimitMph * weatherDemand.speed,
+      vehicleVolume: showBackground ? clamp(
+        this.settings.vehicleVolume +
+          timeDemand.vehicle +
+          weatherDemand.vehicle +
+          expansionDemand.vehicle,
+        0,
+        3,
+      ) : 0,
+      pedestrianVolume: showBackground ? clamp(
+        this.settings.pedestrianVolume +
+          timeDemand.pedestrian +
+          weatherDemand.pedestrian +
+          expansionDemand.pedestrian,
+        0,
+        3,
+      ) : 0,
+      violationRiskMultiplier: crashRisk.trafficMultiplier,
+      pedestrianViolationRiskMultiplier: crashRisk.pedestrianMultiplier,
+    });
     this.syncTrafficState();
   }
 
   private routeForConnection(connection: Readonly<EntityConnection>): string[] {
-    const endpoint = (buildingId: string): TrafficRouteEndpoint => {
-      const building = this.state.entities.buildings.find(
-        (candidate) => candidate.id === buildingId,
-      );
-      if (building) return { x: building.x, z: building.z };
-      return buildingId === "outside-market" ? "outside-market" : "outside-work";
-    };
     return this.traffic.getRouteSegmentIds(
-      endpoint(connection.fromBuildingId),
-      endpoint(connection.toBuildingId),
+      this.trafficEndpoint(connection.fromBuildingId),
+      this.trafficEndpoint(connection.toBuildingId),
+    );
+  }
+
+  private trafficEndpoint(buildingId: string): TrafficRouteEndpoint {
+    const building = this.state.entities.buildings.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    if (building) return { x: building.x, z: building.z };
+    return buildingId === "outside-market" ? "outside-market" : "outside-work";
+  }
+
+  private refreshSampledMobility(): void {
+    const result = this.sampledMobility.update(
+      this.state.entities.people,
+      this.state.entities.buildings,
+      START_MINUTE + this.state.cityElapsedMinutes,
+      this.state.mobilityDetailMode,
+      this.state.roadTraffic,
+      this.state.city.metrics.averageTrafficDelayMinutes,
+      (fromBuildingId, toBuildingId, mode: TravelMode) =>
+        this.traffic.getRoutePath(
+          this.trafficEndpoint(fromBuildingId),
+          this.trafficEndpoint(toBuildingId),
+          mode,
+        ),
+    );
+    this.state.entities = { ...this.state.entities, people: result.people };
+    this.mobilityOutcomes = result.outcomes;
+    this.traffic.setSampledMobility(result.vehicles, result.pedestrians);
+    this.traffic.setBackgroundTrafficVisible(
+      this.state.mobilityDetailMode !== "outcome",
     );
   }
 
@@ -387,6 +564,20 @@ export class Simulation {
     );
     const roadCapacityBonus = clamp((this.settings.roadCapacity - 100) * 0.12, -7, 7);
     for (const building of this.state.entities.buildings) {
+      const mobility = this.traffic.getEndpointMobilitySupport(building);
+      if (building.source === "expansion" && !mobility.connected) {
+        profiles.set(building.id, {
+          overall: 8,
+          workers: 6,
+          customers: 5,
+          freight: 3,
+          services: 12,
+          averageTravelMinutes: 60,
+          congestionPenalty: 70,
+          transitBonus: 0,
+        });
+        continue;
+      }
       const aggregate = routeAggregates.get(building.id);
       const routeDelay = aggregate && aggregate.volume > 0
         ? aggregate.weightedDelay / aggregate.volume
@@ -404,10 +595,11 @@ export class Simulation {
         0,
         12,
       );
-      const workers = clamp(82 + transitBonus + centralityBonus * 0.35 - congestionPenalty, 18, 100);
-      const customers = clamp(80 + transitBonus * 0.55 + centralityBonus - congestionPenalty * 0.82, 18, 100);
+      const activeTravelBonus = mobility.walkingBonus + mobility.cyclingBonus;
+      const workers = clamp(82 + transitBonus + centralityBonus * 0.35 + activeTravelBonus * 0.45 - congestionPenalty, 18, 100);
+      const customers = clamp(80 + transitBonus * 0.55 + centralityBonus + mobility.walkingBonus * 0.75 + mobility.cyclingBonus * 0.25 - congestionPenalty * 0.82, 18, 100);
       const freight = clamp(78 + roadCapacityBonus - congestionPenalty * 1.08, 15, 100);
-      const services = clamp(82 + transitBonus * 0.72 + centralityBonus * 0.65 - congestionPenalty * 0.68, 20, 100);
+      const services = clamp(82 + transitBonus * 0.72 + centralityBonus * 0.65 + mobility.walkingBonus * 0.8 - congestionPenalty * 0.68, 20, 100);
       profiles.set(building.id, {
         overall: roundOneDecimal((workers + customers + freight + services) / 4),
         workers: roundOneDecimal(workers),
@@ -423,9 +615,11 @@ export class Simulation {
   }
 
   private cityPolicy(): Partial<CityPolicySettings> {
+    const expansionCapacity = this.traffic.getExpansionCapacityScale();
     const laneScale =
       (this.settings.roadCapacity / 100) *
-      (1 + this.designImpact.laneCapacityDelta * 0.025);
+      (1 + this.designImpact.laneCapacityDelta * 0.025) *
+      expansionCapacity;
     const signalScale = 1 - Math.min(
       0.18,
       Math.abs(this.settings.signalCycleSeconds - 75) / 500,
@@ -438,6 +632,40 @@ export class Simulation {
       roadCapacityScale: clamp(laneScale * signalScale * speedScale, 0.5, 1.5),
       zoningStrictness: this.settings.zoningStrictness,
       transitServiceScale: 12 / this.settings.transitHeadwayMinutes,
+    };
+  }
+
+  private syncEconomicRoadLoad(): void {
+    const load = new Map<string, number>();
+    for (const connection of this.state.entities.connections) {
+      const trips = connection.kind === "delivery"
+        ? Math.max(0.25, connection.volume / 18) * 2
+        : connection.volume * 0.42;
+      for (const segmentId of this.routeForConnection(connection)) {
+        load.set(segmentId, (load.get(segmentId) ?? 0) + trips);
+      }
+    }
+    this.traffic.setEconomicRoadLoad(load);
+  }
+
+  private expansionDemand(): { vehicle: number; pedestrian: number } {
+    const ids = new Set(this.expansionBuildings.map((building) => building.id));
+    let vehicleTrips = 0;
+    let walkingTrips = 0;
+    for (const connection of this.state.entities.connections) {
+      if (!ids.has(connection.fromBuildingId) && !ids.has(connection.toBuildingId)) {
+        continue;
+      }
+      if (connection.kind === "delivery") {
+        vehicleTrips += Math.max(0.25, connection.volume / 18) * 2;
+      } else {
+        vehicleTrips += connection.volume * 0.35;
+        walkingTrips += connection.volume * 0.45;
+      }
+    }
+    return {
+      vehicle: clamp(vehicleTrips / 260, 0, 0.8),
+      pedestrian: clamp(walkingTrips / 320, 0, 0.8),
     };
   }
 
@@ -524,6 +752,14 @@ export function calculateCityActivity(
     shoppingSharePercent: roundPercent(shopping / totalTripCauses),
     freightSharePercent: roundPercent(freight / totalTripCauses),
   };
+}
+
+export function mobilityDetailModeForHorizon(
+  horizon: TimeHorizon,
+): MobilityDetailMode {
+  if (horizon === "day") return "continuous";
+  if (horizon === "week") return "interpolated";
+  return "outcome";
 }
 
 function profileForHour(
@@ -621,9 +857,39 @@ export function calculateMetrics(
     activeVehicles: 0,
     activePedestrians: 0,
     crossingsCompleted: 0,
+    buildingArrivals: 0,
+    trafficViolations: 0,
+    jaywalkingViolations: 0,
   };
+}
+
+export function getTimeDemandAdjustment(
+  hour: number,
+): { vehicle: number; pedestrian: number } {
+  const normalized = normalizeHour(hour);
+  if (
+    (normalized >= 7 && normalized < 9.5) ||
+    (normalized >= 16 && normalized < 19)
+  ) {
+    return { vehicle: 0.65, pedestrian: 0.35 };
+  }
+  if (normalized >= 11 && normalized < 14) {
+    return { vehicle: 0.15, pedestrian: 0.55 };
+  }
+  if (normalized >= 22 || normalized < 6) {
+    return { vehicle: -0.85, pedestrian: -1.1 };
+  }
+  return { vehicle: 0, pedestrian: 0 };
+}
+
+export function getTimeViolationRiskMultiplier(hour: number): number {
+  return getPhillyCrashRiskProfile(hour).trafficMultiplier;
 }
 
 function roundOneDecimal(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function normalizeHour(value: number): number {
+  return ((value % 24) + 24) % 24;
 }

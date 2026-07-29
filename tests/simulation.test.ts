@@ -25,6 +25,93 @@ describe("Simulation", () => {
     expect(simulation.getState().metrics.activePedestrians).toBeGreaterThan(0);
   });
 
+  it("uses the 758 detailed residents as authoritative visible travelers", () => {
+    const simulation = new Simulation();
+    simulation.setTimeOfDay(7.9);
+    const state = simulation.getState();
+    const travelingPeople = state.entities.people.filter((person) =>
+      person.mobility.phase === "walking"
+      || person.mobility.phase === "driving"
+      || person.mobility.phase === "transit"
+    );
+
+    expect(state.entities.people).toHaveLength(758);
+    expect(travelingPeople.length).toBeGreaterThan(0);
+    for (const pedestrian of state.pedestrians.filter((agent) =>
+      agent.source === "sampled-resident"
+    )) {
+      const person = state.entities.people.find(
+        (candidate) => candidate.id === pedestrian.personId,
+      );
+      expect(person?.mobility.phase).toBe("walking");
+      expect(person?.mobility.x).toBeCloseTo(pedestrian.x, 5);
+      expect(person?.mobility.z).toBeCloseTo(pedestrian.z, 5);
+    }
+    for (const vehicle of state.vehicles.filter((agent) =>
+      agent.source === "sampled-resident"
+    )) {
+      expect(vehicle.occupantPersonIds?.length).toBeGreaterThan(0);
+      for (const personId of vehicle.occupantPersonIds ?? []) {
+        const person = state.entities.people.find((candidate) => candidate.id === personId);
+        expect(["driving", "transit"]).toContain(person?.mobility.phase);
+        expect(person?.mobility.vehicleId).toBe(vehicle.id);
+        expect(person?.mobility.x).toBeCloseTo(vehicle.x, 5);
+        expect(person?.mobility.z).toBeCloseTo(vehicle.z, 5);
+      }
+    }
+  });
+
+  it("derives movement from city time instead of real-time agent stepping", () => {
+    const first = new Simulation();
+    const second = new Simulation();
+    first.setTimeOfDay(7.75);
+    second.setTimeOfDay(7.75);
+    first.start();
+    second.start();
+
+    first.update(0.1);
+    second.update(0.1);
+
+    const firstTraveler = first.getState().entities.people.find((person) =>
+      person.mobility.phase !== "inside" && person.mobility.phase !== "outside"
+    );
+    const secondTraveler = second.getState().entities.people.find(
+      (person) => person.id === firstTraveler?.id,
+    );
+    expect(firstTraveler).toBeDefined();
+    expect(secondTraveler?.mobility).toEqual(firstTraveler?.mobility);
+  });
+
+  it("supports a readable 10x clock for observing resident movement", () => {
+    const simulation = new Simulation();
+    simulation.setTimeOfDay(7.9);
+    simulation.setSimulationSpeed(1 / 360);
+    const beforeMinutes = simulation.getState().cityElapsedMinutes;
+    const traveler = simulation.getState().entities.people.find((person) =>
+      person.mobility.phase !== "inside"
+      && person.mobility.phase !== "outside"
+      && person.mobility.routeProgress > 0.1
+      && person.mobility.routeProgress < 0.9
+    );
+    simulation.start();
+
+    simulation.update(1);
+
+    const after = simulation.getState();
+    const movedTraveler = after.entities.people.find(
+      (person) => person.id === traveler?.id,
+    );
+    expect(traveler).toBeDefined();
+    expect(after.cityElapsedMinutes - beforeMinutes).toBeCloseTo(1 / 6, 5);
+    expect(movedTraveler?.mobility.routeProgress).toBeGreaterThan(
+      traveler?.mobility.routeProgress ?? 0,
+    );
+    expect(
+      (movedTraveler?.mobility.routeProgress ?? 0)
+        - (traveler?.mobility.routeProgress ?? 0),
+    ).toBeLessThan(0.05);
+  });
+
   it("cycles green, yellow, all-red, and pedestrian signal phases", () => {
     const simulation = new Simulation();
     simulation.setSignalTiming("30-market", {
@@ -100,6 +187,32 @@ describe("Simulation", () => {
       initial.metrics.population,
     );
     expect(simulation.getState().timeHorizon).toBe("year");
+    expect(simulation.getState().mobilityDetailMode).toBe("outcome");
+    expect(simulation.getState().vehicles.every((vehicle) =>
+      vehicle.source === "sampled-resident"
+    )).toBe(true);
+    expect(simulation.getState().pedestrians.every((pedestrian) =>
+      pedestrian.source === "sampled-resident"
+    )).toBe(true);
+    expect(simulation.getState().entities.people.some((person) =>
+      person.dailyTravelDelayMinutes > 0
+    )).toBe(true);
+  });
+
+  it("switches acceleration tiers without losing resident identity", () => {
+    const simulation = new Simulation();
+    simulation.setTimeHorizon("year");
+    simulation.setTimeOfDay(7.9);
+    const accelerated = simulation.getState();
+    const sampledPersonIds = new Set(accelerated.entities.people.map((person) => person.id));
+
+    expect(accelerated.mobilityDetailMode).toBe("outcome");
+    expect(accelerated.vehicles.flatMap((vehicle) => vehicle.occupantPersonIds ?? [])
+      .every((personId) => sampledPersonIds.has(personId))).toBe(true);
+
+    simulation.setTimeHorizon("day");
+    expect(simulation.getState().mobilityDetailMode).toBe("continuous");
+    expect(simulation.getState().entities.people).toHaveLength(758);
   });
 
   it("reflects street upgrades in live district metrics", () => {

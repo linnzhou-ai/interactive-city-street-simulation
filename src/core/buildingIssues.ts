@@ -80,6 +80,7 @@ function addProfitabilityIssue(
   issues: BuildingIssue[],
   building: Readonly<DetailedBuilding>,
 ): void {
+  if (building.developmentStage === "construction") return;
   if (building.function === "housing" || CIVIC_FUNCTIONS.has(building.function)) return;
   const loss = -building.accounting.profit;
   if (loss <= 0) return;

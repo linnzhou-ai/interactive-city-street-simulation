@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
     <meta
       name="description"
       content="Edit and simulate a living 3D street network around Penn and University City."
@@ -75,6 +76,12 @@
           <span class="walk-marker-leg walk-marker-leg-left"></span>
           <span class="walk-marker-leg walk-marker-leg-right"></span>
         </button>
+        <div class="flow-direction-legend" aria-label="Selected entity flow legend">
+          <span data-flow="work"><i aria-hidden="true"></i><b>Work</b><small>home → job</small></span>
+          <span data-flow="visit"><i aria-hidden="true"></i><b>Visits</b><small>person → destination</small></span>
+          <span data-flow="delivery"><i aria-hidden="true"></i><b>Freight</b><small>supplier → receiver</small></span>
+          <em>Markers move toward the destination</em>
+        </div>
       </main>
 
       <header class="topbar hud-panel">
@@ -162,8 +169,145 @@
           </div>
           <span class="live-badge">Live</span>
         </div>
-        <p class="tool-section-label">Street tools</p>
-        <div class="tool-list" aria-label="Street design tools">
+        <details class="project-storage">
+          <summary>Project and history</summary>
+          <div class="project-storage-actions">
+            <button id="save-project-button" type="button">Save</button>
+            <button id="load-project-button" type="button">Load</button>
+            <button id="export-project-button" type="button">Export</button>
+            <button id="import-project-button" type="button">Import</button>
+            <input id="import-project-file" type="file" accept=".json,application/json" hidden />
+          </div>
+          <div class="project-storage-actions">
+            <button id="undo-edit-button" type="button">Undo</button>
+            <button id="redo-edit-button" type="button">Redo</button>
+          </div>
+        </details>
+        <div class="build-workspace-switch" aria-label="Build workspace">
+          <button id="city-edit-workspace" type="button" aria-pressed="true">
+            <span>Edit streets</span>
+            <small>Existing city</small>
+          </button>
+          <button id="expansion-workspace" type="button" aria-pressed="false">
+            <span>Expand city</span>
+            <small>New roads and buildings</small>
+          </button>
+        </div>
+        <p id="build-workspace-help" class="placement-help">
+          Edit the original campus streets without changing the city layout.
+        </p>
+        <div class="build-context" aria-live="polite">
+          <span>Selected</span>
+          <strong id="build-selection-name">Walnut Street</strong>
+        </div>
+        <p id="build-action-status" class="build-action-status" data-tone="info" aria-live="polite">
+          Select a highlighted street, then choose an edit below.
+        </p>
+        <div data-build-workspace-section="expansion" hidden>
+          <p class="tool-section-label">Expansion streets</p>
+          <div class="tool-list compact-tool-list">
+            <button id="draw-expansion-road-button" class="tool-button" type="button" aria-pressed="false">
+              <span class="tool-icon add-lane-icon"></span>
+              <span>Draw road</span>
+              <small>2 clicks</small>
+            </button>
+            <button id="place-expansion-crosswalk-button" class="tool-button" type="button" aria-pressed="false">
+              <span class="tool-icon crossing-icon"></span>
+              <span>Crosswalk</span>
+              <small>Place</small>
+            </button>
+            <button id="place-expansion-signal-button" class="tool-button" type="button" aria-pressed="false">
+              <span class="tool-icon island-icon"></span>
+              <span>Traffic signal</span>
+              <small>Place</small>
+            </button>
+            <button id="erase-expansion-button" class="tool-button" type="button" aria-pressed="false">
+              <span class="tool-icon remove-lane-icon"></span>
+              <span>Bulldoze</span>
+              <small>User-built only</small>
+            </button>
+          </div>
+          <p id="expansion-road-count" class="placement-help">0 roads · 0 objects</p>
+          <div id="expansion-road-editor" hidden>
+            <p class="tool-section-label">Selected road</p>
+            <div class="building-tool-grid">
+              <button type="button" data-expansion-road-tool="add-lane">Add lane</button>
+              <button type="button" data-expansion-road-tool="remove-lane">Remove lane</button>
+              <button type="button" data-expansion-road-tool="bike-lane">Bike lane</button>
+              <button type="button" data-expansion-road-tool="sidewalk">Sidewalk</button>
+              <button type="button" data-expansion-road-tool="direction">Direction</button>
+              <button id="delete-expansion-road-button" type="button">Delete road</button>
+            </div>
+          </div>
+          <p class="tool-section-label">New buildings</p>
+          <div class="building-tool-grid">
+            <button class="building-type-button" type="button" data-building-tool="residential" aria-pressed="false">
+              <span>Housing</span><small>Apartments</small>
+            </button>
+            <button class="building-type-button" type="button" data-building-tool="commercial" aria-pressed="false">
+              <span>Shops</span><small>Retail</small>
+            </button>
+            <button class="building-type-button" type="button" data-building-tool="industrial" aria-pressed="false">
+              <span>Industry</span><small>Goods producer</small>
+            </button>
+            <button class="building-type-button" type="button" data-building-tool="civic" aria-pressed="false">
+              <span>Public</span><small>School</small>
+            </button>
+          </div>
+          <div class="building-placement-settings">
+            <label for="building-floors-control">Floors
+              <input id="building-floors-control" type="number" min="1" max="20" value="5" />
+            </label>
+            <label for="building-color-control">Color
+              <input id="building-color-control" type="color" value="#bf765f" />
+            </label>
+          </div>
+          <div id="building-editor" class="building-editor" hidden>
+            <strong>Selected building</strong>
+            <span id="building-position-output">X 0 · Z 0</span>
+            <label for="selected-building-kind">Use
+              <select id="selected-building-kind">
+                <optgroup label="Housing">
+                  <option value="housing">Apartments</option>
+                </optgroup>
+                <optgroup label="Private economy">
+                  <option value="retail">Retail store</option>
+                  <option value="office">Office</option>
+                  <option value="industrial">Goods producer</option>
+                  <option value="parking">Parking facility</option>
+                </optgroup>
+                <optgroup label="Public and community">
+                  <option value="school">School</option>
+                  <option value="library">Library</option>
+                  <option value="clinic">Clinic</option>
+                  <option value="culture">Cultural venue</option>
+                  <option value="recreation">Recreation center</option>
+                  <option value="university">University building</option>
+                </optgroup>
+              </select>
+            </label>
+            <label for="selected-building-floors">Floors
+              <input id="selected-building-floors" type="number" min="1" max="20" value="5" />
+            </label>
+            <label for="selected-building-color">Color
+              <input id="selected-building-color" type="color" value="#bf765f" />
+            </label>
+            <dl class="building-role-stats">
+              <div><dt>Residents</dt><dd id="building-residents-output">0</dd></div>
+              <div><dt>Jobs</dt><dd id="building-jobs-output">0</dd></div>
+              <div><dt>Visits</dt><dd id="building-visitors-output">0</dd></div>
+              <div><dt>Freight</dt><dd id="building-freight-output">0</dd></div>
+              <div><dt>Build time</dt><dd id="building-build-time-output">0 days</dd></div>
+              <div><dt>Project cost</dt><dd id="building-project-cost-output">$0</dd></div>
+            </dl>
+            <div class="project-storage-actions">
+              <button id="rotate-building-button" type="button">Rotate 90°</button>
+              <button id="delete-building-button" type="button">Bulldoze</button>
+            </div>
+          </div>
+        </div>
+        <p class="tool-section-label" data-build-workspace-section="city-edit">Street tools</p>
+        <div class="tool-list" aria-label="Street design tools" data-build-workspace-section="city-edit">
           <button class="tool-button" type="button" data-build-tool="add-lane" data-target="street">
             <span class="tool-icon add-lane-icon"></span>
             <span>Add vehicle lane</span>
@@ -195,8 +339,8 @@
             <small>Cycle</small>
           </button>
         </div>
-        <p class="tool-section-label">Intersection tools</p>
-        <div class="tool-list compact-tool-list" aria-label="Intersection design tools">
+        <p class="tool-section-label" data-build-workspace-section="city-edit">Intersection tools</p>
+        <div class="tool-list compact-tool-list" aria-label="Intersection design tools" data-build-workspace-section="city-edit">
           <button
             class="tool-button"
             type="button"
@@ -218,7 +362,7 @@
             <small>Toggle</small>
           </button>
         </div>
-        <button id="reset-design-button" class="reset-design-button" type="button">
+        <button id="reset-design-button" class="reset-design-button" type="button" data-build-workspace-section="city-edit">
           Reset all interventions
         </button>
       </aside>
@@ -377,9 +521,9 @@
           <button id="settings-close-button" class="icon-button" type="button" aria-label="Close simulation settings">×</button>
         </div>
         <label class="drawer-control" for="time-rate-control">
-          <span>Time rate <output id="time-rate-output" for="time-rate-control">1 hr/sec</output></span>
-          <input id="time-rate-control" type="range" min="0" max="4" step="1" value="1" />
-          <small id="time-rate-preview">Balanced pacing for observing daily activity.</small>
+          <span>Time rate <output id="time-rate-output" for="time-rate-control">10 sec/sec</output></span>
+          <input id="time-rate-control" type="range" min="0" max="6" step="1" value="1" />
+          <small id="time-rate-preview">Watch residents complete each part of their daily routes.</small>
         </label>
         <label class="drawer-control" for="speed-limit-control">
           <span>Speed limit <output id="speed-limit-output">25 mph</output></span>
@@ -401,6 +545,31 @@
           <input id="simulation-seed-control" type="number" min="1" max="2147483647" value="20260728" />
           <small>Reset after changing the seed to compare a repeatable population.</small>
         </label>
+        <label class="drawer-control" for="time-of-day-control">
+          <span>Time of day <output id="time-of-day-output">7:00 AM</output></span>
+          <input id="time-of-day-control" type="range" min="0" max="23.75" step="0.25" value="7" />
+          <small id="violation-risk-output">Philly crash index</small>
+        </label>
+        <label class="drawer-control" for="weather-control">
+          <span>Weather</span>
+          <select id="weather-control">
+            <option value="clear">Clear</option>
+            <option value="rain">Rain</option>
+            <option value="fog">Fog</option>
+          </select>
+          <small>Weather changes speed, demand, visibility, and risk.</small>
+        </label>
+        <fieldset class="accessibility-settings">
+          <legend>Live markers</legend>
+          <label for="pedestrian-markers-control">
+            <input id="pedestrian-markers-control" type="checkbox" checked />
+            <span>Pedestrians</span>
+          </label>
+          <label for="vehicle-markers-control">
+            <input id="vehicle-markers-control" type="checkbox" checked />
+            <span>Vehicles</span>
+          </label>
+        </fieldset>
         <fieldset class="accessibility-settings">
           <legend>Display accessibility</legend>
           <label for="high-contrast-control">
@@ -493,6 +662,18 @@
           <article class="metric-card" data-stat="throughputPerHour" data-stat-scope="live" tabindex="0">
             <span>Throughput</span>
             <strong id="throughput" data-stat-value>0</strong>
+          </article>
+          <article class="metric-card">
+            <span>Building arrivals</span>
+            <strong id="building-arrivals">0</strong>
+          </article>
+          <article class="metric-card">
+            <span>Rule violations</span>
+            <strong id="traffic-violations">0</strong>
+          </article>
+          <article class="metric-card">
+            <span>Jaywalking</span>
+            <strong id="jaywalking-violations">0</strong>
           </article>
           </div>
         </div>

@@ -3,11 +3,18 @@ import type {
   CitySystemEvent,
   TimeHorizon,
 } from "./cityTypes";
-import type { DetailedEntityState, EntitySelection } from "./entityTypes";
+import type {
+  BuildingFunction,
+  DetailedEntityState,
+  EntitySelection,
+} from "./entityTypes";
 
 export type AppMode = "build" | "simulate";
+export type BuildWorkspace = "city-edit" | "expansion";
 export type CameraMode = "orbit" | "fly" | "walk";
 export type EnvironmentMode = "loading" | "rendered";
+export type WeatherMode = "clear" | "rain" | "fog";
+export type MobilityDetailMode = "continuous" | "interpolated" | "outcome";
 export type MapOverlayMode =
   | "none"
   | "congestion"
@@ -28,8 +35,53 @@ export type ManualSignalTarget = "ns-green" | "ew-green" | "all-red";
 export type FeatureKind = "street" | "intersection";
 export type FeatureAxis = "x" | "z";
 export type LaneDirection = "two-way" | "forward" | "reverse";
-export type VehicleKind = "sedan" | "compact" | "suv" | "van" | "bus";
+export type VehicleKind =
+  | "sedan"
+  | "compact"
+  | "suv"
+  | "van"
+  | "bus"
+  | "truck";
+export type BuildingKind =
+  | "residential"
+  | "commercial"
+  | "industrial"
+  | "civic";
 export type SceneHoverSelection = EntitySelection | { kind: "road"; id: string };
+
+export interface PlacedBuilding {
+  id: string;
+  kind: BuildingKind;
+  function?: BuildingFunction;
+  x: number;
+  z: number;
+  rotation: number;
+  floors: number;
+  color: string;
+}
+
+export interface ExpansionRoad {
+  id: string;
+  startX: number;
+  startZ: number;
+  endX: number;
+  endZ: number;
+  width: number;
+  laneDelta?: -1 | 0 | 1;
+  bikeLane?: boolean;
+  widenedSidewalk?: boolean;
+  laneDirection?: LaneDirection;
+}
+
+export type ExpansionStreetObjectKind = "crosswalk" | "traffic-signal";
+
+export interface ExpansionStreetObject {
+  id: string;
+  kind: ExpansionStreetObjectKind;
+  x: number;
+  z: number;
+  rotation: number;
+}
 
 export type BuildTool =
   | "add-lane"
@@ -124,6 +176,14 @@ export interface VehicleSnapshot {
   queued: boolean;
   kind: VehicleKind;
   color: string;
+  complianceProbability: number;
+  violating: boolean;
+  source?: "sampled-resident" | "background";
+  driverPersonId?: string;
+  occupantPersonIds?: readonly string[];
+  destinationBuildingId?: string;
+  purpose?: string;
+  delaySeconds?: number;
 }
 
 export interface PedestrianSnapshot {
@@ -135,6 +195,13 @@ export interface PedestrianSnapshot {
   waiting: boolean;
   color: string;
   variant: number;
+  complianceProbability: number;
+  violating: boolean;
+  source?: "sampled-resident" | "background";
+  personId?: string;
+  destinationBuildingId?: string;
+  purpose?: string;
+  delaySeconds?: number;
 }
 
 export interface SimulationMetrics {
@@ -148,6 +215,9 @@ export interface SimulationMetrics {
   activeVehicles: number;
   activePedestrians: number;
   crossingsCompleted: number;
+  buildingArrivals: number;
+  trafficViolations: number;
+  jaywalkingViolations: number;
 }
 
 export interface RoadTrafficSnapshot {
@@ -164,6 +234,9 @@ export interface SimulationState {
   elapsedSeconds: number;
   cityElapsedMinutes: number;
   timeHorizon: TimeHorizon;
+  mobilityDetailMode: MobilityDetailMode;
+  timeOfDayHours: number;
+  weather: WeatherMode;
   signalPhase: SignalPhase;
   signals: readonly SignalSnapshot[];
   vehicles: readonly VehicleSnapshot[];

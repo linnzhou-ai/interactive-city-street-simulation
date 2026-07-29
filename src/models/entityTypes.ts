@@ -18,6 +18,12 @@ export type PersonNeed = "goods" | "health" | "education" | "community" | "recre
 export type PersonActivity = "home" | "work" | "school" | "shop" | "library" | "healthcare" | "leisure";
 export type TravelMode = "walk" | "car" | "transit";
 export type HouseholdFinancialStatus = "stable" | "strained" | "distressed" | "crisis";
+export type PersonMobilityPhase =
+  | "inside"
+  | "walking"
+  | "driving"
+  | "transit"
+  | "outside";
 
 export interface HappinessComponents {
   needs: number;
@@ -42,7 +48,7 @@ export interface EntityBuildingDefinition {
   id: string;
   name: string;
   address: string;
-  source: "block" | "landmark";
+  source: "block" | "landmark" | "expansion";
   landmarkKind?: string;
   function: BuildingFunction;
   zone: ZoneType;
@@ -58,7 +64,7 @@ export interface EntityBuildingDefinition {
 }
 
 export interface BuildingAccounting {
-  status: "operating" | "understaffed" | "closed" | "occupied" | "funded";
+  status: "operating" | "understaffed" | "closed" | "occupied" | "funded" | "construction";
   requiredWorkers: number;
   activeWorkers: number;
   staffingRatio: number;
@@ -91,6 +97,7 @@ export interface BuildingAccounting {
   localSupplies: number;
   importedSupplies: number;
   goodsDemanded: number;
+  goodsProduced: number;
   goodsSold: number;
   workforceChange: number;
   lossStreak: number;
@@ -124,6 +131,7 @@ export interface BuildingHistoryPoint {
   customers: number;
   externalCustomers: number;
   goodsDemanded: number;
+  goodsProduced: number;
   goodsSold: number;
   serviceDemand: number;
   serviceDelivered: number;
@@ -141,6 +149,10 @@ export interface BuildingHistoryPoint {
 }
 
 export interface DetailedBuilding extends EntityBuildingDefinition {
+  developmentStage: "established" | "construction" | "open";
+  constructionDaysRemaining: number;
+  constructionDaysTotal: number;
+  constructionCost: number;
   residentCapacity: number;
   residentIds: string[];
   jobCapacity: number;
@@ -164,6 +176,31 @@ export interface PersonScheduleItem {
   travelMinutes: number;
 }
 
+export interface PersonMobilityState {
+  phase: PersonMobilityPhase;
+  mode: TravelMode;
+  activity: PersonActivity;
+  fromBuildingId: string;
+  destinationBuildingId: string;
+  routeProgress: number;
+  departureMinute: number;
+  scheduledArrivalMinute: number;
+  expectedArrivalMinute: number;
+  delayMinutes: number;
+  segmentId?: string;
+  vehicleId?: number;
+  x: number;
+  z: number;
+  heading: number;
+}
+
+export interface PersonMobilityOutcome {
+  attendanceRatio: number;
+  visitCompletionRatio: number;
+  delayMinutes: number;
+  extraTransportCost: number;
+}
+
 export interface DetailedPerson {
   id: string;
   name: string;
@@ -182,7 +219,9 @@ export interface DetailedPerson {
   dailyWage: number;
   dailySpending: number;
   commuteCost: number;
+  dailyTravelDelayMinutes: number;
   money: number;
+  mobility: PersonMobilityState;
   migrationStatus: "staying" | "considering-leaving" | "moving-out";
   migrationReason: string;
   unemployedDays: number;
