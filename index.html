@@ -321,6 +321,12 @@
             <div><dt>Daily visits</dt><dd id="building-visitors-output">0</dd></div>
             <div><dt>Freight trips</dt><dd id="building-freight-output">0</dd></div>
           </dl>
+          <dl class="building-role-stats albert-building-stats" aria-label="Detailed building simulation">
+            <div><dt>Function</dt><dd id="building-function-output">Housing</dd></div>
+            <div><dt>Status</dt><dd id="building-status-output">Operating</dd></div>
+            <div><dt>Daily profit</dt><dd id="building-profit-output">$0</dd></div>
+            <div><dt>Staffing</dt><dd id="building-staffing-output">0%</dd></div>
+          </dl>
           <div class="building-editor-actions">
             <button id="rotate-building-button" type="button">Rotate 90°</button>
             <button id="delete-building-button" class="danger-button" type="button">Bulldoze</button>
@@ -522,6 +528,36 @@
             <div><dt>Freight/day</dt><dd id="district-freight-output">0</dd></div>
           </dl>
         </section>
+        <details class="city-systems-panel" open>
+          <summary>
+            <span>Albert city systems</span>
+            <strong id="city-system-date">January 1, 2026 · 07:00</strong>
+          </summary>
+          <label class="city-system-horizon" for="city-time-horizon">
+            <span>Economy time scale</span>
+            <select id="city-time-horizon">
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+              <option value="year">Year</option>
+            </select>
+          </label>
+          <dl class="city-system-grid">
+            <div><dt>Population</dt><dd id="city-population-output">0</dd></div>
+            <div><dt>Businesses/day</dt><dd id="city-profit-output">$0</dd></div>
+            <div><dt>Unemployment</dt><dd id="city-unemployment-output">0%</dd></div>
+            <div><dt>Happiness</dt><dd id="city-happiness-output">0</dd></div>
+            <div><dt>Modeled buildings</dt><dd id="city-buildings-output">0</dd></div>
+            <div><dt>Households</dt><dd id="city-households-output">0</dd></div>
+          </dl>
+          <div class="city-issues-heading">
+            <span>Building issues</span>
+            <strong id="city-issues-count">0</strong>
+          </div>
+          <ul id="city-issues-list" class="city-issues-list">
+            <li>No critical issues</li>
+          </ul>
+        </details>
         <div class="signal-phase">
           <span>Current phase</span>
           <strong id="signal-phase">East–west traffic</strong>

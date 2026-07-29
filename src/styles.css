@@ -825,6 +825,125 @@ body[data-app-mode="simulate"] .selection-panel {
   font-size: 0.68rem;
 }
 
+.albert-building-stats {
+  padding-top: 0.65rem;
+  border-top: 1px solid rgb(102 221 187 / 12%);
+}
+
+.city-systems-panel {
+  margin-top: 0.85rem;
+  padding: 0.68rem;
+  border: 1px solid rgb(240 190 93 / 22%);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgb(68 47 17 / 34%), rgb(255 255 255 / 4%));
+}
+
+.city-systems-panel summary {
+  display: grid;
+  gap: 0.12rem;
+  color: #f0d39b;
+  cursor: pointer;
+}
+
+.city-systems-panel summary span,
+.city-issues-heading span {
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.city-systems-panel summary strong {
+  color: #f5eee1;
+  font-size: 0.66rem;
+}
+
+.city-system-horizon {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.68rem;
+  color: #c6bca8;
+  font-size: 0.58rem;
+}
+
+.city-system-horizon select {
+  min-width: 78px;
+  padding: 0.35rem;
+  border: 1px solid rgb(240 190 93 / 18%);
+  border-radius: 7px;
+  color: #f5eee1;
+  background: rgb(7 17 20 / 72%);
+  font-size: 0.58rem;
+}
+
+.city-system-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.38rem;
+  margin: 0.65rem 0 0;
+}
+
+.city-system-grid div {
+  padding: 0.42rem;
+  border: 1px solid rgb(240 190 93 / 10%);
+  border-radius: 7px;
+  background: rgb(3 12 15 / 28%);
+}
+
+.city-system-grid dt {
+  color: #9e927c;
+  font-size: 0.49rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.city-system-grid dd {
+  margin: 0.12rem 0 0;
+  color: #f0d39b;
+  font-size: 0.7rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.city-issues-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.7rem;
+  color: #c6bca8;
+}
+
+.city-issues-heading strong {
+  color: #ffae97;
+  font-size: 0.68rem;
+}
+
+.city-issues-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.city-issues-list li {
+  padding: 0.4rem 0.45rem;
+  border-left: 2px solid #d79c56;
+  border-radius: 0 6px 6px 0;
+  color: #cfc8bb;
+  background: rgb(60 34 15 / 26%);
+  font-size: 0.54rem;
+  line-height: 1.35;
+}
+
+.city-issues-list li[data-severity="critical"] {
+  border-left-color: #ef715c;
+  color: #ffd0c5;
+}
+
 .signal-editor[hidden] {
   display: none;
 }
