@@ -499,7 +499,7 @@ renderer.setExpansionStreetObjectInteractionHandlers({
     );
     selectionStatus.textContent =
       kind === "crosswalk"
-        ? "Crosswalk placed and aligned to the nearest road."
+        ? "Crosswalk placed on the selected intersection approach, inside the stop line."
         : "Traffic signal placed as an independent street object.";
   },
   onRejected: (reason) => {
@@ -688,7 +688,7 @@ function selectExpansionStreetObjectTool(
   renderer.setExpansionStreetObjectPlacementTool(activeExpansionStreetObjectTool);
   selectionStatus.textContent =
     activeExpansionStreetObjectTool === "crosswalk"
-      ? "Click an expansion road to place and align a crosswalk."
+      ? "Click near an expansion intersection approach to place a crosswalk."
       : activeExpansionStreetObjectTool === "traffic-signal"
         ? "Click any open position outside the protected city to place a signal."
         : "Choose a road, crosswalk, signal, or building tool.";

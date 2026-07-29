@@ -57,6 +57,9 @@ const ROAD_MARKING_END_INSET = 15;
 const EXPANSION_WORLD_LIMIT = 2_400;
 const CORE_PROTECTION_PADDING = 10;
 const EXPANSION_GRID_SIZE = 20;
+const EXPANSION_CROSSWALK_BAND_LENGTH = 12.25;
+const EXPANSION_CROSSWALK_JUNCTION_GAP = 0.8;
+const EXPANSION_CROSSWALK_PLACEMENT_RADIUS = 30;
 const CORE_BOUNDS = createProtectedCoreBounds();
 const ORIGINAL_ROAD_CONNECTORS = createOriginalRoadConnectors();
 const FLY_COLLIDER_RADIUS = 0.45;
@@ -163,6 +166,10 @@ export class ThreeRenderer {
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
   private readonly placedBuildingData = new Map<string, PlacedBuilding>();
   private readonly expansionRoadData = new Map<string, ExpansionRoad>();
+  private readonly expansionStreetObjectData = new Map<
+    string,
+    ExpansionStreetObject
+  >();
   private readonly placementPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly placementPoint = new THREE.Vector3();
   private readonly dragOffset = new THREE.Vector3();
@@ -402,7 +409,9 @@ export class ThreeRenderer {
 
   setExpansionStreetObjects(objects: readonly ExpansionStreetObject[]): void {
     clearGroup(this.expansionStreetObjectGroup);
+    this.expansionStreetObjectData.clear();
     for (const object of objects) {
+      this.expansionStreetObjectData.set(object.id, { ...object });
       if (object.kind === "crosswalk") {
         this.expansionStreetObjectGroup.add(this.createExpansionCrosswalk(object));
       } else {
@@ -434,43 +443,79 @@ export class ThreeRenderer {
     if (kind === "traffic-signal") {
       return { valid: true, reason: "", x, z, rotation: 0 };
     }
-    let nearestRoad: ExpansionRoad | null = null;
-    let nearestPoint = { x, z };
+    const roads = [...this.expansionRoadData.values()];
+    const junctions = findExpansionJunctions(roads);
+    let nearestPlacement: { x: number; z: number; rotation: number } | null = null;
     let nearestDistance = Number.POSITIVE_INFINITY;
-    for (const road of this.expansionRoadData.values()) {
-      const candidate = closestPointOnSegment(
-        x,
-        z,
-        road.startX,
-        road.startZ,
-        road.endX,
-        road.endZ,
-      );
-      const distance = Math.hypot(x - candidate.x, z - candidate.z);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestRoad = road;
-        nearestPoint = candidate;
+    for (const junction of junctions) {
+      const connectedRoads = [...junction.roadIds]
+        .map((roadId) => this.expansionRoadData.get(roadId))
+        .filter((road): road is ExpansionRoad => road !== undefined);
+      const junctionWidth =
+        Math.max(...connectedRoads.map((road) => expansionRoadWidth(road))) + 1;
+      const approachOffset =
+        junctionWidth / 2 +
+        EXPANSION_CROSSWALK_JUNCTION_GAP +
+        EXPANSION_CROSSWALK_BAND_LENGTH / 2;
+      for (const direction of junctionDirections(junction, connectedRoads)) {
+        const candidate = {
+          x:
+            junction.x +
+            (direction === "west"
+              ? -approachOffset
+              : direction === "east"
+                ? approachOffset
+                : 0),
+          z:
+            junction.z +
+            (direction === "north"
+              ? -approachOffset
+              : direction === "south"
+                ? approachOffset
+                : 0),
+          rotation:
+            direction === "west" || direction === "east" ? 0 : Math.PI / 2,
+        };
+        const distance = Math.hypot(x - candidate.x, z - candidate.z);
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestPlacement = candidate;
+        }
       }
     }
-    if (!nearestRoad || nearestDistance > nearestRoad.width / 2 + 12) {
+    if (
+      !nearestPlacement ||
+      nearestDistance > EXPANSION_CROSSWALK_PLACEMENT_RADIUS
+    ) {
       return {
         valid: false,
-        reason: "Place crosswalks on or immediately beside an expansion road.",
+        reason: "Crosswalks can only be placed on an approach to an expansion intersection.",
         x,
         z,
         rotation: 0,
       };
     }
-    const horizontal =
-      Math.abs(nearestRoad.endX - nearestRoad.startX) >=
-      Math.abs(nearestRoad.endZ - nearestRoad.startZ);
+    const overlapsExistingCrosswalk = [...this.expansionStreetObjectData.values()].some(
+      (object) =>
+        object.kind === "crosswalk" &&
+        Math.hypot(
+          object.x - nearestPlacement.x,
+          object.z - nearestPlacement.z,
+        ) < 5,
+    );
+    if (overlapsExistingCrosswalk) {
+      return {
+        valid: false,
+        reason: "That intersection approach already has a crosswalk.",
+        x,
+        z,
+        rotation: 0,
+      };
+    }
     return {
       valid: true,
       reason: "",
-      x: nearestPoint.x,
-      z: nearestPoint.z,
-      rotation: horizontal ? 0 : Math.PI / 2,
+      ...nearestPlacement,
     };
   }
 
@@ -1032,7 +1077,11 @@ export class ThreeRenderer {
     group.add(asphalt);
 
     const directions = junctionDirections(junction, connectedRoads);
-    const lineOffset = width / 2 + 1.2;
+    const lineOffset =
+      width / 2 +
+      EXPANSION_CROSSWALK_JUNCTION_GAP +
+      EXPANSION_CROSSWALK_BAND_LENGTH +
+      1.4;
     for (const direction of directions) {
       const horizontalApproach = direction === "west" || direction === "east";
       const stopLine = box(
@@ -1058,8 +1107,26 @@ export class ThreeRenderer {
     group.position.set(object.x, 0, object.z);
     group.rotation.y = object.rotation;
     group.userData.expansionStreetObjectId = object.id;
+    const nearestJunction = findExpansionJunctions([
+      ...this.expansionRoadData.values(),
+    ]).reduce<ExpansionJunction | null>((nearest, junction) => {
+      if (!nearest) return junction;
+      return Math.hypot(object.x - junction.x, object.z - junction.z) <
+        Math.hypot(object.x - nearest.x, object.z - nearest.z)
+        ? junction
+        : nearest;
+    }, null);
+    const crossingSpan = nearestJunction
+      ? Math.max(
+          ...[...nearestJunction.roadIds]
+            .map((roadId) => this.expansionRoadData.get(roadId))
+            .filter((road): road is ExpansionRoad => road !== undefined)
+            .map((road) => expansionRoadWidth(road)),
+          13.5,
+        )
+      : 13.5;
     for (let index = -3; index <= 3; index += 1) {
-      const stripe = box(1.15, 0.025, 13.5, this.materials.whiteLine);
+      const stripe = box(1.15, 0.025, crossingSpan, this.materials.whiteLine);
       stripe.position.set(index * 1.85, RENDER_HEIGHTS.crosswalk, 0);
       group.add(stripe);
     }
@@ -3334,26 +3401,6 @@ function distanceToSegment(
     1,
   );
   return Math.hypot(pointX - (startX + dx * t), pointZ - (startZ + dz * t));
-}
-
-function closestPointOnSegment(
-  pointX: number,
-  pointZ: number,
-  startX: number,
-  startZ: number,
-  endX: number,
-  endZ: number,
-): { x: number; z: number } {
-  const dx = endX - startX;
-  const dz = endZ - startZ;
-  const lengthSquared = dx * dx + dz * dz;
-  if (lengthSquared === 0) return { x: startX, z: startZ };
-  const t = THREE.MathUtils.clamp(
-    ((pointX - startX) * dx + (pointZ - startZ) * dz) / lengthSquared,
-    0,
-    1,
-  );
-  return { x: startX + dx * t, z: startZ + dz * t };
 }
 
 function findExpansionJunctions(
