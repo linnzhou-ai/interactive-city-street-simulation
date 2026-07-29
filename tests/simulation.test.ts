@@ -112,6 +112,70 @@ describe("Simulation", () => {
     ).toBeLessThan(0.05);
   });
 
+  it("keeps sampled pedestrians continuous while they follow their routes", () => {
+    const simulation = new Simulation();
+    simulation.setTimeOfDay(7.75);
+    simulation.setSimulationSpeed(1 / 360);
+    simulation.start();
+    let previousPositions = new Map<string, {
+      x: number;
+      z: number;
+      destination: string;
+      progress: number;
+    }>();
+    let largestStep = 0;
+    let largestProgressStep = 0;
+    let largestStepDetail = "";
+    const observedPeople = new Set<string>();
+
+    for (let step = 0; step < 900; step += 1) {
+      simulation.update(0.1);
+      const state = simulation.getState();
+      const peopleById = new Map(state.entities.people.map((person) => [person.id, person]));
+      const currentPositions = new Map<string, {
+        x: number;
+        z: number;
+        destination: string;
+        progress: number;
+      }>();
+      for (const pedestrian of state.pedestrians) {
+        if (pedestrian.source !== "sampled-resident" || !pedestrian.personId) continue;
+        observedPeople.add(pedestrian.personId);
+        const previous = previousPositions.get(pedestrian.personId);
+        if (previous) {
+          const distance = Math.hypot(
+            pedestrian.x - previous.x,
+            pedestrian.z - previous.z,
+          );
+          if (distance > largestStep) {
+            const mobility = peopleById.get(pedestrian.personId)?.mobility;
+            largestStep = distance;
+            largestStepDetail = `${pedestrian.personId} at step ${step}: ${previous.destination} ${previous.progress.toFixed(3)} -> ${mobility?.destinationBuildingId} ${mobility?.routeProgress.toFixed(3)}`;
+          }
+          const mobility = peopleById.get(pedestrian.personId)?.mobility;
+          if (mobility?.destinationBuildingId === previous.destination) {
+            largestProgressStep = Math.max(
+              largestProgressStep,
+              Math.abs(mobility.routeProgress - previous.progress),
+            );
+          }
+        }
+        const mobility = peopleById.get(pedestrian.personId)?.mobility;
+        currentPositions.set(pedestrian.personId, {
+          x: pedestrian.x,
+          z: pedestrian.z,
+          destination: mobility?.destinationBuildingId ?? "unknown",
+          progress: mobility?.routeProgress ?? 0,
+        });
+      }
+      previousPositions = currentPositions;
+    }
+
+    expect(observedPeople.size).toBeGreaterThan(0);
+    expect(largestStep, largestStepDetail).toBeLessThan(4);
+    expect(largestProgressStep).toBeLessThan(0.03);
+  });
+
   it("cycles green, yellow, all-red, and pedestrian signal phases", () => {
     const simulation = new Simulation();
     simulation.setSignalTiming("30-market", {

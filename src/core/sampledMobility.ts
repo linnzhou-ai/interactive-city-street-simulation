@@ -44,9 +44,12 @@ interface ActiveTrip {
 
 export class SampledMobilitySystem {
   private readonly routeCache = new Map<string, TrafficRoutePath>();
+  private readonly activeTripCache = new Map<string, ActiveTrip>();
+  private activeTripDay = Number.NaN;
 
   invalidateRoutes(): void {
     this.routeCache.clear();
+    this.activeTripCache.clear();
   }
 
   update(
@@ -58,6 +61,11 @@ export class SampledMobilitySystem {
     fallbackRouteDelayMinutes: number,
     routeProvider: SampledRouteProvider,
   ): SampledMobilityResult {
+    const day = Math.floor(minuteOfDay / 1440);
+    if (day !== this.activeTripDay) {
+      this.activeTripDay = day;
+      this.activeTripCache.clear();
+    }
     const normalizedMinute = normalizeMinute(minuteOfDay);
     const buildingById = new Map(buildings.map((building) => [building.id, building]));
     const trafficBySegment = new Map(roadTraffic.map((road) => [road.segmentId, road]));
@@ -81,6 +89,7 @@ export class SampledMobilitySystem {
         trafficBySegment,
         fallbackRouteDelayMinutes,
         routeProvider,
+        day,
       );
       if (mobility.phase === "walking") {
         pedestrians.push(this.pedestrianSnapshot(person, mobility, detailMode));
@@ -123,6 +132,7 @@ export class SampledMobilitySystem {
     traffic: ReadonlyMap<string, RoadTrafficSnapshot>,
     fallbackRouteDelayMinutes: number,
     routeProvider: SampledRouteProvider,
+    day: number,
   ): PersonMobilityState {
     const schedule = person.schedule;
     let current = schedule[0];
@@ -132,13 +142,16 @@ export class SampledMobilitySystem {
     }
     for (let index = 1; index < schedule.length; index += 1) {
       const destination = schedule[index];
-      const trip = this.tripFor(
+      const calculatedTrip = this.tripFor(
         current,
         destination,
         traffic,
         fallbackRouteDelayMinutes,
         routeProvider,
       );
+      const trip = minute >= calculatedTrip.departureMinute
+        ? this.stableTrip(person.id, day, index, calculatedTrip)
+        : calculatedTrip;
       if (minute < trip.departureMinute) {
         return this.insideAt(current, person, buildings, routeProvider);
       }
@@ -151,6 +164,20 @@ export class SampledMobilitySystem {
       current = destination;
     }
     return this.insideAt(current, person, buildings, routeProvider);
+  }
+
+  private stableTrip(
+    personId: string,
+    day: number,
+    scheduleIndex: number,
+    trip: Readonly<ActiveTrip>,
+  ): ActiveTrip {
+    const key = `${day}:${personId}:${scheduleIndex}:${trip.previous.buildingId}:${trip.item.buildingId}`;
+    const cached = this.activeTripCache.get(key);
+    if (cached) return cached;
+    const stable = { ...trip };
+    this.activeTripCache.set(key, stable);
+    return stable;
   }
 
   private insideAt(
@@ -237,12 +264,22 @@ export class SampledMobilitySystem {
     routeProvider: SampledRouteProvider,
   ): ActiveTrip {
     const route = this.route(previous.buildingId, item.buildingId, item.mode, routeProvider);
-    const delayMinutes = routeDelayMinutes(
+    const trafficDelayMinutes = routeDelayMinutes(
       route,
       item.mode,
       traffic,
       fallbackRouteDelayMinutes,
     );
+    const routedTravelMinutes = route.distanceMeters / travelSpeedMetersPerMinute(item.mode);
+    const routeLengthDelayMinutes = Math.max(
+      0,
+      routedTravelMinutes - item.travelMinutes,
+    );
+    const delayMinutes = round(clamp(
+      trafficDelayMinutes + routeLengthDelayMinutes,
+      0,
+      60,
+    ));
     return {
       item,
       previous,
@@ -404,6 +441,12 @@ function routeDelayMinutes(
   return round(clamp(delay, 0, 35));
 }
 
+function travelSpeedMetersPerMinute(mode: TravelMode): number {
+  if (mode === "walk") return 78;
+  if (mode === "transit") return 280;
+  return 420;
+}
+
 function positionAlongRoute(
   route: Readonly<TrafficRoutePath>,
   progress: number,
@@ -431,12 +474,65 @@ function positionAlongRoute(
   const dx = end.x - start.x;
   const dz = end.z - start.z;
   const offset = mode === "walk" ? 7.2 : mode === "car" ? 2.7 : -2.7;
+  const offsetStart = offsetRouteVertex(route.points, segmentIndex, offset);
+  const offsetEnd = offsetRouteVertex(route.points, segmentIndex + 1, offset);
   return {
-    x: start.x + dx * localProgress + dz / length * offset,
-    z: start.z + dz * localProgress - dx / length * offset,
+    x: offsetStart.x + (offsetEnd.x - offsetStart.x) * localProgress,
+    z: offsetStart.z + (offsetEnd.z - offsetStart.z) * localProgress,
     heading: Math.atan2(dx, dz),
     segmentId: route.segmentIds[segmentIndex] ?? "off-network",
   };
+}
+
+function offsetRouteVertex(
+  points: ReadonlyArray<{ x: number; z: number }>,
+  index: number,
+  offset: number,
+): { x: number; z: number } {
+  const point = points[index];
+  const incoming = index > 0
+    ? segmentNormal(points[index - 1], point)
+    : undefined;
+  const outgoing = index < points.length - 1
+    ? segmentNormal(point, points[index + 1])
+    : undefined;
+  const normal = incoming && outgoing
+    ? miterNormal(incoming, outgoing, offset)
+    : incoming
+      ? { x: incoming.x * offset, z: incoming.z * offset }
+      : outgoing
+        ? { x: outgoing.x * offset, z: outgoing.z * offset }
+        : { x: 0, z: 0 };
+  return { x: point.x + normal.x, z: point.z + normal.z };
+}
+
+function segmentNormal(
+  start: Readonly<{ x: number; z: number }>,
+  end: Readonly<{ x: number; z: number }>,
+): { x: number; z: number } {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const length = Math.max(0.01, Math.hypot(dx, dz));
+  return { x: dz / length, z: -dx / length };
+}
+
+function miterNormal(
+  incoming: Readonly<{ x: number; z: number }>,
+  outgoing: Readonly<{ x: number; z: number }>,
+  offset: number,
+): { x: number; z: number } {
+  const x = incoming.x + outgoing.x;
+  const z = incoming.z + outgoing.z;
+  const length = Math.hypot(x, z);
+  if (length < 0.01) {
+    return { x: outgoing.x * offset, z: outgoing.z * offset };
+  }
+  const unit = { x: x / length, z: z / length };
+  const denominator = unit.x * incoming.x + unit.z * incoming.z;
+  const miterLength = Math.abs(denominator) < 0.25
+    ? offset
+    : clamp(offset / denominator, -Math.abs(offset) * 2, Math.abs(offset) * 2);
+  return { x: unit.x * miterLength, z: unit.z * miterLength };
 }
 
 function normalizeMinute(minute: number): number {
