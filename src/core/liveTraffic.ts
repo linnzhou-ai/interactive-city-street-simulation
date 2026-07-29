@@ -160,6 +160,11 @@ interface EconomicRouteNode {
   edges: EconomicRouteEdge[];
 }
 
+interface EconomicRoute {
+  nodeIds: string[];
+  segmentIds: string[];
+}
+
 interface PositionedAgent {
   x: number;
   z: number;
@@ -326,6 +331,7 @@ export class LiveTrafficSystem {
   private expansionRoadIds = new Set<string>();
   private economicRoadLoad = new Map<string, number>();
   private economicRouteNodes = new Map<string, EconomicRouteNode>();
+  private walkingEconomicEdges = new Map<string, EconomicRouteEdge[]>();
   private expansionSegmentNodes = new Map<string, Set<string>>();
   private connectedEconomicNodes = new Set<string>();
 
@@ -434,6 +440,7 @@ export class LiveTrafficSystem {
     }
     const graph = buildEconomicRouteGraph(this.nodes, this.roadSegments, roads);
     this.economicRouteNodes = graph.nodes;
+    this.walkingEconomicEdges = bidirectionalEconomicEdges(graph.nodes);
     this.expansionSegmentNodes = graph.expansionSegmentNodes;
     this.connectedEconomicNodes = graph.connectedNodeIds;
     this.setBuildingDestinations(buildings);
@@ -629,6 +636,25 @@ export class LiveTrafficSystem {
     to: TrafficRouteEndpoint,
     mode: TravelMode,
   ): TrafficRoutePath {
+    if (this.expansionRoads.length > 0) {
+      const economicRoute = findEconomicRoute(
+        this.economicRouteNodes,
+        this.expansionRoads,
+        this.expansionSegmentNodes,
+        this.nodes,
+        from,
+        to,
+        mode === "walk" ? this.walkingEconomicEdges : undefined,
+      );
+      if (economicRoute.nodeIds.length > 0) {
+        return economicRoutePath(
+          this.economicRouteNodes,
+          economicRoute,
+          from,
+          to,
+        );
+      }
+    }
     const fromPoint = typeof from === "string"
       ? null
       : nearestGridNodeFromWorld(this.nodes, from.x, from.z);
@@ -1850,6 +1876,31 @@ function buildEconomicRouteGraph(
   return { nodes, expansionSegmentNodes, connectedNodeIds };
 }
 
+function bidirectionalEconomicEdges(
+  nodes: ReadonlyMap<string, EconomicRouteNode>,
+): Map<string, EconomicRouteEdge[]> {
+  const edges = new Map<string, EconomicRouteEdge[]>();
+  for (const node of nodes.values()) {
+    edges.set(node.id, [...node.edges]);
+  }
+  for (const node of nodes.values()) {
+    for (const edge of node.edges) {
+      const reverse = edges.get(edge.to) ?? [];
+      if (!reverse.some((candidate) =>
+        candidate.to === node.id && candidate.segmentId === edge.segmentId
+      )) {
+        reverse.push({
+          to: node.id,
+          segmentId: edge.segmentId,
+          cost: edge.cost,
+        });
+      }
+      edges.set(edge.to, reverse);
+    }
+  }
+  return edges;
+}
+
 function economicRouteSegmentIds(
   nodes: ReadonlyMap<string, EconomicRouteNode>,
   expansionRoads: readonly ExpansionRoad[],
@@ -1858,6 +1909,28 @@ function economicRouteSegmentIds(
   from: TrafficRouteEndpoint,
   to: TrafficRouteEndpoint,
 ): string[] {
+  return findEconomicRoute(
+    nodes,
+    expansionRoads,
+    expansionSegmentNodes,
+    grid,
+    from,
+    to,
+    undefined,
+  ).segmentIds.filter((segmentId, index, segments) =>
+    segmentId !== segments[index - 1]
+  );
+}
+
+function findEconomicRoute(
+  nodes: ReadonlyMap<string, EconomicRouteNode>,
+  expansionRoads: readonly ExpansionRoad[],
+  expansionSegmentNodes: ReadonlyMap<string, ReadonlySet<string>>,
+  grid: readonly (readonly GridNode[])[],
+  from: TrafficRouteEndpoint,
+  to: TrafficRouteEndpoint,
+  routeEdges: ReadonlyMap<string, readonly EconomicRouteEdge[]> | undefined,
+): EconomicRoute {
   const originIds = economicEndpointNodes(
     nodes,
     expansionRoads,
@@ -1872,7 +1945,9 @@ function economicRouteSegmentIds(
     grid,
     to,
   ));
-  if (originIds.length === 0 || destinationIds.size === 0) return [];
+  if (originIds.length === 0 || destinationIds.size === 0) {
+    return { nodeIds: [], segmentIds: [] };
+  }
   const open = new Set(originIds);
   const costs = new Map(originIds.map((id) => [id, 0]));
   const previous = new Map<string, { nodeId: string; segmentId: string }>();
@@ -1893,7 +1968,11 @@ function economicRouteSegmentIds(
       break;
     }
     open.delete(current);
-    for (const edge of nodes.get(current)?.edges ?? []) {
+    for (
+      const edge of routeEdges?.get(current)
+        ?? nodes.get(current)?.edges
+        ?? []
+    ) {
       const nextCost = currentCost + edge.cost;
       if (nextCost >= (costs.get(edge.to) ?? Number.POSITIVE_INFINITY)) continue;
       costs.set(edge.to, nextCost);
@@ -1901,15 +1980,65 @@ function economicRouteSegmentIds(
       open.add(edge.to);
     }
   }
-  if (!destination) return [];
-  const segments: string[] = [];
+  if (!destination) return { nodeIds: [], segmentIds: [] };
+  const nodeIds = [destination];
+  const segmentIds: string[] = [];
   let current = destination;
   while (previous.has(current)) {
     const step = previous.get(current) as { nodeId: string; segmentId: string };
-    if (segments[0] !== step.segmentId) segments.unshift(step.segmentId);
+    nodeIds.unshift(step.nodeId);
+    segmentIds.unshift(step.segmentId);
     current = step.nodeId;
   }
-  return segments;
+  return { nodeIds, segmentIds };
+}
+
+function economicRoutePath(
+  nodes: ReadonlyMap<string, EconomicRouteNode>,
+  route: Readonly<EconomicRoute>,
+  from: TrafficRouteEndpoint,
+  to: TrafficRouteEndpoint,
+): TrafficRoutePath {
+  const points: Array<{ x: number; z: number }> = [];
+  const segmentIds: string[] = [];
+  const append = (
+    point: Readonly<{ x: number; z: number }>,
+    segmentId: string,
+  ): void => {
+    const previous = points.at(-1);
+    if (
+      previous
+      && Math.hypot(previous.x - point.x, previous.z - point.z) <= 0.1
+    ) return;
+    if (previous) segmentIds.push(segmentId);
+    points.push({ x: point.x, z: point.z });
+  };
+  if (typeof from !== "string") points.push({ x: from.x, z: from.z });
+  for (let index = 0; index < route.nodeIds.length; index += 1) {
+    const node = nodes.get(route.nodeIds[index]);
+    if (!node) continue;
+    append(
+      node,
+      route.segmentIds[Math.max(0, index - 1)]
+        ?? route.segmentIds[0]
+        ?? "off-network",
+    );
+  }
+  if (typeof to !== "string") {
+    append(
+      to,
+      route.segmentIds.at(-1) ?? "off-network",
+    );
+  }
+  return {
+    points,
+    segmentIds,
+    distanceMeters: points.slice(1).reduce((total, point, index) =>
+      total + Math.hypot(
+        point.x - points[index].x,
+        point.z - points[index].z,
+      ), 0),
+  };
 }
 
 function economicEndpointNodes(

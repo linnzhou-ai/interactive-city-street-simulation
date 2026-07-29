@@ -220,6 +220,42 @@ describe("LiveTrafficSystem", () => {
     expect(snapshot?.averageDelaySeconds).toBeGreaterThan(0);
   });
 
+  it("routes visible pedestrians and drivers along user-built roads", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const road = {
+      id: "expansion-road-visible-route",
+      startX: 1_800,
+      startZ: 1_600,
+      endX: 2_000,
+      endZ: 1_600,
+      width: 18,
+      laneDirection: "forward" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    const walkingRoute = traffic.getRoutePath(
+      { x: 1_990, z: 1_630 },
+      { x: 1_810, z: 1_630 },
+      "walk",
+    );
+    const drivingRoute = traffic.getRoutePath(
+      { x: 1_810, z: 1_630 },
+      { x: 1_990, z: 1_630 },
+      "car",
+    );
+
+    expect(walkingRoute.segmentIds).toContain(road.id);
+    expect(drivingRoute.segmentIds).toContain(road.id);
+    expect(walkingRoute.points.some((point) =>
+      Math.abs(point.z - road.startZ) < 0.01
+      && point.x >= road.startX
+      && point.x <= road.endX)).toBe(true);
+    expect(drivingRoute.points.some((point) =>
+      Math.abs(point.z - road.startZ) < 0.01
+      && point.x >= road.startX
+      && point.x <= road.endX)).toBe(true);
+  });
+
   it("marks isolated expansion parcels as disconnected", () => {
     const traffic = new LiveTrafficSystem(20260729);
     traffic.setExpansionNetwork(
