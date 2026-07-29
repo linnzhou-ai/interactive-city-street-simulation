@@ -77,6 +77,44 @@ describe("Albert city systems on the chanyoung app", () => {
     expect(snapshot.dateLabel).toContain("2026");
   });
 
+  it("uses player-built roads to improve access for player-built buildings", () => {
+    const building: PlacedBuilding = {
+      id: "building-transport-test",
+      kind: "commercial",
+      x: 400,
+      z: 400,
+      rotation: 0,
+      floors: 6,
+      color: "#bf765f",
+    };
+    const disconnected = new AlbertCitySystems();
+    disconnected.setPlacedBuildings([building]);
+    disconnected.setTimeHorizon("year");
+    disconnected.update(1, true, 1, SETTINGS, IMPACT);
+
+    const connected = new AlbertCitySystems();
+    connected.setPlacedBuildings([building]);
+    connected.setExpansionRoads([
+      {
+        id: "expansion-road-test",
+        startX: 360,
+        startZ: 400,
+        endX: 520,
+        endZ: 400,
+        width: 15,
+      },
+    ]);
+    connected.setTimeHorizon("year");
+    connected.update(1, true, 1, SETTINGS, IMPACT);
+
+    expect(connected.getBuilding(building.id)?.accessibility.overall).toBeGreaterThan(
+      disconnected.getBuilding(building.id)?.accessibility.overall ?? 0,
+    );
+    expect(connected.getBuilding(building.id)?.accessibility.averageTravelMinutes).toBeLessThan(
+      disconnected.getBuilding(building.id)?.accessibility.averageTravelMinutes ?? Infinity,
+    );
+  });
+
   it("keeps Albert's city model deterministic and separate from the original traffic engine", () => {
     const definition = createDemoCitySectionDefinition();
     const first = createCitySectionState(definition);

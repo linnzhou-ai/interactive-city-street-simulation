@@ -260,10 +260,18 @@ citySystemsButton.addEventListener("click", () => {
 closeAlbertDashboard.addEventListener("click", () => setAlbertDashboardOpen(false));
 albertBuildingSelect.addEventListener("change", () => {
   selectedAlbertBuildingId = albertBuildingSelect.value;
+  renderer.setSelectedEntity({
+    kind: "building",
+    id: selectedAlbertBuildingId,
+  });
   renderAlbertDashboard();
 });
 albertPersonSelect.addEventListener("change", () => {
   selectedAlbertPersonId = albertPersonSelect.value;
+  renderer.setSelectedEntity({
+    kind: "person",
+    id: selectedAlbertPersonId,
+  });
   renderAlbertDashboard();
 });
 orbitCameraButton.addEventListener("click", () => setCameraMode("orbit"));
@@ -496,6 +504,19 @@ renderer.setSelectionHandler((feature) => {
   selectedFeature = feature;
   renderer.setSelectedFeature(feature.id);
   updateSelectionPanel();
+});
+
+renderer.setEntitySelectionHandler((selection) => {
+  if (!albertDashboardOpen) return;
+  if (selection.kind === "building") {
+    selectedAlbertBuildingId = selection.id;
+    albertBuildingSelect.value = selection.id;
+  } else {
+    selectedAlbertPersonId = selection.id;
+    albertPersonSelect.value = selection.id;
+  }
+  renderer.setSelectedEntity(selection);
+  renderAlbertDashboard();
 });
 
 renderer.setExpansionRoadSelectionHandler((roadId) => {
@@ -858,6 +879,7 @@ function updateExpansionRoadCount(): void {
   } · ${crosswalks} crosswalk${crosswalks === 1 ? "" : "s"} · ${signals} signal${
     signals === 1 ? "" : "s"
   }`;
+  albertCitySystems.setExpansionRoads([...expansionRoads.values()]);
 }
 
 function eraseExpansionObject(
@@ -1346,6 +1368,7 @@ function formatCurrency(value: number): string {
 
 function updateAlbertCityPanel(): void {
   const snapshot = albertCitySystems.getSnapshot();
+  renderer.setEntityState(snapshot.entities);
   const metrics = snapshot.city.metrics;
   citySystemDate.textContent = `${snapshot.dateLabel} · ${snapshot.clockLabel}`;
   cityTimeHorizon.value = snapshot.timeHorizon;
@@ -1383,9 +1406,18 @@ function setAlbertDashboardOpen(open: boolean): void {
   albertDashboard.hidden = !open;
   citySystemsButton.setAttribute("aria-pressed", String(open));
   document.body.dataset.albertDashboard = open ? "open" : "closed";
+  renderer.setEntityMode(open);
   if (open) {
     syncAlbertDirectoryOptions();
+    if (selectedAlbertBuildingId) {
+      renderer.setSelectedEntity({
+        kind: "building",
+        id: selectedAlbertBuildingId,
+      });
+    }
     renderAlbertDashboard();
+  } else {
+    renderer.setSelectedEntity(null);
   }
 }
 

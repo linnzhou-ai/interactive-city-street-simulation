@@ -386,6 +386,40 @@ body[data-albert-dashboard="open"] .selection-panel {
   margin-top: 0.55rem;
 }
 
+.albert-flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.albert-flow-legend span {
+  padding: 0.25rem 0.38rem;
+  border-radius: 999px;
+  color: #dce8e3;
+  background: rgb(255 255 255 / 7%);
+  font-size: 0.49rem;
+  font-weight: 800;
+}
+
+.albert-flow-legend span::before {
+  display: inline-block;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-right: 0.28rem;
+  border-radius: 50%;
+  background: #00b7ff;
+  content: "";
+}
+
+.albert-flow-legend span[data-flow="visit"]::before {
+  background: #ffb000;
+}
+
+.albert-flow-legend span[data-flow="delivery"]::before {
+  background: #ff5f4a;
+}
+
 .albert-inspector-section select {
   width: 100%;
   padding: 0.48rem;

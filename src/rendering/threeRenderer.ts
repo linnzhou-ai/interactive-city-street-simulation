@@ -12,6 +12,12 @@ import {
   PENN_STREETS,
 } from "../data/pennRoadGraph";
 import type {
+  BuildingConnectionKind,
+  DetailedBuilding,
+  DetailedEntityState,
+  EntitySelection,
+} from "../models/entityTypes";
+import type {
   BuildingKind,
   CameraMode,
   DistrictFeature,
@@ -170,6 +176,10 @@ export class ThreeRenderer {
   private readonly expansionRoadGroup = new THREE.Group();
   private readonly expansionStreetObjectGroup = new THREE.Group();
   private readonly expansionGuideGroup = new THREE.Group();
+  private readonly entityPickGroup = new THREE.Group();
+  private readonly entityFlowGroup = new THREE.Group();
+  private readonly entityHighlightGroup = new THREE.Group();
+  private readonly selectableEntityBuildings: THREE.Mesh[] = [];
   private readonly placedBuildingMeshes = new Map<string, THREE.Group>();
   private readonly placedBuildingData = new Map<string, PlacedBuilding>();
   private readonly expansionRoadData = new Map<string, ExpansionRoad>();
@@ -198,6 +208,7 @@ export class ThreeRenderer {
     "collisionDebug",
   );
   private selectionHandler: ((feature: DistrictFeature) => void) | null = null;
+  private entitySelectionHandler: ((selection: EntitySelection) => void) | null = null;
   private expansionRoadSelectionHandler: ((roadId: string) => void) | null = null;
   private buildingInteractionHandlers: BuildingInteractionHandlers | null = null;
   private expansionRoadInteractionHandlers: ExpansionRoadInteractionHandlers | null =
@@ -210,6 +221,11 @@ export class ThreeRenderer {
   private selectedFeatureId: string | null = null;
   private selectedExpansionRoadId: string | null = null;
   private selectedPlacedBuildingId: string | null = null;
+  private selectedEntity: EntitySelection | null = null;
+  private entityState: Readonly<DetailedEntityState> | null = null;
+  private entityMode = false;
+  private entityBuildingSignature = "";
+  private entityFlowSignature = "";
   private buildingPlacementEnabled = false;
   private expansionMode = false;
   private expansionRoadDrawEnabled = false;
@@ -272,6 +288,9 @@ export class ThreeRenderer {
       this.expansionRoadGroup,
       this.expansionStreetObjectGroup,
       this.expansionGuideGroup,
+      this.entityPickGroup,
+      this.entityFlowGroup,
+      this.entityHighlightGroup,
       this.rainPoints,
     );
     this.buildLightingAndSky();
@@ -286,6 +305,7 @@ export class ThreeRenderer {
     this.buildCollisionDebug();
     this.buildSignals();
     this.bindInput();
+    this.setEntityMode(false);
     this.updateFeatureHighlights();
   }
 
@@ -312,6 +332,47 @@ export class ThreeRenderer {
 
   setSelectionHandler(handler: (feature: DistrictFeature) => void): void {
     this.selectionHandler = handler;
+  }
+
+  setEntitySelectionHandler(
+    handler: (selection: EntitySelection) => void,
+  ): void {
+    this.entitySelectionHandler = handler;
+  }
+
+  setEntityMode(enabled: boolean): void {
+    this.entityMode = enabled;
+    this.entityPickGroup.visible = enabled;
+    this.entityFlowGroup.visible = enabled;
+    this.entityHighlightGroup.visible = enabled;
+    this.canvas.style.cursor =
+      enabled && this.cameraMode === "orbit"
+        ? "pointer"
+        : this.cameraMode === "orbit"
+          ? "grab"
+          : "crosshair";
+  }
+
+  setEntityState(state: Readonly<DetailedEntityState>): void {
+    this.entityState = state;
+    const buildingSignature = state.buildings
+      .map((building) => `${building.id}:${building.x}:${building.z}:${building.height}`)
+      .join("|");
+    if (buildingSignature !== this.entityBuildingSignature) {
+      this.entityBuildingSignature = buildingSignature;
+      this.rebuildEntityPickSurfaces();
+    }
+    const flowSignature = `${state.lastUpdatedDay}:${this.selectedEntity?.kind ?? "none"}:${this.selectedEntity?.id ?? "none"}`;
+    if (flowSignature !== this.entityFlowSignature) {
+      this.entityFlowSignature = flowSignature;
+      this.rebuildEntityFlows();
+    }
+  }
+
+  setSelectedEntity(selection: EntitySelection | null): void {
+    this.selectedEntity = selection;
+    this.entityFlowSignature = "";
+    this.rebuildEntityFlows();
   }
 
   setExpansionRoadSelectionHandler(handler: (roadId: string) => void): void {
@@ -412,6 +473,8 @@ export class ThreeRenderer {
     for (const road of roads) this.addExpansionRoad(road, junctions);
     for (const junction of junctions) this.addExpansionJunction(junction);
     this.updateExpansionRoadSelection();
+    this.entityFlowSignature = "";
+    this.rebuildEntityFlows();
   }
 
   setSelectedExpansionRoad(id: string | null): void {
@@ -2477,8 +2540,20 @@ export class ThreeRenderer {
   }
 
   private pickFeature(event: PointerEvent): void {
-    if (!this.buildMode || this.cameraMode !== "orbit") return;
+    if (this.cameraMode !== "orbit") return;
     this.updatePointerRay(event);
+    if (this.entityMode) {
+      const entityHit = this.raycaster.intersectObjects(
+        this.selectableEntityBuildings,
+        false,
+      )[0];
+      const entityId = entityHit?.object.userData.entityId;
+      if (typeof entityId === "string") {
+        this.entitySelectionHandler?.({ kind: "building", id: entityId });
+      }
+      return;
+    }
+    if (!this.buildMode) return;
     if (this.expansionMode && this.expansionEraseEnabled) {
       this.eraseExpansionObjectAtPointer();
       return;
@@ -2549,6 +2624,203 @@ export class ThreeRenderer {
     if (!featureId) return;
     const feature = this.features.find((candidate) => candidate.id === featureId);
     if (feature) this.selectionHandler?.(feature);
+  }
+
+  private rebuildEntityPickSurfaces(): void {
+    clearGroup(this.entityPickGroup);
+    this.selectableEntityBuildings.length = 0;
+    if (!this.entityState) return;
+    const material = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    for (const building of this.entityState.buildings) {
+      const surface = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          Math.max(5, building.width),
+          Math.max(5, building.height),
+          Math.max(5, building.depth),
+        ),
+        material,
+      );
+      surface.position.set(
+        building.x,
+        building.height / 2 + 0.25,
+        building.z,
+      );
+      surface.rotation.y = building.rotation;
+      surface.userData.entityId = building.id;
+      this.entityPickGroup.add(surface);
+      this.selectableEntityBuildings.push(surface);
+    }
+  }
+
+  private rebuildEntityFlows(): void {
+    clearGroup(this.entityFlowGroup);
+    clearGroup(this.entityHighlightGroup);
+    if (!this.entityState || !this.selectedEntity) return;
+    const selectedPerson =
+      this.selectedEntity.kind === "person"
+        ? this.entityState.people.find(
+            (person) => person.id === this.selectedEntity?.id,
+          )
+        : undefined;
+    const selectedBuildingId =
+      this.selectedEntity.kind === "building"
+        ? this.selectedEntity.id
+        : selectedPerson?.currentBuildingId;
+    const selectedBuilding = this.entityState.buildings.find(
+      (building) => building.id === selectedBuildingId,
+    );
+    if (!selectedBuilding) return;
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(
+        Math.max(8, Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.34),
+        Math.max(11, Math.min(selectedBuilding.width, selectedBuilding.depth) * 0.44),
+        32,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: "#fff1a8",
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(
+      selectedBuilding.x,
+      selectedBuilding.height + 4,
+      selectedBuilding.z,
+    );
+    ring.renderOrder = 8;
+    this.entityHighlightGroup.add(ring);
+
+    const outline = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        selectedBuilding.width + 3,
+        selectedBuilding.height + 3,
+        selectedBuilding.depth + 3,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: "#fff1a8",
+        wireframe: true,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+      }),
+    );
+    outline.position.set(
+      selectedBuilding.x,
+      selectedBuilding.height / 2,
+      selectedBuilding.z,
+    );
+    outline.rotation.y = selectedBuilding.rotation;
+    outline.renderOrder = 7;
+    this.entityHighlightGroup.add(outline);
+
+    const buildingById = new Map(
+      this.entityState.buildings.map((building) => [building.id, building]),
+    );
+    const connections = this.entityState.connections
+      .filter((connection) => {
+        if (this.selectedEntity?.kind === "person") {
+          return connection.personIds.includes(this.selectedEntity.id);
+        }
+        return (
+          connection.fromBuildingId === selectedBuilding.id ||
+          connection.toBuildingId === selectedBuilding.id
+        );
+      })
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 12);
+    for (const connection of connections) {
+      const from = entityFlowPoint(
+        connection.fromBuildingId,
+        buildingById,
+        connection.toBuildingId,
+        true,
+      );
+      const to = entityFlowPoint(
+        connection.toBuildingId,
+        buildingById,
+        connection.fromBuildingId,
+        false,
+      );
+      this.addEntityFlow(from, to, connection.kind, connection.volume);
+    }
+  }
+
+  private addEntityFlow(
+    from: THREE.Vector3,
+    to: THREE.Vector3,
+    kind: BuildingConnectionKind,
+    volume: number,
+  ): void {
+    const color = entityFlowColor(kind);
+    const curve = this.createEntityFlowCurve(from, to);
+    const radius = THREE.MathUtils.clamp(
+      1.5 + Math.log2(volume + 1) * 0.24,
+      2,
+      4.2,
+    );
+    const ribbon = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 24, radius, 7, false),
+      new THREE.MeshBasicMaterial({
+        color,
+        depthTest: false,
+        transparent: true,
+        opacity: 0.86,
+      }),
+    );
+    ribbon.renderOrder = 6;
+    ribbon.userData.flowKind = kind;
+    this.entityFlowGroup.add(ribbon);
+
+    const end = curve.getPoint(0.96);
+    const direction = to.clone().sub(end).normalize();
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(radius * 2.3, radius * 5, 10),
+      new THREE.MeshBasicMaterial({ color, depthTest: false }),
+    );
+    arrow.position.copy(to).addScaledVector(direction, -radius * 2);
+    arrow.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      direction,
+    );
+    arrow.renderOrder = 7;
+    this.entityFlowGroup.add(arrow);
+  }
+
+  private createEntityFlowCurve(
+    from: THREE.Vector3,
+    to: THREE.Vector3,
+  ): THREE.Curve<THREE.Vector3> {
+    const roadPath = routeExpansionRoadNetwork(
+      from,
+      to,
+      [...this.expansionRoadData.values()],
+    );
+    if (roadPath.length >= 2) {
+      return new THREE.CatmullRomCurve3(
+        [
+          from.clone(),
+          ...roadPath.map(
+            (point) => new THREE.Vector3(point.x, 8, point.z),
+          ),
+          to.clone(),
+        ],
+        false,
+        "catmullrom",
+        0.12,
+      );
+    }
+    const middle = from.clone().lerp(to, 0.5);
+    middle.y += Math.min(80, 24 + from.distanceTo(to) * 0.11);
+    return new THREE.QuadraticBezierCurve3(from, middle, to);
   }
 
   private updateFlyCamera(deltaSeconds: number): void {
@@ -4087,6 +4359,125 @@ function clearGroup(group: THREE.Group): void {
     group.remove(child);
     if (child instanceof THREE.Mesh) child.geometry.dispose();
   }
+}
+
+function routeExpansionRoadNetwork(
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  roads: readonly ExpansionRoad[],
+): Array<{ x: number; z: number }> {
+  if (roads.length === 0) return [];
+  const points = new Map<string, { x: number; z: number }>();
+  const adjacency = new Map<string, Array<{ id: string; distance: number }>>();
+  const nodeId = (x: number, z: number): string =>
+    `${Math.round(x * 10)}:${Math.round(z * 10)}`;
+  const connect = (
+    fromId: string,
+    toId: string,
+    distance: number,
+  ): void => {
+    const edges = adjacency.get(fromId) ?? [];
+    edges.push({ id: toId, distance });
+    adjacency.set(fromId, edges);
+  };
+  for (const road of roads) {
+    const startId = nodeId(road.startX, road.startZ);
+    const endId = nodeId(road.endX, road.endZ);
+    points.set(startId, { x: road.startX, z: road.startZ });
+    points.set(endId, { x: road.endX, z: road.endZ });
+    const distance = Math.hypot(
+      road.endX - road.startX,
+      road.endZ - road.startZ,
+    );
+    connect(startId, endId, distance);
+    connect(endId, startId, distance);
+  }
+  const nearest = (point: THREE.Vector3): { id: string; distance: number } | null => {
+    let result: { id: string; distance: number } | null = null;
+    for (const [id, candidate] of points) {
+      const distance = Math.hypot(point.x - candidate.x, point.z - candidate.z);
+      if (!result || distance < result.distance) result = { id, distance };
+    }
+    return result;
+  };
+  const start = nearest(from);
+  const destination = nearest(to);
+  if (
+    !start ||
+    !destination ||
+    start.distance > 650 ||
+    destination.distance > 650
+  ) {
+    return [];
+  }
+
+  const distances = new Map<string, number>([[start.id, 0]]);
+  const previous = new Map<string, string>();
+  const remaining = new Set(points.keys());
+  while (remaining.size > 0) {
+    let current: string | null = null;
+    let currentDistance = Number.POSITIVE_INFINITY;
+    for (const id of remaining) {
+      const distance = distances.get(id) ?? Number.POSITIVE_INFINITY;
+      if (distance < currentDistance) {
+        current = id;
+        currentDistance = distance;
+      }
+    }
+    if (!current || !Number.isFinite(currentDistance)) break;
+    remaining.delete(current);
+    if (current === destination.id) break;
+    for (const edge of adjacency.get(current) ?? []) {
+      if (!remaining.has(edge.id)) continue;
+      const nextDistance = currentDistance + edge.distance;
+      if (nextDistance < (distances.get(edge.id) ?? Number.POSITIVE_INFINITY)) {
+        distances.set(edge.id, nextDistance);
+        previous.set(edge.id, current);
+      }
+    }
+  }
+  if (!distances.has(destination.id)) return [];
+  const path: string[] = [];
+  let current: string | undefined = destination.id;
+  while (current) {
+    path.push(current);
+    if (current === start.id) break;
+    current = previous.get(current);
+  }
+  if (path.at(-1) !== start.id) return [];
+  return path.reverse().map((id) => points.get(id)!);
+}
+
+function entityFlowColor(kind: BuildingConnectionKind): string {
+  if (kind === "work") return "#00b7ff";
+  if (kind === "visit") return "#ffb000";
+  return "#ff5f4a";
+}
+
+function entityFlowPoint(
+  id: string,
+  buildings: ReadonlyMap<string, DetailedBuilding>,
+  oppositeId: string,
+  from: boolean,
+): THREE.Vector3 {
+  const building = buildings.get(id);
+  if (building) {
+    return new THREE.Vector3(
+      building.x,
+      building.height + 6,
+      building.z,
+    );
+  }
+  const opposite = buildings.get(oppositeId);
+  if (!opposite) return new THREE.Vector3(from ? -1_050 : 1_050, 24, 0);
+  if (id === "outside-work") {
+    return new THREE.Vector3(
+      opposite.x > 0 ? 1_100 : -1_100,
+      24,
+      opposite.z * 0.55,
+    );
+  }
+  return new THREE.Vector3(1_150, 24, opposite.z * 0.6);
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
