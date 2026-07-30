@@ -76,10 +76,12 @@ const SLOW_STREET_ANIMATION_SCALE = 0.65;
 
 export function visibleTrafficTimeScale(
   simulationSpeed: number,
+  timeHorizon: TimeHorizon,
 ): number {
-  return simulationSpeed < 0.5
+  const baseScale = simulationSpeed < 0.5
     ? SLOW_STREET_ANIMATION_SCALE
     : simulationSpeed;
+  return timeHorizon === "week" ? baseScale * 4 : baseScale;
 }
 
 const EMPTY_DESIGN_IMPACT: DesignImpact = {
@@ -444,7 +446,10 @@ export class Simulation {
     if (!this.state.running || deltaSeconds <= 0) return;
     const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
     const visibleTrafficDelta =
-      deltaSeconds * visibleTrafficTimeScale(this.settings.simulationSpeed);
+      deltaSeconds * visibleTrafficTimeScale(
+        this.settings.simulationSpeed,
+        this.settings.timeHorizon,
+      );
     this.state.elapsedSeconds += simulationDelta;
     const previousCompletedDays = Math.floor(
       this.state.cityElapsedMinutes / 1440,

@@ -560,7 +560,12 @@ export class LiveTrafficSystem {
     for (const road of roads) {
       this.roadSegments.set(road.id, expansionRoadModel(road));
     }
-    const graph = buildEconomicRouteGraph(this.nodes, this.roadSegments, roads);
+    const graph = buildEconomicRouteGraph(
+      this.nodes,
+      this.roadSegments,
+      roads,
+      buildings,
+    );
     this.economicRouteNodes = graph.nodes;
     this.walkingEconomicEdges = bidirectionalEconomicEdges(graph.nodes);
     this.expansionSegmentNodes = graph.expansionSegmentNodes;
@@ -2848,6 +2853,7 @@ function buildEconomicRouteGraph(
   grid: readonly (readonly GridNode[])[],
   roadSegments: ReadonlyMap<string, RoadSegmentModel>,
   expansionRoads: readonly ExpansionRoad[],
+  buildingEndpoints: readonly BuildingDestinationInput[] = [],
 ): {
   nodes: Map<string, EconomicRouteNode>;
   expansionSegmentNodes: Map<string, Set<string>>;
@@ -2959,6 +2965,21 @@ function buildEconomicRouteGraph(
         t: roadPosition(road, intersection.x, intersection.z),
       });
     }
+  }
+  for (const building of buildingEndpoints) {
+    const access = expansionAccessRoad(
+      grid,
+      expansionRoads,
+      building.x,
+      building.z,
+    );
+    if (!access) continue;
+    const t = roadPosition(access.road, building.x, building.z);
+    pointsByRoad.get(access.road.id)?.push({
+      x: access.road.startX + (access.road.endX - access.road.startX) * t,
+      z: access.road.startZ + (access.road.endZ - access.road.startZ) * t,
+      t,
+    });
   }
   for (let leftIndex = 0; leftIndex < expansionRoads.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < expansionRoads.length; rightIndex += 1) {
@@ -3242,11 +3263,14 @@ function economicEndpointNodes(
     const node = endpoint === "outside-market" ? boundary[0] : boundary.at(-1);
     return node ? [node.id] : [];
   }
-  const nearestRoad = expansionRoads
-    .map((road) => ({ road, distance: distanceToRoad(endpoint.x, endpoint.z, road) }))
-    .sort((left, right) => left.distance - right.distance)[0];
-  if (nearestRoad && nearestRoad.distance <= Math.max(55, nearestRoad.road.width * 2.5)) {
-    return [...(expansionSegmentNodes.get(nearestRoad.road.id) ?? [])]
+  const access = expansionAccessRoad(
+    grid,
+    expansionRoads,
+    endpoint.x,
+    endpoint.z,
+  );
+  if (access) {
+    return [...(expansionSegmentNodes.get(access.road.id) ?? [])]
       .sort((left, right) => {
         const leftNode = nodes.get(left);
         const rightNode = nodes.get(right);
@@ -3316,6 +3340,48 @@ function distanceToRoad(
     x - (road.startX + (road.endX - road.startX) * t),
     z - (road.startZ + (road.endZ - road.startZ) * t),
   );
+}
+
+function expansionAccessRoad(
+  grid: readonly (readonly GridNode[])[],
+  roads: readonly ExpansionRoad[],
+  x: number,
+  z: number,
+): { road: ExpansionRoad; distance: number } | null {
+  const nearest = roads
+    .map((road) => ({ road, distance: distanceToRoad(x, z, road) }))
+    .sort((left, right) => left.distance - right.distance)[0];
+  if (!nearest) return null;
+  const maximumAccessDistance = Math.max(48, nearest.road.width * 2.5);
+  const nativeRoadDistance = distanceToNativeRoad(grid, x, z);
+  return nearest.distance <= maximumAccessDistance
+      && nearest.distance + 4 < nativeRoadDistance
+    ? nearest
+    : null;
+}
+
+function distanceToNativeRoad(
+  grid: readonly (readonly GridNode[])[],
+  x: number,
+  z: number,
+): number {
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (let column = 0; column < grid.length; column += 1) {
+    for (let row = 0; row < grid[column].length; row += 1) {
+      const start = grid[column][row];
+      for (const end of [
+        grid[column + 1]?.[row],
+        grid[column]?.[row + 1],
+      ]) {
+        if (!end) continue;
+        nearestDistance = Math.min(
+          nearestDistance,
+          projectPointOntoSegment(x, z, start, end).distance,
+        );
+      }
+    }
+  }
+  return nearestDistance;
 }
 
 function projectPointOntoSegment(

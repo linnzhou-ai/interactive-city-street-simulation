@@ -225,7 +225,6 @@ export class SampledMobilitySystem {
   ): PersonMobilityState {
     const duration = Math.max(0.25, trip.expectedArrivalMinute - trip.departureMinute);
     const progress = clamp((minute - trip.departureMinute) / duration, 0, 1);
-    const personNumber = numericPersonId(person.id);
     const vehicleId = trip.item.mode === "car"
       ? CAR_ID_OFFSET + hashInteger(
           `${person.householdId}:${trip.previous.buildingId}:${trip.item.buildingId}:${Math.floor(trip.departureMinute / 5)}`,
@@ -235,8 +234,11 @@ export class SampledMobilitySystem {
             `${trip.previous.buildingId}:${trip.item.buildingId}:${Math.floor(trip.departureMinute / 10)}`,
           ) % 800_000
         : undefined;
+    const spacingSample = hashInteger(
+      `${person.id}:${trip.previous.buildingId}:${trip.item.buildingId}`,
+    );
     const spacingOffset = vehicleId === undefined
-      ? ((personNumber % 5) - 2) * 0.9
+      ? ((spacingSample % 31) - 15) * 1.2
       : ((vehicleId % 7) - 3) * 4.5;
     const visualProgress = clamp(
       progress + spacingOffset / Math.max(20, trip.route.distanceMeters),

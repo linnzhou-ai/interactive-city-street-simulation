@@ -943,6 +943,76 @@ describe("LiveTrafficSystem", () => {
     });
   });
 
+  it("gives nearby buildings distinct access points without capturing native-road trips", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const metersPerLongitude = 111_320
+      * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+    const avenue34 = PENN_AVENUES.find((candidate) => candidate.short === "34")!;
+    const avenue36 = PENN_AVENUES.find((candidate) => candidate.short === "36")!;
+    const walnut = PENN_STREETS.find((candidate) => candidate.slug === "walnut")!;
+    const spruce = PENN_STREETS.find((candidate) => candidate.slug === "spruce")!;
+    const avenue34X = (avenue34.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const avenue36X = (avenue36.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const roadX = (avenue34X + avenue36X) / 2;
+    const walnutZ = -(walnut.latitude - PENN_CENTER.latitude) * 111_320;
+    const spruceZ = -(spruce.latitude - PENN_CENTER.latitude) * 111_320;
+    const road = {
+      id: "expansion-road-building-access",
+      startX: roadX,
+      startZ: walnutZ,
+      endX: roadX,
+      endZ: spruceZ,
+      width: 16,
+      laneDirection: "two-way" as const,
+    };
+    const firstBuilding = {
+      id: "access-building-1",
+      kind: "residential" as const,
+      x: roadX + 8,
+      z: walnutZ + (spruceZ - walnutZ) * 0.2,
+    };
+    const secondBuilding = {
+      id: "access-building-2",
+      kind: "commercial" as const,
+      x: roadX - 9,
+      z: walnutZ + (spruceZ - walnutZ) * 0.65,
+    };
+    traffic.setExpansionNetwork(
+      [road],
+      [],
+      [firstBuilding, secondBuilding],
+    );
+
+    const firstRoute = traffic.getRoutePath(
+      firstBuilding,
+      { x: avenue34X, z: walnutZ },
+      "walk",
+    );
+    const secondRoute = traffic.getRoutePath(
+      secondBuilding,
+      { x: avenue34X, z: walnutZ },
+      "walk",
+    );
+    const nativeRoadRoute = traffic.getRoutePath(
+      { x: roadX + 20, z: walnutZ + 2 },
+      { x: avenue34X, z: spruceZ },
+      "car",
+    );
+
+    expect(firstRoute.points[0]).toMatchObject({
+      x: roadX,
+      z: firstBuilding.z,
+    });
+    expect(secondRoute.points[0]).toMatchObject({
+      x: roadX,
+      z: secondBuilding.z,
+    });
+    expect(firstRoute.points[0].z).not.toBe(secondRoute.points[0].z);
+    expect(nativeRoadRoute.segmentIds).not.toContain(road.id);
+  });
+
   it("marks isolated expansion parcels as disconnected", () => {
     const traffic = new LiveTrafficSystem(20260729);
     const road = {

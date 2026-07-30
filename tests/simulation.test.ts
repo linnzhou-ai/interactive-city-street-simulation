@@ -8,10 +8,11 @@ import {
 
 describe("Simulation", () => {
   it("uses one visual clock for sampled and ambient traffic", () => {
-    expect(visibleTrafficTimeScale(1 / 3_600)).toBe(0.65);
-    expect(visibleTrafficTimeScale(1 / 360)).toBe(0.65);
-    expect(visibleTrafficTimeScale(0.5)).toBe(0.5);
-    expect(visibleTrafficTimeScale(1)).toBe(1);
+    expect(visibleTrafficTimeScale(1 / 3_600, "day")).toBe(0.65);
+    expect(visibleTrafficTimeScale(1 / 360, "day")).toBe(0.65);
+    expect(visibleTrafficTimeScale(0.5, "day")).toBe(0.5);
+    expect(visibleTrafficTimeScale(1, "day")).toBe(1);
+    expect(visibleTrafficTimeScale(1, "week")).toBe(4);
   });
 
   it("does not advance while paused", () => {
