@@ -1010,6 +1010,8 @@ function createRoadMesh(
     new THREE.MeshStandardMaterial({
       color: ROAD_ASPHALT_COLOR,
       roughness: selected ? 0.92 : 0.97,
+      emissive: selected ? "#1f6a5b" : "#000000",
+      emissiveIntensity: selected ? 0.6 : 0,
       transparent: false,
       opacity: 1,
       depthWrite: true,

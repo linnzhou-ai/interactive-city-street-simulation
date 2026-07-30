@@ -20,6 +20,7 @@ import {
 } from "./core/projectState";
 import {
   expansionRoadDisplayName,
+  randomExpansionRoadName,
 } from "./core/expansionRoadNaming";
 import { getPhillyCrashRiskProfile } from "./data/phillyCrashProfile";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
@@ -928,15 +929,20 @@ renderer.setExpansionRoadInteractionHandlers({
     if (!fundManualMunicipalProject(projectCost, "road")) return;
     recordEdit();
     const sequence = nextExpansionRoadId++;
+    const id = `expansion-road-${sequence}`;
     const road: ExpansionRoad = {
-      id: `expansion-road-${sequence}`,
-      name: `New Street ${sequence}`,
+      id,
+      name: randomExpansionRoadName([
+        ...features.map((feature) => feature.name),
+        ...[...expansionRoads.values()].map(expansionRoadDisplayName),
+      ]),
       ...roadData,
     };
     expansionRoads.set(road.id, road);
     renderer.setExpansionRoads([...expansionRoads.values()]);
     const safetyFeatures = addAutomaticRoadSafetyFeatures(road.id);
     syncExpansion();
+    setExpansionRoadToolActive(false);
     selectExpansionRoad(road.id);
     finishEdit();
     setBuildFeedback(
@@ -1082,9 +1088,13 @@ function fundMunicipalGrowth(): void {
   if (!simulation.fundMunicipalProject(cost)) return;
   recordEdit();
   const sequence = nextExpansionRoadId++;
+  const id = `municipal-road-${sequence}`;
   const road: ExpansionRoad = {
-    id: `municipal-road-${sequence}`,
-    name: `Civic Way ${sequence}`,
+    id,
+    name: randomExpansionRoadName([
+      ...features.map((feature) => feature.name),
+      ...[...expansionRoads.values()].map(expansionRoadDisplayName),
+    ]),
     ...roadData,
   };
   expansionRoads.set(road.id, road);
@@ -1715,7 +1725,10 @@ function syncExpansion(): void {
   const buildings = [...placedBuildings.values()];
   const roads = renderer.matchExpansionRoadWidths(
     [...expansionRoads.values()],
-  );
+  ).map((road) => ({
+    ...road,
+    name: expansionRoadDisplayName(road),
+  }));
   for (const road of roads) expansionRoads.set(road.id, road);
   const streetObjects = [...expansionStreetObjects.values()];
   const demolished = [...demolishedBuildingIds];

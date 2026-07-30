@@ -83,6 +83,25 @@ describe("ExpansionBuilder crosswalk sets", () => {
     expectBlackAsphalt();
   });
 
+  it("visually highlights a selected added road without changing its asphalt", () => {
+    const scene = new THREE.Scene();
+    const expansion = builder(scene);
+    expansion.setRoads([horizontalRoad]);
+    expansion.setSelectedRoad(horizontalRoad.id);
+
+    let surface: THREE.Mesh | undefined;
+    scene.traverse((object) => {
+      if (
+        object.parent?.userData.expansionId === horizontalRoad.id
+        && object instanceof THREE.Mesh
+      ) surface ??= object;
+    });
+    const material = surface?.material as THREE.MeshStandardMaterial;
+    expect(`#${material.color.getHexString()}`).toBe(ROAD_ASPHALT_COLOR);
+    expect(`#${material.emissive.getHexString()}`).toBe("#1f6a5b");
+    expect(material.emissiveIntensity).toBe(0.6);
+  });
+
   it("matches a connected expansion network to the native road width", () => {
     const expansion = builder(new THREE.Scene(), [wideNativeRoad]);
     const connector = { ...horizontalRoad, endX: 200 };

@@ -136,12 +136,14 @@ describe("parseProjectSnapshot", () => {
     );
     expect(parsed.expansionRoads).toHaveLength(1);
     expect(parsed.expansionRoads[0]).toMatchObject({
-      name: "New Street 1",
       laneDelta: 1,
       bikeLane: true,
       widenedSidewalk: true,
       laneDirection: "forward",
     });
+    expect(parsed.expansionRoads[0].name).toMatch(
+      / (Avenue|Lane|Road|Street|Way)$/,
+    );
     expect(parsed.nextExpansionRoadId).toBe(2);
   });
 
