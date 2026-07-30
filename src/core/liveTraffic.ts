@@ -67,6 +67,7 @@ const PEDESTRIAN_COLORS = [
 ] as const;
 const VIOLATION_FLASH_SECONDS = 2;
 const INTERSECTION_STOP_LINE_DISTANCE_METERS = 14;
+const INTERSECTION_CLEARANCE_SECONDS = 2;
 const VEHICLE_KINDS: readonly VehicleKind[] = [
   "sedan",
   "sedan",
@@ -146,6 +147,11 @@ interface VehicleAgent {
 interface VehicleLeader {
   distanceOnSegment: number;
   length: number;
+}
+
+interface IntersectionReservation {
+  vehicleKey: string;
+  expiresAtSeconds: number;
 }
 
 interface PedestrianAgent {
@@ -358,6 +364,7 @@ export class LiveTrafficSystem {
   private pedestrians: PedestrianAgent[] = [];
   private sampledVehicles: VehicleSnapshot[] = [];
   private resolvedVehicleSnapshots: VehicleSnapshot[] | undefined;
+  private intersectionReservations = new Map<string, IntersectionReservation>();
   private sampledVehicleHolds = new Map<number, {
     snapshot: VehicleSnapshot;
     intersectionId: string;
@@ -420,6 +427,7 @@ export class LiveTrafficSystem {
     this.pedestrians = [];
     this.sampledVehicles = [];
     this.resolvedVehicleSnapshots = undefined;
+    this.intersectionReservations.clear();
     this.sampledVehicleHolds.clear();
     this.sampledPedestrians = [];
     this.sampledPedestrianHolds.clear();
@@ -1496,12 +1504,15 @@ export class LiveTrafficSystem {
     previous: VehicleSnapshot | undefined,
     visibleTrafficDelta: number | undefined,
   ): VehicleSnapshot {
+    const vehicleKey = `sampled:${vehicle.id}`;
     const held = this.sampledVehicleHolds.get(vehicle.id);
     if (held) {
       const signal = this.controllers.get(held.intersectionId)?.getSnapshot();
       if (
-        signal
-        && !vehicleMayProceed(signal.phase, held.axis, 20, 0)
+        (signal
+          && !vehicleMayProceed(signal.phase, held.axis, 20, 0))
+        || this.intersectionHasCrossingPedestrian(held.intersectionId)
+        || !this.intersectionAvailable(held.intersectionId, vehicleKey)
       ) {
         return {
           ...held.snapshot,
@@ -1541,19 +1552,32 @@ export class LiveTrafficSystem {
     const segmentLength = distance(start, end);
     const remaining = segmentLength - projection.distanceOnSegment;
     if (remaining >= 40) return smoothed;
-    const signalNode = this.nearestSignalNode(end.x, end.z);
-    if (!signalNode) return smoothed;
-    const signal = this.controllers.get(signalNode.id)?.getSnapshot();
+    const intersectionNode = this.nearestIntersectionNode(end.x, end.z);
+    if (!intersectionNode) return smoothed;
+    const signal = this.controllers.get(intersectionNode.id)?.getSnapshot();
     const axis = movementAxis(start, end);
-    if (
+    const signalAllowsEntry =
       !signal
       || vehicleMayProceed(
         signal.phase,
         axis,
         remaining,
         smoothed.speedMetersPerSecond,
-      )
-    ) {
+      );
+    const canEnter =
+      signalAllowsEntry
+      && !this.intersectionHasCrossingPedestrian(intersectionNode.id)
+      && this.intersectionAvailable(intersectionNode.id, vehicleKey);
+    if (canEnter) {
+      const commitDistance =
+        vehicleStopCenterDistance(vehicleLengthMeters(smoothed.kind))
+        + Math.max(
+          0.5,
+          smoothed.speedMetersPerSecond * (visibleTrafficDelta ?? 0.1),
+        );
+      if (remaining <= commitDistance) {
+        this.reserveIntersection(intersectionNode.id, vehicleKey);
+      }
       return smoothed;
     }
     const stopCenterDistance = vehicleStopCenterDistance(
@@ -1586,7 +1610,7 @@ export class LiveTrafficSystem {
     };
     this.sampledVehicleHolds.set(smoothed.id, {
       snapshot,
-      intersectionId: signalNode.id,
+      intersectionId: intersectionNode.id,
       axis,
     });
     return snapshot;
@@ -1769,6 +1793,22 @@ export class LiveTrafficSystem {
     let nearestDistance = Number.POSITIVE_INFINITY;
     for (const [id, node] of this.economicRouteNodes) {
       if (!this.controllers.has(id)) continue;
+      const candidateDistance = Math.hypot(node.x - x, node.z - z);
+      if (candidateDistance < nearestDistance) {
+        nearest = node;
+        nearestDistance = candidateDistance;
+      }
+    }
+    return nearestDistance <= 1.5 ? nearest : null;
+  }
+
+  private nearestIntersectionNode(
+    x: number,
+    z: number,
+  ): EconomicRouteNode | null {
+    let nearest: EconomicRouteNode | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const node of this.economicRouteNodes.values()) {
       const candidateDistance = Math.hypot(node.x - x, node.z - z);
       if (candidateDistance < nearestDistance) {
         nearest = node;
@@ -2080,8 +2120,13 @@ export class LiveTrafficSystem {
           vehicle.mayRunRed,
         );
       const alreadyCommitted = vehicle.committedIntersectionId === end.id;
+      const vehicleKey = `background:${vehicle.id}`;
+      const rightOfWayAvailable =
+        alreadyCommitted || this.intersectionAvailable(end.id, vehicleKey);
       const canEnter =
-        behaviorCanProceed && !this.intersectionHasCrossingPedestrian(end.id);
+        behaviorCanProceed
+        && !this.intersectionHasCrossingPedestrian(end.id)
+        && rightOfWayAvailable;
       if (
         !alreadyCommitted &&
         canEnter &&
@@ -2111,12 +2156,16 @@ export class LiveTrafficSystem {
           Math.max(0, (remaining - stopCenterDistance) * 0.7),
         );
       } else {
+        if (alreadyCommitted) {
+          this.reserveIntersection(end.id, vehicleKey);
+        }
         if (
           !alreadyCommitted &&
           remaining <=
             stopCenterDistance + Math.max(0.5, vehicle.speed * deltaSeconds)
         ) {
           vehicle.committedIntersectionId = end.id;
+          this.reserveIntersection(end.id, vehicleKey);
         }
         targetSpeed = Math.min(
           targetSpeed,
@@ -2520,6 +2569,27 @@ export class LiveTrafficSystem {
         pedestrian.committedIntersectionId === intersectionId &&
         pedestrian.speed > 0.08,
     );
+  }
+
+  private intersectionAvailable(
+    intersectionId: string,
+    vehicleKey: string,
+  ): boolean {
+    const reservation = this.intersectionReservations.get(intersectionId);
+    return reservation === undefined
+      || reservation.vehicleKey === vehicleKey
+      || reservation.expiresAtSeconds <= this.elapsedSeconds;
+  }
+
+  private reserveIntersection(
+    intersectionId: string,
+    vehicleKey: string,
+  ): void {
+    this.intersectionReservations.set(intersectionId, {
+      vehicleKey,
+      expiresAtSeconds:
+        this.elapsedSeconds + INTERSECTION_CLEARANCE_SECONDS,
+    });
   }
 
   private scheduleNextSpawns(

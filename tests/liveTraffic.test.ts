@@ -303,6 +303,72 @@ describe("LiveTrafficSystem", () => {
     );
   });
 
+  it("gives one vehicle the intersection while the other yields", () => {
+    const traffic = new LiveTrafficSystem(3405);
+    const northApproach = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "34-walnut-sansom"
+    )!;
+    const southApproach = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "34-sansom-spruce"
+    )!;
+    const northPoints = northApproach.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    const intersection = northPoints[1];
+    const vehicles = [
+      {
+        id: 8_005,
+        segmentId: northApproach.id,
+        laneId: `${northApproach.id}:sampled`,
+        x: intersection.x,
+        z: intersection.z - 2,
+        heading: 0,
+        speedMetersPerSecond: 8.5,
+        queued: false,
+        kind: "compact" as const,
+        color: "#ffffff",
+        complianceProbability: 1,
+        violating: false,
+        source: "sampled-resident" as const,
+      },
+      {
+        id: 8_007,
+        segmentId: southApproach.id,
+        laneId: `${southApproach.id}:sampled`,
+        x: intersection.x,
+        z: intersection.z + 2,
+        heading: Math.PI,
+        speedMetersPerSecond: 8.5,
+        queued: false,
+        kind: "compact" as const,
+        color: "#ffffff",
+        complianceProbability: 1,
+        violating: false,
+        source: "sampled-resident" as const,
+      },
+    ];
+
+    traffic.setSampledMobility(vehicles, []);
+
+    const [proceeding, yielding] = traffic.getVehicles();
+    expect(proceeding.queued).toBe(false);
+    expect(yielding.queued).toBe(true);
+    expect(yielding.speedMetersPerSecond).toBe(0);
+    expect(Math.abs(yielding.z - intersection.z)).toBeGreaterThanOrEqual(
+      vehicleStopCenterDistance(vehicleLengthMeters(yielding.kind)) - 0.01,
+    );
+
+    traffic.update(2.1, {
+      vehicleVolume: 0,
+      pedestrianVolume: 0,
+      speedLimitMph: 25,
+    });
+    traffic.setSampledMobility([vehicles[1]], []);
+    expect(traffic.getVehicles()[0].queued).toBe(false);
+  });
+
   it("keeps icon and ambient vehicles physically separated in one lane", () => {
     const traffic = new LiveTrafficSystem(3404);
     const feature = PENN_ROAD_GRAPH.find((candidate) =>
