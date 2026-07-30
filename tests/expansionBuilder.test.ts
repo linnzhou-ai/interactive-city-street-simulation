@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { ExpansionBuilder } from "../src/rendering/expansionBuilder";
+import {
+  ExpansionBuilder,
+  ROAD_ASPHALT_COLOR,
+} from "../src/rendering/expansionBuilder";
 import type { ExpansionRoad } from "../src/models/types";
 
 const horizontalRoad: ExpansionRoad = {
@@ -19,13 +22,25 @@ const verticalRoad: ExpansionRoad = {
   endZ: 100,
   width: 16,
 };
+const wideNativeRoad: ExpansionRoad = {
+  id: "existing-road:native-wide",
+  startX: 200,
+  startZ: -100,
+  endX: 200,
+  endZ: 100,
+  width: 22,
+};
 
-function builder(scene: THREE.Scene): ExpansionBuilder {
+function builder(
+  scene: THREE.Scene,
+  existingRoads: readonly ExpansionRoad[] = [],
+): ExpansionBuilder {
   return new ExpansionBuilder(
     scene,
     new THREE.PerspectiveCamera(),
     {} as HTMLCanvasElement,
     { minX: -500, maxX: 500, minZ: -500, maxZ: 500 },
+    existingRoads,
   );
 }
 
@@ -45,7 +60,7 @@ describe("ExpansionBuilder crosswalk sets", () => {
       });
       const surface = roadGroup?.children[0] as THREE.Mesh;
       const material = surface.material as THREE.MeshStandardMaterial;
-      expect(material.color.getHexString()).toBe("071417");
+      expect(`#${material.color.getHexString()}`).toBe(ROAD_ASPHALT_COLOR);
       expect(material.transparent).toBe(false);
       expect(material.opacity).toBe(1);
       expect(
@@ -66,6 +81,21 @@ describe("ExpansionBuilder crosswalk sets", () => {
     expectBlackAsphalt();
     expansion.setHighlightedRoads([horizontalRoad.id]);
     expectBlackAsphalt();
+  });
+
+  it("matches a connected expansion network to the native road width", () => {
+    const expansion = builder(new THREE.Scene(), [wideNativeRoad]);
+    const connector = { ...horizontalRoad, endX: 200 };
+    const branch = {
+      ...verticalRoad,
+      startX: 0,
+      endX: 0,
+    };
+
+    expect(expansion.matchRoadWidths([connector, branch])).toEqual([
+      { ...connector, width: 22 },
+      { ...branch, width: 22 },
+    ]);
   });
 
   it("releases a dragged street-tool interaction without placing anything", () => {
@@ -113,6 +143,65 @@ describe("ExpansionBuilder crosswalk sets", () => {
     });
     expect(stripeCount).toBe(28);
     expect(lowestStripeTop).toBeGreaterThan(0.32);
+  });
+
+  it("sizes crosswalk bands to the connected sidewalk width", () => {
+    const scene = new THREE.Scene();
+    const expansion = builder(scene, [wideNativeRoad]);
+    const wideHorizontal = { ...horizontalRoad, width: 22 };
+    expansion.setRoads([wideHorizontal]);
+    expansion.setStreetObjects([{
+      id: "wide-crosswalk-set",
+      kind: "crosswalk",
+      x: 200,
+      z: 0,
+      rotation: 0,
+    }]);
+
+    const stripeDepths: number[] = [];
+    scene.traverse((object) => {
+      if (
+        object.parent?.userData.expansionId === "wide-crosswalk-set"
+        && object instanceof THREE.Mesh
+      ) {
+        const geometry = object.geometry as THREE.BoxGeometry;
+        stripeDepths.push(Math.min(
+          geometry.parameters.width,
+          geometry.parameters.depth,
+        ));
+      }
+    });
+    expect(stripeDepths).not.toHaveLength(0);
+    expect(stripeDepths.every((depth) => depth === 1.35)).toBe(true);
+    const bands: number[] = [];
+    scene.traverse((object) => {
+      if (
+        object.parent?.userData.expansionId === "wide-crosswalk-set"
+        && object instanceof THREE.Mesh
+      ) {
+        const geometry = object.geometry as THREE.BoxGeometry;
+        bands.push(Math.max(
+          geometry.parameters.width,
+          geometry.parameters.depth,
+        ));
+      }
+    });
+    expect(new Set(bands)).toEqual(new Set([3.5, 6]));
+
+    let junctionSurface: THREE.Mesh | undefined;
+    scene.traverse((object) => {
+      if (
+        object instanceof THREE.Mesh
+        && Math.abs(object.position.x - 200) < 0.01
+        && Math.abs(object.position.z) < 0.01
+        && object.position.y > 0.25
+        && !object.parent?.userData.expansionId
+      ) junctionSurface = object;
+    });
+    const junctionGeometry =
+      junctionSurface?.geometry as THREE.BoxGeometry | undefined;
+    expect(junctionGeometry?.parameters.width).toBe(22);
+    expect(junctionGeometry?.parameters.depth).toBe(22);
   });
 
   it("does not place an isolated one-sided crosswalk away from a junction", () => {

@@ -1654,7 +1654,10 @@ function eraseExpansionObject(
 
 function syncExpansion(): void {
   const buildings = [...placedBuildings.values()];
-  const roads = [...expansionRoads.values()];
+  const roads = renderer.matchExpansionRoadWidths(
+    [...expansionRoads.values()],
+  );
+  for (const road of roads) expansionRoads.set(road.id, road);
   const streetObjects = [...expansionStreetObjects.values()];
   const demolished = [...demolishedBuildingIds];
   renderer.setExpansionRoads(roads);

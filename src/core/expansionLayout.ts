@@ -207,6 +207,62 @@ export function roadCorridorsOverlap(
   return Math.min(leftEnd, rightEnd) - Math.max(leftStart, rightStart) > 0.5;
 }
 
+export function roadsMeet(
+  left: Readonly<RoadGeometry>,
+  right: Readonly<RoadGeometry>,
+): boolean {
+  const leftHorizontal = isHorizontalRoad(left);
+  const rightHorizontal = isHorizontalRoad(right);
+  if (leftHorizontal !== rightHorizontal) {
+    const horizontal = leftHorizontal ? left : right;
+    const vertical = leftHorizontal ? right : left;
+    return vertical.startX >= Math.min(horizontal.startX, horizontal.endX) - 0.5
+      && vertical.startX <= Math.max(horizontal.startX, horizontal.endX) + 0.5
+      && horizontal.startZ >= Math.min(vertical.startZ, vertical.endZ) - 0.5
+      && horizontal.startZ <= Math.max(vertical.startZ, vertical.endZ) + 0.5;
+  }
+  const normalDistance = leftHorizontal
+    ? Math.abs(left.startZ - right.startZ)
+    : Math.abs(left.startX - right.startX);
+  if (normalDistance > 0.5) return false;
+  const [leftStart, leftEnd] = roadInterval(left, leftHorizontal);
+  const [rightStart, rightEnd] = roadInterval(right, rightHorizontal);
+  return Math.min(leftEnd, rightEnd) >= Math.max(leftStart, rightStart) - 0.5;
+}
+
+export function matchConnectedRoadWidths(
+  roads: readonly ExpansionRoad[],
+  existingRoads: readonly ExpansionRoad[],
+): ExpansionRoad[] {
+  const matched = roads.map((road) => ({ ...road }));
+  const visited = new Set<number>();
+  for (let startIndex = 0; startIndex < matched.length; startIndex += 1) {
+    if (visited.has(startIndex)) continue;
+    const component: number[] = [];
+    const pending = [startIndex];
+    visited.add(startIndex);
+    while (pending.length > 0) {
+      const roadIndex = pending.pop()!;
+      component.push(roadIndex);
+      for (let index = 0; index < matched.length; index += 1) {
+        if (!visited.has(index) && roadsMeet(matched[roadIndex], matched[index])) {
+          visited.add(index);
+          pending.push(index);
+        }
+      }
+    }
+    const connectedWidths = existingRoads
+      .filter((existing) =>
+        component.some((index) => roadsMeet(matched[index], existing))
+      )
+      .map((road) => road.width);
+    if (connectedWidths.length === 0) continue;
+    const width = Math.max(...connectedWidths);
+    for (const index of component) matched[index].width = width;
+  }
+  return matched;
+}
+
 export function roadIntersectsBuilding(
   road: Readonly<RoadGeometry>,
   building: Readonly<BuildingGeometry>,

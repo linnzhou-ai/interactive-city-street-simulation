@@ -38,6 +38,7 @@ import type {
 } from "../models/types";
 import {
   ExpansionBuilder,
+  ROAD_ASPHALT_COLOR,
   type PlacementResult,
 } from "./expansionBuilder";
 import { projectPointToRoad } from "../core/expansionLayout";
@@ -554,6 +555,12 @@ export class ThreeRenderer {
     this.expansionRoads = roads.map((road) => ({ ...road }));
     this.expansionBuilder.setRoads(roads);
     this.updateExpansionTreeVisibility();
+  }
+
+  matchExpansionRoadWidths(
+    roads: readonly ExpansionRoad[],
+  ): ExpansionRoad[] {
+    return this.expansionBuilder.matchRoadWidths(roads);
   }
 
   setSelectedExpansionRoad(id: string | null): void {
@@ -2550,7 +2557,7 @@ export class ThreeRenderer {
     for (const [featureId, road] of this.featureMeshes) {
       const material = road.material as THREE.MeshStandardMaterial;
       const selected = featureId === this.selectedFeatureId;
-      material.color.set(selected ? "#3d625f" : "#2c3337");
+      material.color.set(ROAD_ASPHALT_COLOR);
       material.emissive.set(selected ? "#1f6a5b" : "#000000");
       material.emissiveIntensity = selected ? 0.6 : 0;
       material.roughness = 0.9;
@@ -3137,8 +3144,14 @@ function createWorldMaterials() {
     lawn: new THREE.MeshStandardMaterial({ color: "#76976c", roughness: 1 }),
     campusGrass: new THREE.MeshStandardMaterial({ color: "#87a978", roughness: 1 }),
     blockPaving: new THREE.MeshStandardMaterial({ color: "#b7b3a3", roughness: 0.96 }),
-    asphalt: new THREE.MeshStandardMaterial({ color: "#2c3337", roughness: 0.92 }),
-    editedAsphalt: new THREE.MeshStandardMaterial({ color: "#242b2e", roughness: 0.88 }),
+    asphalt: new THREE.MeshStandardMaterial({
+      color: ROAD_ASPHALT_COLOR,
+      roughness: 0.92,
+    }),
+    editedAsphalt: new THREE.MeshStandardMaterial({
+      color: ROAD_ASPHALT_COLOR,
+      roughness: 0.88,
+    }),
     sidewalk: new THREE.MeshStandardMaterial({ color: "#c7c5ba", roughness: 0.94 }),
     yellowLine: new THREE.MeshStandardMaterial({ color: "#f1ca56", roughness: 0.75 }),
     whiteLine: new THREE.MeshStandardMaterial({ color: "#f1efe8", roughness: 0.8 }),

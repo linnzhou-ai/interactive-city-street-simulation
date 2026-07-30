@@ -15,6 +15,7 @@ import {
   expansionBuildingFootprint,
   expansionBuildingSize,
   isBuildingRoadAdjacent,
+  matchConnectedRoadWidths,
   projectPointToRoad,
   resolveRoadsideBuilding,
   roadCorridorsOverlap,
@@ -36,6 +37,8 @@ const SURFACE_HEIGHT = 0.11;
 const ROAD_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.04;
 const JUNCTION_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.17;
 const STREET_OBJECT_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.23;
+
+export const ROAD_ASPHALT_COLOR = "#071417";
 
 export interface ExpansionBounds {
   minX: number;
@@ -217,6 +220,10 @@ export class ExpansionBuilder {
     this.setBuildings(this.buildings);
   }
 
+  matchRoadWidths(roads: readonly ExpansionRoad[]): ExpansionRoad[] {
+    return matchConnectedRoadWidths(roads, this.existingRoads);
+  }
+
   private refreshRoadMeshes(): void {
     clearGroup(this.roadGroup);
     const networkJunctions = roadJunctions([
@@ -237,7 +244,14 @@ export class ExpansionBuilder {
       ));
     }
     for (const junction of relevantJunctions) {
-      this.roadGroup.add(createRoadJunctionMesh(junction));
+      this.roadGroup.add(createRoadJunctionMesh(
+        junction,
+        junctionRoadMetrics(
+          junction.x,
+          junction.z,
+          [...this.existingRoads, ...this.roads],
+        ),
+      ));
     }
   }
 
@@ -245,7 +259,14 @@ export class ExpansionBuilder {
     this.objects = objects.map((object) => ({ ...object }));
     clearGroup(this.objectGroup);
     for (const object of this.objects) {
-      this.objectGroup.add(createStreetObjectMesh(object));
+      this.objectGroup.add(createStreetObjectMesh(
+        object,
+        junctionRoadMetrics(
+          object.x,
+          object.z,
+          [...this.existingRoads, ...this.roads],
+        ),
+      ));
     }
     this.refreshRoadMeshes();
   }
@@ -959,7 +980,7 @@ function createRoadMesh(
     .filter(({ projection }) => projection.distance < 1)
     .map(({ junction, projection }) => {
       const center = projection.progress * length;
-      const halfLength = junction.radius + 4.2;
+      const halfLength = junction.radius + roadSidewalkWidth(road);
       return {
         start: center - halfLength,
         end: center + halfLength,
@@ -971,9 +992,10 @@ function createRoadMesh(
     .filter((projection) => projection.distance <= road.width / 2)
     .map((projection) => {
       const center = projection.progress * length;
+      const clearance = road.width / 2 + roadSidewalkWidth(road);
       return {
-        start: center - 14.5,
-        end: center + 14.5,
+        start: center - clearance,
+        end: center + clearance,
       };
     });
   const sidewalkIntervals = visibleRoadIntervals(length, junctionIntervals);
@@ -986,7 +1008,7 @@ function createRoadMesh(
     0.18,
     length + 0.8,
     new THREE.MeshStandardMaterial({
-      color: "#071417",
+      color: ROAD_ASPHALT_COLOR,
       roughness: selected ? 0.92 : 0.97,
       transparent: false,
       opacity: 1,
@@ -998,7 +1020,7 @@ function createRoadMesh(
   roadSurface.receiveShadow = true;
   group.add(roadSurface);
 
-  const sidewalkWidth = road.widenedSidewalk ? 5.5 : 3.5;
+  const sidewalkWidth = roadSidewalkWidth(road);
   const sideOffset = road.width / 2 + sidewalkWidth / 2;
   for (const side of [-1, 1]) {
     addRoadBoxSegments(
@@ -1115,12 +1137,67 @@ function createRoadMesh(
   return group;
 }
 
-function createRoadJunctionMesh(junction: Readonly<RoadJunction>): THREE.Group {
+interface JunctionRoadMetrics {
+  horizontalWidth: number;
+  verticalWidth: number;
+  horizontalSidewalkWidth: number;
+  verticalSidewalkWidth: number;
+}
+
+function junctionRoadMetrics(
+  x: number,
+  z: number,
+  roads: readonly ExpansionRoad[],
+): JunctionRoadMetrics {
+  const connected = roads.filter((road) =>
+    projectPointToRoad(road, x, z).distance < 1
+  );
+  const horizontal = connected.filter((road) =>
+    Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
+  );
+  const vertical = connected.filter((road) =>
+    Math.abs(road.endX - road.startX) < Math.abs(road.endZ - road.startZ)
+  );
+  const widest = (candidates: readonly ExpansionRoad[]) =>
+    candidates.reduce<ExpansionRoad | undefined>(
+      (result, road) => !result || road.width > result.width ? road : result,
+      undefined,
+    );
+  const fallback = widest(connected);
+  const horizontalRoad = widest(horizontal) ?? fallback;
+  const verticalRoad = widest(vertical) ?? fallback;
+  return {
+    horizontalWidth: horizontalRoad?.width ?? 16,
+    verticalWidth: verticalRoad?.width ?? 16,
+    horizontalSidewalkWidth: horizontalRoad
+      ? roadSidewalkWidth(horizontalRoad)
+      : 3.5,
+    verticalSidewalkWidth: verticalRoad
+      ? roadSidewalkWidth(verticalRoad)
+      : 3.5,
+  };
+}
+
+function roadSidewalkWidth(road: Readonly<ExpansionRoad>): number {
+  if (road.id.startsWith("existing-road:")) return 6;
+  return road.widenedSidewalk ? 5.5 : 3.5;
+}
+
+function createRoadJunctionMesh(
+  junction: Readonly<RoadJunction>,
+  metrics: Readonly<JunctionRoadMetrics>,
+): THREE.Group {
   const group = new THREE.Group();
-  const size = (junction.radius + 4.2) * 2;
   const surface = new THREE.Mesh(
-    new THREE.BoxGeometry(size, 0.08, size),
-    new THREE.MeshStandardMaterial({ color: "#071417", roughness: 0.92 }),
+    new THREE.BoxGeometry(
+      metrics.verticalWidth,
+      0.08,
+      metrics.horizontalWidth,
+    ),
+    new THREE.MeshStandardMaterial({
+      color: ROAD_ASPHALT_COLOR,
+      roughness: 0.92,
+    }),
   );
   surface.position.set(junction.x, JUNCTION_SURFACE_HEIGHT, junction.z);
   surface.receiveShadow = true;
@@ -1218,29 +1295,65 @@ function addRoadBoxSegments(
   }
 }
 
-function createStreetObjectMesh(object: ExpansionStreetObject): THREE.Group {
+function createStreetObjectMesh(
+  object: ExpansionStreetObject,
+  metrics: Readonly<JunctionRoadMetrics>,
+): THREE.Group {
   const group = targetGroup("street-object", object.id);
   group.position.set(object.x, STREET_OBJECT_SURFACE_HEIGHT, object.z);
   group.rotation.y = object.rotation;
   if (object.kind === "crosswalk") {
     const material = new THREE.MeshBasicMaterial({ color: "#f4f1e7" });
-    for (let index = -3; index <= 3; index += 1) {
-      const stripeNorth = box(1.35, 0.035, 6.2, material);
-      stripeNorth.position.set(index * 2.25, 0, -10.5);
+    const stripeWidth = 1.35;
+    const stripeSpacing = 2.25;
+    const northSouthCount = Math.max(
+      3,
+      Math.floor((metrics.verticalWidth - stripeWidth) / stripeSpacing) + 1,
+    );
+    const eastWestCount = Math.max(
+      3,
+      Math.floor((metrics.horizontalWidth - stripeWidth) / stripeSpacing) + 1,
+    );
+    const northSouthOffset =
+      metrics.horizontalWidth / 2 + metrics.horizontalSidewalkWidth / 2;
+    const eastWestOffset =
+      metrics.verticalWidth / 2 + metrics.verticalSidewalkWidth / 2;
+    for (let index = 0; index < northSouthCount; index += 1) {
+      const lateral = (index - (northSouthCount - 1) / 2) * stripeSpacing;
+      const stripeNorth = box(
+        stripeWidth,
+        0.035,
+        metrics.horizontalSidewalkWidth,
+        material,
+      );
+      stripeNorth.position.set(lateral, 0, -northSouthOffset);
       const stripeSouth = stripeNorth.clone();
-      stripeSouth.position.z = 10.5;
-      const stripeWest = box(6.2, 0.035, 1.35, material);
-      stripeWest.position.set(-10.5, 0, index * 2.25);
+      stripeSouth.position.z = northSouthOffset;
+      group.add(stripeNorth, stripeSouth);
+    }
+    for (let index = 0; index < eastWestCount; index += 1) {
+      const lateral = (index - (eastWestCount - 1) / 2) * stripeSpacing;
+      const stripeWest = box(
+        metrics.verticalSidewalkWidth,
+        0.035,
+        stripeWidth,
+        material,
+      );
+      stripeWest.position.set(-eastWestOffset, 0, lateral);
       const stripeEast = stripeWest.clone();
-      stripeEast.position.x = 10.5;
-      group.add(stripeNorth, stripeSouth, stripeWest, stripeEast);
+      stripeEast.position.x = eastWestOffset;
+      group.add(stripeWest, stripeEast);
     }
   } else {
+    const signalX =
+      metrics.verticalWidth / 2 + metrics.verticalSidewalkWidth / 2;
+    const signalZ =
+      metrics.horizontalWidth / 2 + metrics.horizontalSidewalkWidth / 2;
     for (const [x, z, rotation] of [
-      [-10.5, -10.5, 0],
-      [10.5, -10.5, Math.PI / 2],
-      [10.5, 10.5, Math.PI],
-      [-10.5, 10.5, -Math.PI / 2],
+      [-signalX, -signalZ, 0],
+      [signalX, -signalZ, Math.PI / 2],
+      [signalX, signalZ, Math.PI],
+      [-signalX, signalZ, -Math.PI / 2],
     ] as const) {
       const assembly = createExpansionSignalAssembly();
       assembly.position.set(x, 0, z);
