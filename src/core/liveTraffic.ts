@@ -101,6 +101,30 @@ interface AgentRouteNode {
   row?: number;
 }
 
+const STATIC_SEGMENT_GEOMETRY = new Map(
+  PENN_ROAD_GRAPH
+    .filter((feature) => feature.kind === "street" && feature.path.length >= 2)
+    .map((feature) => [
+      feature.id,
+      {
+        start: {
+          id: `${feature.id}:0`,
+          x: (feature.path[0].longitude - PENN_CENTER.longitude) *
+            METERS_PER_DEGREE_LONGITUDE,
+          z: -(feature.path[0].latitude - PENN_CENTER.latitude) *
+            METERS_PER_DEGREE_LATITUDE,
+        },
+        end: {
+          id: `${feature.id}:1`,
+          x: (feature.path[1].longitude - PENN_CENTER.longitude) *
+            METERS_PER_DEGREE_LONGITUDE,
+          z: -(feature.path[1].latitude - PENN_CENTER.latitude) *
+            METERS_PER_DEGREE_LATITUDE,
+        },
+      },
+    ] as const),
+);
+
 interface AgentRoute {
   nodes: readonly AgentRouteNode[];
   segmentIds: readonly string[];
@@ -364,6 +388,7 @@ export class LiveTrafficSystem {
   private pedestrians: PedestrianAgent[] = [];
   private sampledVehicles: VehicleSnapshot[] = [];
   private resolvedVehicleSnapshots: VehicleSnapshot[] | undefined;
+  private resolvedPedestrianSnapshots: PedestrianSnapshot[] | undefined;
   private intersectionReservations = new Map<string, IntersectionReservation>();
   private sampledVehicleHolds = new Map<number, {
     snapshot: VehicleSnapshot;
@@ -404,6 +429,12 @@ export class LiveTrafficSystem {
   private walkingEconomicEdges = new Map<string, EconomicRouteEdge[]>();
   private expansionSegmentNodes = new Map<string, Set<string>>();
   private connectedEconomicNodes = new Set<string>();
+  private endpointAccessSegments = new Map<string, Array<{
+    segmentId: string;
+    geometry: { start: AgentRouteNode; end: AgentRouteNode };
+  }>>();
+  private endpointIntersectionAnchors = new Map<string, boolean>();
+  private sampledCrossingIntersections = new Set<string>();
 
   constructor(seed: number) {
     this.random = new RandomSource(seed);
@@ -427,10 +458,12 @@ export class LiveTrafficSystem {
     this.pedestrians = [];
     this.sampledVehicles = [];
     this.resolvedVehicleSnapshots = undefined;
+    this.resolvedPedestrianSnapshots = undefined;
     this.intersectionReservations.clear();
     this.sampledVehicleHolds.clear();
     this.sampledPedestrians = [];
     this.sampledPedestrianHolds.clear();
+    this.sampledCrossingIntersections.clear();
     this.backgroundTrafficVisible = true;
     this.nextVehicleId = 1;
     this.nextPedestrianId = 1;
@@ -463,6 +496,7 @@ export class LiveTrafficSystem {
   ): void {
     if (deltaSeconds <= 0) return;
     this.resolvedVehicleSnapshots = undefined;
+    this.resolvedPedestrianSnapshots = undefined;
     let remaining = deltaSeconds;
     while (remaining > 0) {
       const step = Math.min(0.1, remaining);
@@ -523,6 +557,7 @@ export class LiveTrafficSystem {
     buildings: readonly T[],
   ): void {
     this.resolvedVehicleSnapshots = undefined;
+    this.resolvedPedestrianSnapshots = undefined;
     for (const id of this.expansionSignalControllerIds) {
       this.controllers.delete(id);
     }
@@ -560,6 +595,8 @@ export class LiveTrafficSystem {
     for (const road of roads) {
       this.roadSegments.set(road.id, expansionRoadModel(road));
     }
+    this.endpointAccessSegments.clear();
+    this.endpointIntersectionAnchors.clear();
     const graph = buildEconomicRouteGraph(
       this.nodes,
       this.roadSegments,
@@ -608,6 +645,7 @@ export class LiveTrafficSystem {
     pedestrians: readonly PedestrianSnapshot[],
     visibleTrafficDelta?: number,
   ): void {
+    this.resolvedPedestrianSnapshots = undefined;
     const previousVehicles = new Map(
       this.sampledVehicles.map((vehicle) => [vehicle.id, vehicle]),
     );
@@ -653,11 +691,13 @@ export class LiveTrafficSystem {
       }
       return smoothed;
     });
+    this.rebuildSampledCrossingIntersections();
   }
 
   setBackgroundTrafficVisible(visible: boolean): void {
     if (this.backgroundTrafficVisible !== visible) {
       this.resolvedVehicleSnapshots = undefined;
+      this.resolvedPedestrianSnapshots = undefined;
     }
     this.backgroundTrafficVisible = visible;
   }
@@ -843,9 +883,13 @@ export class LiveTrafficSystem {
         mode === "walk" ? this.walkingEconomicEdges : undefined,
       );
       if (economicRoute.nodeIds.length > 0) {
-        return economicRoutePath(
-          this.economicRouteNodes,
-          economicRoute,
+        return this.withEndpointAccess(
+          economicRoutePath(
+            this.economicRouteNodes,
+            economicRoute,
+          ),
+          from,
+          to,
         );
       }
     }
@@ -892,7 +936,7 @@ export class LiveTrafficSystem {
         Math.min(routeSegmentIds.length - 1, index)
       ] ?? "off-network";
     });
-    return {
+    return this.withEndpointAccess({
       points: deduplicated,
       segmentIds,
       distanceMeters: deduplicated.slice(1).reduce((total, point, index) =>
@@ -900,6 +944,139 @@ export class LiveTrafficSystem {
           point.x - deduplicated[index].x,
           point.z - deduplicated[index].z,
         ), 0),
+    }, from, to);
+  }
+
+  private withEndpointAccess(
+    route: Readonly<TrafficRoutePath>,
+    from: TrafficRouteEndpoint,
+    to: TrafficRouteEndpoint,
+  ): TrafficRoutePath {
+    const points = route.points.map((point) => ({ ...point }));
+    const segmentIds = [...route.segmentIds];
+    const attach = (
+      endpoint: TrafficRouteEndpoint,
+      atStart: boolean,
+    ): void => {
+      if (typeof endpoint === "string" || points.length < 2) return;
+      const anchor = atStart ? points[0] : points.at(-1)!;
+      let access: {
+        segmentId: string;
+        geometry: { start: AgentRouteNode; end: AgentRouteNode };
+        projection: ReturnType<typeof projectPointOntoSegment>;
+      } | undefined;
+      const anchorKey = `${Math.round(anchor.x * 10)}:${
+        Math.round(anchor.z * 10)
+      }`;
+      let candidates = this.endpointAccessSegments.get(anchorKey);
+      if (!candidates) {
+        candidates = [];
+        for (const segmentId of this.roadSegments.keys()) {
+          const geometry = this.segmentGeometry(segmentId);
+          if (
+            geometry
+            && projectPointOntoSegment(
+              anchor.x,
+              anchor.z,
+              geometry.start,
+              geometry.end,
+            ).distance <= 1.5
+          ) {
+            candidates.push({ segmentId, geometry });
+          }
+        }
+        this.endpointAccessSegments.set(anchorKey, candidates);
+      }
+      for (const candidate of candidates) {
+        const projection = projectPointOntoSegment(
+          endpoint.x,
+          endpoint.z,
+          candidate.geometry.start,
+          candidate.geometry.end,
+        );
+        if (!access || projection.distance < access.projection.distance) {
+          access = { ...candidate, projection };
+        }
+      }
+      if (!access) return;
+      const segmentLength = Math.max(0.001, distance(
+        access.geometry.start,
+        access.geometry.end,
+      ));
+      const progress = access.projection.distanceOnSegment / segmentLength;
+      let point = {
+        x: access.geometry.start.x
+          + (access.geometry.end.x - access.geometry.start.x) * progress,
+        z: access.geometry.start.z
+          + (access.geometry.end.z - access.geometry.start.z) * progress,
+      };
+      let anchorIsIntersection = this.endpointIntersectionAnchors.get(anchorKey);
+      if (anchorIsIntersection === undefined) {
+        const anchorNode = [...this.economicRouteNodes.values()].find((node) =>
+          Math.hypot(node.x - anchor.x, node.z - anchor.z) <= 0.1
+        );
+        anchorIsIntersection = new Set(
+          anchorNode
+            ? (this.walkingEconomicEdges.get(anchorNode.id) ?? [])
+              .map((edge) => edge.segmentId)
+            : [],
+        ).size >= 2;
+        this.endpointIntersectionAnchors.set(anchorKey, anchorIsIntersection);
+      }
+      const distanceFromIntersection = Math.hypot(
+        point.x - anchor.x,
+        point.z - anchor.z,
+      );
+      if (anchorIsIntersection && distanceFromIntersection < 24) {
+        const projectedDirection = {
+          x: point.x - anchor.x,
+          z: point.z - anchor.z,
+        };
+        const endpointOptions = [
+          access.geometry.start,
+          access.geometry.end,
+        ].map((candidate) => ({
+          candidate,
+          distance: Math.hypot(
+            candidate.x - anchor.x,
+            candidate.z - anchor.z,
+          ),
+          alignment:
+            (candidate.x - anchor.x) * projectedDirection.x
+            + (candidate.z - anchor.z) * projectedDirection.z,
+        })).filter((candidate) => candidate.distance > 0.1);
+        const target = endpointOptions.sort((left, right) =>
+          right.alignment - left.alignment || right.distance - left.distance
+        )[0];
+        if (target) {
+          const clearance = Math.min(24, target.distance);
+          point = {
+            x: anchor.x
+              + (target.candidate.x - anchor.x)
+              / target.distance * clearance,
+            z: anchor.z
+              + (target.candidate.z - anchor.z)
+              / target.distance * clearance,
+          };
+        }
+      }
+      if (Math.hypot(point.x - anchor.x, point.z - anchor.z) <= 0.1) {
+        return;
+      }
+      if (atStart) {
+        points.unshift(point);
+        segmentIds.unshift(access.segmentId);
+      } else {
+        points.push(point);
+        segmentIds.push(access.segmentId);
+      }
+    };
+    attach(from, true);
+    attach(to, false);
+    return {
+      points,
+      segmentIds,
+      distanceMeters: route.distanceMeters,
     };
   }
 
@@ -944,6 +1121,9 @@ export class LiveTrafficSystem {
   }
 
   getPedestrians(): PedestrianSnapshot[] {
+    if (this.resolvedPedestrianSnapshots) {
+      return this.resolvedPedestrianSnapshots;
+    }
     const background = this.backgroundTrafficVisible ? this.pedestrians.map((pedestrian) => {
       const position = positionPedestrian(
         pedestrian,
@@ -964,7 +1144,11 @@ export class LiveTrafficSystem {
         delaySeconds: pedestrian.waitSeconds,
       };
     }) : [];
-    return [...this.sampledPedestrians, ...background];
+    this.resolvedPedestrianSnapshots = this.resolvePedestrianSpacing(
+      [...this.sampledPedestrians, ...background],
+      this.getVehicles(),
+    );
+    return this.resolvedPedestrianSnapshots;
   }
 
   getRoadTraffic(): RoadTrafficSnapshot[] {
@@ -1694,6 +1878,91 @@ export class LiveTrafficSystem {
         });
       }
     }
+    if (this.sampledVehicles.length === 0) return resolved;
+    const occupied = new Map<string, VehicleSnapshot[]>();
+    for (const vehicle of resolved) {
+      const neighbors = nearbySpatialValues(occupied, vehicle.x, vehicle.z);
+      let retreat = 0;
+      for (const other of neighbors) {
+        if (other.laneId === vehicle.laneId) continue;
+        const clearance =
+          vehicleLengthMeters(other.kind) / 2
+          + vehicleLengthMeters(vehicle.kind) / 2
+          + 1;
+        retreat = Math.max(
+          retreat,
+          clearance - Math.hypot(
+            other.x - vehicle.x,
+            other.z - vehicle.z,
+          ),
+        );
+      }
+      if (retreat > 0) {
+        const segment = this.roadSegments.get(vehicle.segmentId);
+        const geometry = this.segmentGeometry(vehicle.segmentId);
+        const lane = segment?.lanes.find((candidate) =>
+          candidate.id === vehicle.laneId
+        );
+        if (geometry && lane) {
+          const forward = lane.direction === "forward";
+          const start = forward ? geometry.start : geometry.end;
+          const end = forward ? geometry.end : geometry.start;
+          const progress = projectPointOntoSegment(
+            vehicle.x,
+            vehicle.z,
+            start,
+            end,
+          ).distanceOnSegment;
+          const position = positionAlongPath(
+            [start, end],
+            0,
+            Math.max(0, progress - retreat),
+            forward ? lane.offsetMeters : -lane.offsetMeters,
+          );
+          Object.assign(vehicle, {
+            x: position.x,
+            z: position.z,
+            heading: position.heading,
+            speedMetersPerSecond: 0,
+            queued: true,
+          });
+        }
+      }
+      addSpatialValue(occupied, vehicle);
+    }
+    return resolved;
+  }
+
+  private resolvePedestrianSpacing(
+    pedestrians: readonly PedestrianSnapshot[],
+    vehicles: readonly VehicleSnapshot[],
+  ): PedestrianSnapshot[] {
+    const resolved = pedestrians.map((pedestrian) => ({ ...pedestrian }));
+    const vehicleBuckets = new Map<string, VehicleSnapshot[]>();
+    for (const vehicle of vehicles) addSpatialValue(vehicleBuckets, vehicle);
+    for (const pedestrian of resolved) {
+      let backwardDistance = 0;
+      for (const vehicle of nearbySpatialValues(
+        vehicleBuckets,
+        pedestrian.x,
+        pedestrian.z,
+      )) {
+        const clearance = vehicleLengthMeters(vehicle.kind) / 2 + 0.55;
+        const centerDistance = Math.hypot(
+          pedestrian.x - vehicle.x,
+          pedestrian.z - vehicle.z,
+        );
+        backwardDistance = Math.max(
+          backwardDistance,
+          clearance - centerDistance,
+        );
+      }
+      if (backwardDistance <= 0) continue;
+      const shift = backwardDistance + 0.15;
+      pedestrian.x -= Math.sin(pedestrian.heading) * shift;
+      pedestrian.z -= Math.cos(pedestrian.heading) * shift;
+      pedestrian.waiting = true;
+    }
     return resolved;
   }
 
@@ -1706,12 +1975,17 @@ export class LiveTrafficSystem {
       if (
         !held.committed
         && !pedestrian.violating
-        && signal !== undefined
-        && !pedestrianMayEnterCrossing(
-          signal.pedestrianState,
-          signal.pedestrianAxis,
-          pedestrianAxisFromHeading(pedestrian.heading),
-          false,
+        && (
+          this.intersectionOccupiedByVehicle(held.intersectionId)
+          || (
+            signal !== undefined
+            && !pedestrianMayEnterCrossing(
+              signal.pedestrianState,
+              signal.pedestrianAxis,
+              pedestrianAxisFromHeading(pedestrian.heading),
+              false,
+            )
+          )
         )
       ) {
         return { ...held.snapshot, waiting: true };
@@ -1772,11 +2046,14 @@ export class LiveTrafficSystem {
     if (
       signalNode
       && signal
-      && !pedestrianMayEnterCrossing(
-        signal.pedestrianState,
-        signal.pedestrianAxis,
-        movementAxis(start, end),
-        pedestrian.violating,
+      && (
+        this.intersectionOccupiedByVehicle(signalNode.id)
+        || !pedestrianMayEnterCrossing(
+          signal.pedestrianState,
+          signal.pedestrianAxis,
+          movementAxis(start, end),
+          pedestrian.violating,
+        )
       )
     ) {
       const waiting = { ...aligned, waiting: true };
@@ -1843,18 +2120,7 @@ export class LiveTrafficSystem {
         },
       };
     }
-    const feature = PENN_ROAD_GRAPH.find((candidate) =>
-      candidate.kind === "street" && candidate.id === segmentId
-    );
-    if (!feature || feature.path.length < 2) return null;
-    const [start, end] = feature.path.map((point, index) => ({
-      id: `${segmentId}:${index}`,
-      x: (point.longitude - PENN_CENTER.longitude) *
-        METERS_PER_DEGREE_LONGITUDE,
-      z: -(point.latitude - PENN_CENTER.latitude) *
-        METERS_PER_DEGREE_LATITUDE,
-    }));
-    return { start, end };
+    return STATIC_SEGMENT_GEOMETRY.get(segmentId) ?? null;
   }
 
   private updatePedestrianSpawner(
@@ -2278,14 +2544,16 @@ export class LiveTrafficSystem {
       const signal = this.controllers.get(end.id)?.getSnapshot();
       if (signal) {
         const crossingAxis = movementAxis(start, end);
+        const legalEntry = pedestrianMayEnterCrossing(
+          signal.pedestrianState,
+          signal.pedestrianAxis,
+          crossingAxis,
+          false,
+        );
         if (
           pedestrian.committedIntersectionId === null &&
-          pedestrianMayEnterCrossing(
-            signal.pedestrianState,
-            signal.pedestrianAxis,
-            crossingAxis,
-            false,
-          )
+          legalEntry &&
+          !this.intersectionOccupiedByVehicle(end.id)
         ) {
           pedestrian.committedIntersectionId = end.id;
         }
@@ -2302,7 +2570,8 @@ export class LiveTrafficSystem {
           && (
             signal.pedestrianState !== "walk"
             || signal.pedestrianAxis !== crossingAxis
-          )
+          ) &&
+          !this.intersectionOccupiedByVehicle(end.id)
         ) {
           pedestrian.committedIntersectionId = end.id;
           pedestrian.signalViolationUsed = true;
@@ -2313,11 +2582,9 @@ export class LiveTrafficSystem {
         }
         if (
           pedestrian.committedIntersectionId !== end.id &&
-          !pedestrianMayEnterCrossing(
-            signal.pedestrianState,
-            signal.pedestrianAxis,
-            crossingAxis,
-            false,
+          (
+            !legalEntry
+            || this.intersectionOccupiedByVehicle(end.id)
           )
         ) {
           targetSpeed = Math.min(
@@ -2569,11 +2836,40 @@ export class LiveTrafficSystem {
   }
 
   private intersectionHasCrossingPedestrian(intersectionId: string): boolean {
-    return this.pedestrians.some(
-      (pedestrian) =>
-        pedestrian.committedIntersectionId === intersectionId &&
-        pedestrian.speed > 0.08,
-    );
+    return this.sampledCrossingIntersections.has(intersectionId)
+      || this.pedestrians.some((pedestrian) =>
+        pedestrian.committedIntersectionId === intersectionId
+        && pedestrian.speed > 0.08
+      );
+  }
+
+  private rebuildSampledCrossingIntersections(): void {
+    this.sampledCrossingIntersections.clear();
+    const pedestrianBuckets = new Map<string, PedestrianSnapshot[]>();
+    for (const pedestrian of this.sampledPedestrians) {
+      if (!pedestrian.waiting) addSpatialValue(pedestrianBuckets, pedestrian);
+    }
+    for (const intersectionId of this.controllers.keys()) {
+      const node = this.economicRouteNodes.get(intersectionId);
+      if (
+        node
+        && nearbySpatialValues(
+          pedestrianBuckets,
+          node.x,
+          node.z,
+        ).some((pedestrian) =>
+          Math.hypot(pedestrian.x - node.x, pedestrian.z - node.z) <= 11
+        )
+      ) {
+        this.sampledCrossingIntersections.add(intersectionId);
+      }
+    }
+  }
+
+  private intersectionOccupiedByVehicle(intersectionId: string): boolean {
+    const reservation = this.intersectionReservations.get(intersectionId);
+    return reservation !== undefined
+      && reservation.expiresAtSeconds > this.elapsedSeconds;
   }
 
   private intersectionAvailable(
@@ -3793,6 +4089,42 @@ function positionAlongPath(
     z: start.z + dz * progress + directionX * lateralOffset,
     heading: Math.atan2(directionX, directionZ),
   };
+}
+
+const AGENT_SPATIAL_BUCKET_METERS = 10;
+
+function addSpatialValue<T extends Readonly<{ x: number; z: number }>>(
+  buckets: Map<string, T[]>,
+  value: T,
+): void {
+  const key = spatialBucketKey(value.x, value.z);
+  const bucket = buckets.get(key) ?? [];
+  bucket.push(value);
+  buckets.set(key, bucket);
+}
+
+function nearbySpatialValues<T>(
+  buckets: ReadonlyMap<string, readonly T[]>,
+  x: number,
+  z: number,
+): T[] {
+  const column = Math.floor(x / AGENT_SPATIAL_BUCKET_METERS);
+  const row = Math.floor(z / AGENT_SPATIAL_BUCKET_METERS);
+  const nearby: T[] = [];
+  for (let columnOffset = -1; columnOffset <= 1; columnOffset += 1) {
+    for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
+      nearby.push(...(
+        buckets.get(`${column + columnOffset}:${row + rowOffset}`) ?? []
+      ));
+    }
+  }
+  return nearby;
+}
+
+function spatialBucketKey(x: number, z: number): string {
+  return `${Math.floor(x / AGENT_SPATIAL_BUCKET_METERS)}:${
+    Math.floor(z / AGENT_SPATIAL_BUCKET_METERS)
+  }`;
 }
 
 function vehicleSegmentKey(vehicle: VehicleAgent): string {

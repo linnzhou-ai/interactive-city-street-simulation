@@ -462,6 +462,49 @@ describe("LiveTrafficSystem", () => {
     expect(traffic.getPedestrians()[0].waiting).toBe(false);
   });
 
+  it("holds an icon-bearing pedestrian while a vehicle occupies the crossing", () => {
+    const traffic = new LiveTrafficSystem(3411);
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "34-walnut-sansom"
+    )!;
+    const [start, end] = feature.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    const heading = Math.atan2(end.x - start.x, end.z - start.z);
+    traffic.setSampledMobility([{
+      id: 8_021,
+      segmentId: feature.id,
+      laneId: `${feature.id}:sampled`,
+      x: end.x,
+      z: end.z,
+      heading,
+      speedMetersPerSecond: 8,
+      queued: false,
+      kind: "compact",
+      color: "#ffffff",
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident",
+    }], [{
+      id: 2_008_021,
+      segmentId: feature.id,
+      x: end.x,
+      z: end.z - Math.sign(end.z - start.z) * 5,
+      heading,
+      waiting: false,
+      color: "#ffffff",
+      variant: 0,
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident",
+      personId: "person-21",
+    }]);
+
+    expect(traffic.getPedestrians()[0].waiting).toBe(true);
+  });
+
   it("spawns background vehicles inside roads instead of at intersections", () => {
     const traffic = new LiveTrafficSystem(3405);
     let vehicles = traffic.getVehicles();
@@ -594,6 +637,21 @@ describe("LiveTrafficSystem", () => {
         return Math.abs(point.x - previous.x) < 0.01
           || Math.abs(point.z - previous.z) < 0.01;
       })).toBe(true);
+      const intersections = PENN_AVENUES.flatMap((avenue) =>
+        PENN_STREETS.map((street) => ({
+          x: (avenue.longitude - PENN_CENTER.longitude)
+            * 111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+          z: -(street.latitude - PENN_CENTER.latitude) * 111_320,
+        }))
+      );
+      for (const endpoint of [route.points[0], route.points.at(-1)!]) {
+        expect(Math.min(...intersections.map((intersection) =>
+          Math.hypot(
+            endpoint.x - intersection.x,
+            endpoint.z - intersection.z,
+          )
+        ))).toBeGreaterThan(12);
+      }
       expect(route.segmentIds).toHaveLength(route.points.length - 1);
       route.segmentIds.forEach((segmentId, index) => {
         const feature = PENN_ROAD_GRAPH.find((candidate) =>
@@ -607,12 +665,42 @@ describe("LiveTrafficSystem", () => {
           z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
         }));
         for (const point of route.points.slice(index, index + 2)) {
-          expect(Math.min(...endpoints.map((endpoint) =>
-            Math.hypot(point.x - endpoint.x, point.z - endpoint.z)
-          ))).toBeLessThan(0.01);
+          const [start, end] = endpoints;
+          const dx = end.x - start.x;
+          const dz = end.z - start.z;
+          const lengthSquared = dx * dx + dz * dz;
+          const progress = Math.max(0, Math.min(1,
+            ((point.x - start.x) * dx + (point.z - start.z) * dz)
+            / lengthSquared,
+          ));
+          expect(Math.hypot(
+            point.x - (start.x + dx * progress),
+            point.z - (start.z + dz * progress),
+          )).toBeLessThan(0.01);
         }
       });
     }
+  });
+
+  it("moves resident route starts out of intersection squares", () => {
+    const traffic = new LiveTrafficSystem(20260731);
+    const intersection = {
+      x: (PENN_AVENUES[2].longitude - PENN_CENTER.longitude)
+        * 111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(PENN_STREETS[2].latitude - PENN_CENTER.latitude) * 111_320,
+    };
+    const destination = {
+      x: (PENN_AVENUES[6].longitude - PENN_CENTER.longitude)
+        * 111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(PENN_STREETS[6].latitude - PENN_CENTER.latitude) * 111_320,
+    };
+
+    const route = traffic.getRoutePath(intersection, destination, "car");
+
+    expect(Math.hypot(
+      route.points[0].x - intersection.x,
+      route.points[0].z - intersection.z,
+    )).toBeGreaterThanOrEqual(23.9);
   });
 
   it("keeps front bumpers behind the intersection stop line", () => {

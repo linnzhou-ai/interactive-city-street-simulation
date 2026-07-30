@@ -238,8 +238,8 @@ export class SampledMobilitySystem {
       `${person.id}:${trip.previous.buildingId}:${trip.item.buildingId}`,
     );
     const spacingOffset = vehicleId === undefined
-      ? ((spacingSample % 31) - 15) * 1.2
-      : ((vehicleId % 7) - 3) * 4.5;
+      ? (spacingSample % 7) * 1.2
+      : (vehicleId % 5) * 2.5;
     const visualProgress = clamp(
       progress + spacingOffset / Math.max(20, trip.route.distanceMeters),
       0,
