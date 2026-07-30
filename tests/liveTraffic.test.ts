@@ -287,22 +287,39 @@ describe("LiveTrafficSystem", () => {
 
     let sawVehicle = false;
     let sawPedestrian = false;
+    let sawNamedPedestrian = false;
+    let sawLiveRoadMetrics = false;
     for (let step = 0; step < 80; step += 1) {
       traffic.update(0.5, {
         vehicleVolume: 3,
         pedestrianVolume: 3,
         speedLimitMph: 25,
       });
-      sawVehicle ||= traffic.getVehicles().some((vehicle) =>
+      const roadVehicles = traffic.getVehicles().filter((vehicle) =>
         vehicle.source === "background" && vehicle.segmentId === road.id
       );
-      sawPedestrian ||= traffic.getPedestrians().some((pedestrian) =>
+      sawVehicle ||= roadVehicles.length > 0;
+      const roadPedestrians = traffic.getPedestrians().filter((pedestrian) =>
         pedestrian.source === "background" && pedestrian.segmentId === road.id
       );
+      sawPedestrian ||= roadPedestrians.length > 0;
+      sawNamedPedestrian ||= roadPedestrians.some((pedestrian) =>
+        pedestrian.personId?.startsWith("ambient-person-") &&
+        /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(pedestrian.displayName ?? "")
+      );
+      if (roadVehicles.length > 0) {
+        const roadMetrics = traffic.getRoadTraffic().find(
+          (candidate) => candidate.segmentId === road.id,
+        );
+        sawLiveRoadMetrics ||= roadMetrics?.activeVehicles ===
+          roadVehicles.length;
+      }
     }
 
     expect(sawVehicle).toBe(true);
     expect(sawPedestrian).toBe(true);
+    expect(sawNamedPedestrian).toBe(true);
+    expect(sawLiveRoadMetrics).toBe(true);
   });
 
   it("applies one four-sided crosswalk set to both roads at its junction", () => {

@@ -2754,15 +2754,29 @@ export class ThreeRenderer {
       x: number;
       z: number;
       height: number;
+      selectable: boolean;
+      violating?: boolean;
       violationEventId?: string;
     }>();
+    const expansionRoadIds = new Set(
+      this.expansionRoads.map((road) => road.id),
+    );
     for (const pedestrian of pedestrians) {
       if (pedestrian.personId) {
         positions.set(pedestrian.personId, {
           x: pedestrian.x,
           z: pedestrian.z,
           height: 3.1,
+          selectable: true,
           violationEventId: pedestrian.violationEventId,
+        });
+      } else if (expansionRoadIds.has(pedestrian.segmentId)) {
+        positions.set(`ambient-pedestrian:${pedestrian.id}`, {
+          x: pedestrian.x,
+          z: pedestrian.z,
+          height: 3.1,
+          selectable: false,
+          violating: pedestrian.violating,
         });
       }
     }
@@ -2772,6 +2786,7 @@ export class ThreeRenderer {
           x: vehicle.x,
           z: vehicle.z,
           height: 4.1,
+          selectable: true,
           violationEventId: vehicle.violationEventId,
         });
       }
@@ -2784,10 +2799,18 @@ export class ThreeRenderer {
         - Number(this.selectedEntity?.kind === "person" && this.selectedEntity.id === leftId)
     );
     for (const [personId, point] of orderedPositions) {
-      this.visiblePersonPoints.push({ id: personId, x: point.x, z: point.z });
-      const selected = this.selectedEntity?.kind === "person"
+      if (point.selectable) {
+        this.visiblePersonPoints.push({
+          id: personId,
+          x: point.x,
+          z: point.z,
+        });
+      }
+      const selected = point.selectable
+        && this.selectedEntity?.kind === "person"
         && this.selectedEntity.id === personId;
-      const priority = selected || this.favoritePersonIds.has(personId);
+      const priority = selected ||
+        point.selectable && this.favoritePersonIds.has(personId);
       if (!priority && iconPoints.some((iconPoint) =>
         Math.hypot(iconPoint.x - point.x, iconPoint.z - point.z) < 7
       )) continue;
@@ -2795,19 +2818,21 @@ export class ThreeRenderer {
       const icon = this.personIconPool[iconCount] ?? this.createPersonIcon();
       icon.position.set(point.x, point.height, point.z);
       icon.scale.set(selected ? 0.052 : 0.044, selected ? 0.066 : 0.056, 1);
-      const violationFlash = this.personViolationFlashIsRed(
-        personId,
-        point.violationEventId,
-        timestampMs,
-      );
+      const violationFlash = point.selectable
+        ? this.personViolationFlashIsRed(
+            personId,
+            point.violationEventId,
+            timestampMs,
+          )
+        : point.violating && violationPulseIsRed(timestampMs);
       icon.material = violationFlash
         ? this.personIconMaterials.violation
-        : this.favoritePersonIds.has(personId)
+        : point.selectable && this.favoritePersonIds.has(personId)
           ? this.personIconMaterials.favorite
           : selected
             ? this.personIconMaterials.selected
             : this.personIconMaterials.standard;
-      icon.userData.entityId = personId;
+      icon.userData.entityId = point.selectable ? personId : undefined;
       icon.visible = true;
       iconCount += 1;
     }

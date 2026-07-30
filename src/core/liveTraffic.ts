@@ -138,6 +138,8 @@ interface VehicleAgent {
 
 interface PedestrianAgent {
   id: number;
+  personId?: string;
+  displayName?: string;
   path: readonly AgentRouteNode[];
   segmentIds: readonly string[];
   segmentIndex: number;
@@ -792,6 +794,8 @@ export class LiveTrafficSystem {
         id: pedestrian.id,
         ...position,
         segmentId: pedestrian.segmentId,
+        personId: pedestrian.personId,
+        displayName: pedestrian.displayName,
         waiting: pedestrian.waiting,
         color: pedestrian.color,
         variant: pedestrian.variant,
@@ -813,10 +817,10 @@ export class LiveTrafficSystem {
     }
 
     return [...this.roadSegments.values()].map((segment) => {
-      if (this.expansionRoadIds.has(segment.id)) {
-        return this.expansionRoadTraffic(segment);
-      }
       const vehicles = vehiclesBySegment.get(segment.id) ?? [];
+      if (this.expansionRoadIds.has(segment.id)) {
+        return this.expansionRoadTraffic(segment, vehicles);
+      }
       const queuedVehicles = vehicles.filter((vehicle) => vehicle.queued).length;
       const averageSpeedMetersPerSecond = vehicles.length === 0
         ? 0
@@ -850,6 +854,7 @@ export class LiveTrafficSystem {
 
   private expansionRoadTraffic(
     segment: Readonly<RoadSegmentModel>,
+    visibleVehicles: readonly VehicleSnapshot[],
   ): RoadTrafficSnapshot {
     const road = this.expansionRoads.find((candidate) => candidate.id === segment.id);
     const dailyTrips = this.economicRoadLoad.get(segment.id) ?? 0;
@@ -870,21 +875,54 @@ export class LiveTrafficSystem {
       0,
       100,
     );
-    const activeVehicles = Math.round(dailyTrips / 18);
-    const queuedVehicles = Math.round(
-      activeVehicles * congestionPercent / 100 * 0.42,
+    const modeledActiveVehicles = Math.round(dailyTrips / 18);
+    const modeledQueuedVehicles = Math.round(
+      modeledActiveVehicles * congestionPercent / 100 * 0.42,
     );
-    const averageDelaySeconds =
+    const modeledDelaySeconds =
       congestionPercent * 0.52 + crosswalks * 3.5 + signals * 2.5;
-    const averageSpeedMph = dailyTrips <= 0
+    const modeledSpeedMph = dailyTrips <= 0
       ? 0
       : segment.speedLimitMph * clamp(1 - congestionPercent / 135, 0.2, 1);
+    const activeVehicles = visibleVehicles.length;
+    const queuedVehicles = visibleVehicles.filter((vehicle) => vehicle.queued).length;
+    const averageSpeedMph = activeVehicles === 0
+      ? modeledSpeedMph
+      : visibleVehicles.reduce(
+          (total, vehicle) => total + vehicle.speedMetersPerSecond * 2.23694,
+          0,
+        ) / activeVehicles;
+    const averageDelaySeconds = activeVehicles === 0
+      ? modeledDelaySeconds
+      : visibleVehicles.reduce(
+          (total, vehicle) => total + (vehicle.delaySeconds ?? 0),
+          0,
+        ) / activeVehicles;
+    const liveLoadRatio = activeVehicles /
+      Math.max(1, segment.travelLaneCount * 6);
+    const liveQueueRatio = queuedVehicles / Math.max(1, activeVehicles);
+    const liveSpeedPenalty = activeVehicles === 0
+      ? 0
+      : 1 - clamp(
+          averageSpeedMph / Math.max(1, segment.speedLimitMph),
+          0,
+          1,
+        );
+    const liveCongestionPercent = clamp(
+      liveLoadRatio * 50 + liveQueueRatio * 35 + liveSpeedPenalty * 25,
+      0,
+      100,
+    );
     return {
       segmentId: segment.id,
-      activeVehicles,
-      queuedVehicles,
+      activeVehicles: activeVehicles || modeledActiveVehicles,
+      queuedVehicles: activeVehicles > 0
+        ? queuedVehicles
+        : modeledQueuedVehicles,
       averageSpeedMph: roundOne(averageSpeedMph),
-      congestionPercent: roundOne(congestionPercent),
+      congestionPercent: roundOne(
+        Math.max(congestionPercent, liveCongestionPercent),
+      ),
       averageDelaySeconds: roundOne(averageDelaySeconds),
     };
   }
@@ -1153,11 +1191,20 @@ export class LiveTrafficSystem {
       const route = this.createPedestrianRoute(level);
       if (this.canSpawnPedestrian(route.nodes)) {
         const segmentId = route.segmentIds[0] ?? "complete";
+        const expansionTraveler = route.segmentIds.some((candidate) =>
+          this.expansionRoadIds.has(candidate)
+        );
         const complianceProbability = sampleComplianceProbability(
           this.random.next(),
         );
         this.pedestrians.push({
           id: this.nextPedestrianId,
+          personId: expansionTraveler
+            ? `ambient-person-${this.nextPedestrianId}`
+            : undefined,
+          displayName: expansionTraveler
+            ? ambientCitizenName(this.nextPedestrianId)
+            : undefined,
           path: route.nodes,
           segmentIds: route.segmentIds,
           segmentIndex: 0,
@@ -2701,6 +2748,40 @@ function vehicleLength(kind: VehicleKind): number {
   if (kind === "bus") return 9.8;
   if (kind === "truck") return 8.4;
   return 4.4;
+}
+
+function ambientCitizenName(index: number): string {
+  const firstNames = [
+    "Avery",
+    "Jordan",
+    "Maya",
+    "Daniel",
+    "Sofia",
+    "Eli",
+    "Nora",
+    "Marcus",
+    "Priya",
+    "Leo",
+    "Camila",
+    "Noah",
+  ];
+  const lastNames = [
+    "Carter",
+    "Kim",
+    "Patel",
+    "Lewis",
+    "Nguyen",
+    "Rivera",
+    "Brooks",
+    "Chen",
+    "Johnson",
+    "Ahmed",
+    "Martin",
+    "Wilson",
+  ];
+  return `${firstNames[index % firstNames.length]} ${
+    lastNames[Math.floor(index / firstNames.length) % lastNames.length]
+  }`;
 }
 
 function manhattanDistance(a: GridNode, b: GridNode): number {

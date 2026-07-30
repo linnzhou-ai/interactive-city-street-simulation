@@ -202,6 +202,7 @@ export interface PedestrianSnapshot {
   violationEventId?: string;
   source?: "sampled-resident" | "background";
   personId?: string;
+  displayName?: string;
   destinationBuildingId?: string;
   purpose?: string;
   delaySeconds?: number;
