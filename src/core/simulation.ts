@@ -576,19 +576,27 @@ export class Simulation {
           ] as const)
         ),
     );
+    const alignedPedestrianByPerson = new Map(
+      this.traffic.getPedestrians()
+        .filter((pedestrian) =>
+          pedestrian.source === "sampled-resident" && pedestrian.personId
+        )
+        .map((pedestrian) => [pedestrian.personId!, pedestrian] as const),
+    );
     this.state.entities = {
       ...this.state.entities,
       people: result.people.map((person) => {
-        const vehicle = alignedVehicleByPerson.get(person.id);
-        if (!vehicle) return person;
+        const agent = alignedVehicleByPerson.get(person.id)
+          ?? alignedPedestrianByPerson.get(person.id);
+        if (!agent) return person;
         return {
           ...person,
           mobility: {
             ...person.mobility,
-            x: vehicle.x,
-            z: vehicle.z,
-            heading: vehicle.heading,
-            segmentId: vehicle.segmentId,
+            x: agent.x,
+            z: agent.z,
+            heading: agent.heading,
+            segmentId: agent.segmentId,
           },
         };
       }),

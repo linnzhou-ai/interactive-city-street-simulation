@@ -225,6 +225,74 @@ describe("LiveTrafficSystem", () => {
     );
   });
 
+  it("snaps sampled pedestrians to the sidewalk and waits at a red crossing", () => {
+    const traffic = new LiveTrafficSystem(3404);
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "spruce-34-36"
+    )!;
+    const [start, end] = feature.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    const sampledPedestrian = {
+      id: 2_008_001,
+      segmentId: feature.id,
+      x: end.x - 5,
+      z: end.z,
+      heading: Math.atan2(end.x - start.x, end.z - start.z),
+      waiting: false,
+      color: "#ffffff",
+      variant: 0,
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident" as const,
+      personId: "person-1",
+    };
+    traffic.setSampledMobility([], [sampledPedestrian]);
+
+    const pedestrian = traffic.getPedestrians()[0];
+    const road = traffic.getRoadSegment(feature.id)!;
+    expect(Math.abs(pedestrian.z - start.z)).toBeCloseTo(
+      road.totalWidthMeters / 2 + 3.65,
+      5,
+    );
+    expect(pedestrian.waiting).toBe(true);
+
+    traffic.setSampledMobility([], [{
+      ...sampledPedestrian,
+      id: sampledPedestrian.id + 1,
+      violating: true,
+    }]);
+    expect(traffic.getPedestrians()[0].waiting).toBe(false);
+  });
+
+  it("spawns background vehicles inside roads instead of at intersections", () => {
+    const traffic = new LiveTrafficSystem(3405);
+    let vehicles = traffic.getVehicles();
+    for (let step = 0; step < 100 && vehicles.length === 0; step += 1) {
+      traffic.update(0.25, {
+        vehicleVolume: 1,
+        pedestrianVolume: 1,
+        speedLimitMph: 25,
+      });
+      vehicles = traffic.getVehicles();
+    }
+    expect(vehicles.length).toBeGreaterThan(0);
+    const intersections = PENN_AVENUES.flatMap((avenue) =>
+      PENN_STREETS.map((street) => ({
+        x: (avenue.longitude - PENN_CENTER.longitude) *
+          111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+        z: -(street.latitude - PENN_CENTER.latitude) * 111_320,
+      }))
+    );
+    for (const vehicle of vehicles) {
+      expect(Math.min(...intersections.map((intersection) =>
+        Math.hypot(vehicle.x - intersection.x, vehicle.z - intersection.z)
+      ))).toBeGreaterThan(12);
+    }
+  });
+
   it("only removes background vehicles after they reach a city boundary", () => {
     const traffic = new LiveTrafficSystem(3403);
     const xValues = PENN_AVENUES.map((avenue) =>
@@ -354,7 +422,7 @@ describe("LiveTrafficSystem", () => {
 
   it("keeps front bumpers behind the intersection stop line", () => {
     expect(vehicleStopCenterDistance(vehicleLengthMeters("sedan"))).toBe(16.2);
-    expect(vehicleStopCenterDistance(vehicleLengthMeters("bus"))).toBe(18.3);
+    expect(vehicleStopCenterDistance(vehicleLengthMeters("bus"))).toBe(17.6);
   });
 
   it("keeps passenger vehicles within realistic urban lengths", () => {
@@ -362,6 +430,14 @@ describe("LiveTrafficSystem", () => {
     expect(vehicleLengthMeters("sedan")).toBeLessThanOrEqual(4.6);
     expect(vehicleLengthMeters("suv")).toBeLessThanOrEqual(4.8);
     expect(vehicleLengthMeters("van")).toBeLessThanOrEqual(5.1);
+  });
+
+  it("keeps buses and delivery trucks compact enough for city streets", () => {
+    expect(vehicleLengthMeters("bus")).toBe(7.2);
+    expect(vehicleLengthMeters("truck")).toBe(6.4);
+    expect(vehicleLengthMeters("truck")).toBeGreaterThan(
+      vehicleLengthMeters("van"),
+    );
   });
 
   it("routes economic trips over connected expansion roads", () => {

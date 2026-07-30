@@ -47,6 +47,7 @@ const VEHICLE_TARGETS = [0, 110, 260, 560] as const;
 const PEDESTRIAN_TARGETS = [0, 150, 360, 750] as const;
 const VEHICLE_SPAWN_RATES = [0, 5, 14, 28] as const;
 const PEDESTRIAN_SPAWN_RATES = [0, 8, 22, 45] as const;
+const SAMPLED_PEDESTRIAN_STOP_DISTANCE_METERS = 9;
 const VEHICLE_COLORS = [
   "#c9473a",
   "#275f7b",
@@ -342,6 +343,10 @@ export class LiveTrafficSystem {
   private pedestrians: PedestrianAgent[] = [];
   private sampledVehicles: VehicleSnapshot[] = [];
   private sampledPedestrians: PedestrianSnapshot[] = [];
+  private sampledPedestrianHolds = new Map<number, {
+    snapshot: PedestrianSnapshot;
+    intersectionId: string;
+  }>();
   private backgroundTrafficVisible = true;
   private random: RandomSource;
   private nextVehicleId = 1;
@@ -364,6 +369,7 @@ export class LiveTrafficSystem {
   private expansionRoads: ExpansionRoad[] = [];
   private expansionStreetObjects: ExpansionStreetObject[] = [];
   private expansionRoadIds = new Set<string>();
+  private expansionSignalControllerIds = new Set<string>();
   private economicRoadLoad = new Map<string, number>();
   private economicRouteNodes = new Map<string, EconomicRouteNode>();
   private walkingEconomicEdges = new Map<string, EconomicRouteEdge[]>();
@@ -392,6 +398,7 @@ export class LiveTrafficSystem {
     this.pedestrians = [];
     this.sampledVehicles = [];
     this.sampledPedestrians = [];
+    this.sampledPedestrianHolds.clear();
     this.backgroundTrafficVisible = true;
     this.nextVehicleId = 1;
     this.nextPedestrianId = 1;
@@ -482,6 +489,10 @@ export class LiveTrafficSystem {
     streetObjects: readonly ExpansionStreetObject[],
     buildings: readonly T[],
   ): void {
+    for (const id of this.expansionSignalControllerIds) {
+      this.controllers.delete(id);
+    }
+    this.expansionSignalControllerIds.clear();
     const nextRoadIds = new Set(roads.map((road) => road.id));
     const removedRoadIds = new Set(
       [...this.expansionRoadIds].filter((roadId) => !nextRoadIds.has(roadId)),
@@ -520,6 +531,27 @@ export class LiveTrafficSystem {
     this.walkingEconomicEdges = bidirectionalEconomicEdges(graph.nodes);
     this.expansionSegmentNodes = graph.expansionSegmentNodes;
     this.connectedEconomicNodes = graph.connectedNodeIds;
+    for (const signal of streetObjects.filter((object) =>
+      object.kind === "traffic-signal"
+    )) {
+      const nearest = [...graph.nodes.values()]
+        .map((node) => ({
+          node,
+          distance: Math.hypot(node.x - signal.x, node.z - signal.z),
+        }))
+        .sort((left, right) => left.distance - right.distance)[0];
+      if (
+        nearest
+        && nearest.distance <= 4
+        && !this.controllers.has(nearest.node.id)
+      ) {
+        this.controllers.set(
+          nearest.node.id,
+          new IntersectionSignalController(nearest.node.id),
+        );
+        this.expansionSignalControllerIds.add(nearest.node.id);
+      }
+    }
     this.relocateAgentsFromRemovedRoads(
       removedRoadIds,
       affectedVehiclePositions,
@@ -544,7 +576,13 @@ export class LiveTrafficSystem {
           : undefined,
       })
     );
-    this.sampledPedestrians = pedestrians.map((pedestrian) => ({ ...pedestrian }));
+    const activePedestrianIds = new Set(pedestrians.map((pedestrian) => pedestrian.id));
+    for (const id of this.sampledPedestrianHolds.keys()) {
+      if (!activePedestrianIds.has(id)) this.sampledPedestrianHolds.delete(id);
+    }
+    this.sampledPedestrians = pedestrians.map((pedestrian) =>
+      this.alignSampledPedestrianToSidewalk({ ...pedestrian })
+    );
   }
 
   setBackgroundTrafficVisible(visible: boolean): void {
@@ -1112,7 +1150,18 @@ export class LiveTrafficSystem {
         0,
         kind,
       );
-      if (assignment && this.canSpawnVehicle(assignment.lane.id)) {
+      const spawnDistance = this.randomVehicleSpawnDistance(
+        route,
+        vehicleLengthMeters(kind),
+      );
+      if (
+        assignment
+        && this.canSpawnVehicle(
+          assignment.lane.id,
+          spawnDistance,
+          vehicleLengthMeters(kind),
+        )
+      ) {
         const expansionDriver = route.segmentIds.some((candidate) =>
           this.expansionRoadIds.has(candidate)
         );
@@ -1145,7 +1194,7 @@ export class LiveTrafficSystem {
           path: route.nodes,
           segmentIds: route.segmentIds,
           segmentIndex: 0,
-          distanceOnSegment: 0,
+          distanceOnSegment: spawnDistance,
           speed: 0,
           desiredSpeed,
           queued: false,
@@ -1376,6 +1425,98 @@ export class LiveTrafficSystem {
     };
   }
 
+  private alignSampledPedestrianToSidewalk(
+    pedestrian: PedestrianSnapshot,
+  ): PedestrianSnapshot {
+    const held = this.sampledPedestrianHolds.get(pedestrian.id);
+    if (held) {
+      const phase = this.controllers.get(held.intersectionId)?.getSnapshot().phase;
+      if (
+        !pedestrian.violating
+        && phase !== undefined
+        && !pedestrianMayEnterCrossing(phase, false)
+      ) {
+        return { ...held.snapshot, waiting: true };
+      }
+      this.sampledPedestrianHolds.delete(pedestrian.id);
+    }
+    const segment = this.roadSegments.get(pedestrian.segmentId);
+    const geometry = this.segmentGeometry(pedestrian.segmentId);
+    if (!segment || !geometry) return pedestrian;
+    const movementX = Math.sin(pedestrian.heading);
+    const movementZ = Math.cos(pedestrian.heading);
+    const roadX = geometry.end.x - geometry.start.x;
+    const roadZ = geometry.end.z - geometry.start.z;
+    const forward = movementX * roadX + movementZ * roadZ >= 0;
+    const start = forward ? geometry.start : geometry.end;
+    const end = forward ? geometry.end : geometry.start;
+    const projection = projectPointOntoSegment(
+      pedestrian.x,
+      pedestrian.z,
+      start,
+      end,
+    );
+    const length = Math.max(0.001, distance(start, end));
+    const directionX = (end.x - start.x) / length;
+    const directionZ = (end.z - start.z) / length;
+    const projectedX = start.x + directionX * projection.distanceOnSegment;
+    const projectedZ = start.z + directionZ * projection.distanceOnSegment;
+    const signedOffset =
+      -(pedestrian.x - projectedX) * directionZ
+      + (pedestrian.z - projectedZ) * directionX;
+    const side = Math.abs(signedOffset) > 0.1
+      ? Math.sign(signedOffset)
+      : pedestrian.id % 2 === 0 ? 1 : -1;
+    const position = positionAlongPath(
+      [start, end],
+      0,
+      projection.distanceOnSegment,
+      (segment.totalWidthMeters / 2 + 3.65) * side,
+    );
+    const aligned = {
+      ...pedestrian,
+      x: position.x,
+      z: position.z,
+      heading: position.heading,
+    };
+    const signalNode = length - projection.distanceOnSegment
+        <= SAMPLED_PEDESTRIAN_STOP_DISTANCE_METERS
+      ? this.nearestSignalNode(end.x, end.z)
+      : null;
+    if (
+      signalNode
+      && !pedestrianMayEnterCrossing(
+        this.controllers.get(signalNode.id)!.getSnapshot().phase,
+        pedestrian.violating,
+      )
+    ) {
+      const waiting = { ...aligned, waiting: true };
+      this.sampledPedestrianHolds.set(pedestrian.id, {
+        snapshot: waiting,
+        intersectionId: signalNode.id,
+      });
+      return waiting;
+    }
+    return aligned;
+  }
+
+  private nearestSignalNode(
+    x: number,
+    z: number,
+  ): EconomicRouteNode | null {
+    let nearest: EconomicRouteNode | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const [id, node] of this.economicRouteNodes) {
+      if (!this.controllers.has(id)) continue;
+      const candidateDistance = Math.hypot(node.x - x, node.z - z);
+      if (candidateDistance < nearestDistance) {
+        nearest = node;
+        nearestDistance = candidateDistance;
+      }
+    }
+    return nearestDistance <= 1.5 ? nearest : null;
+  }
+
   private segmentGeometry(
     segmentId: string,
   ): { start: AgentRouteNode; end: AgentRouteNode } | null {
@@ -1444,7 +1585,9 @@ export class LiveTrafficSystem {
           segmentIndex: 0,
           distanceOnSegment: 0,
           speed: 0,
-          desiredSpeed: 1.2 + this.random.next() * 0.45,
+          desiredSpeed: pedestrianWalkingSpeedMetersPerSecond(
+            this.random.next(),
+          ),
           waiting: false,
           color: this.random.pick(PEDESTRIAN_COLORS),
           variant: this.random.integer(4),
@@ -1776,7 +1919,7 @@ export class LiveTrafficSystem {
       if (signal) {
         if (
           pedestrian.committedIntersectionId === null &&
-          signal.phase === "pedestrian-walk"
+          pedestrianMayEnterCrossing(signal.phase, false)
         ) {
           pedestrian.committedIntersectionId = end.id;
         }
@@ -1784,7 +1927,8 @@ export class LiveTrafficSystem {
           pedestrian.committedIntersectionId === null &&
           !pedestrian.signalViolationUsed &&
           pedestrian.mayCrossAgainstSignal &&
-          signal.phase !== "pedestrian-walk"
+          pedestrianMayEnterCrossing(signal.phase, true)
+          && signal.phase !== "pedestrian-walk"
         ) {
           pedestrian.committedIntersectionId = end.id;
           pedestrian.signalViolationUsed = true;
@@ -1795,7 +1939,7 @@ export class LiveTrafficSystem {
         }
         if (
           pedestrian.committedIntersectionId !== end.id &&
-          signal.phase !== "pedestrian-walk"
+          !pedestrianMayEnterCrossing(signal.phase, false)
         ) {
           targetSpeed = Math.min(
             targetSpeed,
@@ -2012,10 +2156,27 @@ export class LiveTrafficSystem {
     ];
   }
 
-  private canSpawnVehicle(laneId: string): boolean {
+  private randomVehicleSpawnDistance(
+    route: Readonly<AgentRoute>,
+    vehicleLength: number,
+  ): number {
+    const segmentLength = distance(route.nodes[0]!, route.nodes[1]!);
+    const preferredClearance = vehicleStopCenterDistance(vehicleLength) + 2;
+    const clearance = Math.min(preferredClearance, segmentLength / 3);
+    return clearance
+      + this.random.next() * Math.max(0, segmentLength - clearance * 2);
+  }
+
+  private canSpawnVehicle(
+    laneId: string,
+    distanceOnSegment: number,
+    vehicleLength: number,
+  ): boolean {
+    const minimumGap = Math.max(10, vehicleLength + 4);
     return !this.vehicles.some(
       (vehicle) =>
-        vehicle.lane.id === laneId && vehicle.distanceOnSegment < 18,
+        vehicle.lane.id === laneId
+        && Math.abs(vehicle.distanceOnSegment - distanceOnSegment) < minimumGap,
     );
   }
 
@@ -2934,6 +3095,17 @@ export function pedestrianSignalViolationProbability(
   const baseProbability =
     0.03 + (1 - clamp(complianceProbability, 0, 1)) * 0.18;
   return clamp(baseProbability * violationRiskMultiplier, 0.03, 0.22);
+}
+
+export function pedestrianMayEnterCrossing(
+  phase: SignalPhase,
+  lawBreaker: boolean,
+): boolean {
+  return phase === "pedestrian-walk" || lawBreaker;
+}
+
+export function pedestrianWalkingSpeedMetersPerSecond(sample: number): number {
+  return 1.15 + clamp(sample, 0, 1) * 0.3;
 }
 
 export function redSignalViolationProbability(

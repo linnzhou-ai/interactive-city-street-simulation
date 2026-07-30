@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   driverSpeedFactor,
   laneDirectionAllowsMovement,
+  pedestrianMayEnterCrossing,
   pedestrianSignalViolationProbability,
+  pedestrianWalkingSpeedMetersPerSecond,
   physicalLaneCount,
   safeIntersectionApproachSpeed,
   sampleComplianceProbability,
@@ -82,5 +84,20 @@ describe("Pennsylvania traffic-law behavior", () => {
     const nighttime = pedestrianSignalViolationProbability(0.95, 1.8);
     expect(daytime).toBeGreaterThanOrEqual(0.03);
     expect(nighttime).toBeGreaterThan(daytime);
+  });
+
+  it("keeps compliant pedestrians at the curb until the walk phase", () => {
+    expect(pedestrianMayEnterCrossing("ns-green", false)).toBe(false);
+    expect(pedestrianMayEnterCrossing("all-red", false)).toBe(false);
+    expect(pedestrianMayEnterCrossing("pedestrian-walk", false)).toBe(true);
+    expect(pedestrianMayEnterCrossing("ns-green", true)).toBe(true);
+  });
+
+  it("keeps normal walking speed well below vehicle speed", () => {
+    expect(pedestrianWalkingSpeedMetersPerSecond(0)).toBe(1.15);
+    expect(pedestrianWalkingSpeedMetersPerSecond(1)).toBe(1.45);
+    expect(pedestrianWalkingSpeedMetersPerSecond(1)).toBeLessThan(
+      15 * 0.44704,
+    );
   });
 });

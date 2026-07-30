@@ -5,8 +5,8 @@ const VEHICLE_LENGTH_METERS: Readonly<Record<VehicleKind, number>> = {
   sedan: 4.4,
   suv: 4.65,
   van: 5.05,
-  bus: 8.6,
-  truck: 7.4,
+  bus: 7.2,
+  truck: 6.4,
 };
 
 export function vehicleLengthMeters(kind: VehicleKind): number {
