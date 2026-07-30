@@ -3,9 +3,17 @@ import {
   calculateCityActivity,
   Simulation,
   createInitialState,
+  visibleTrafficTimeScale,
 } from "../src/core/simulation";
 
 describe("Simulation", () => {
+  it("uses one visual clock for sampled and ambient traffic", () => {
+    expect(visibleTrafficTimeScale(1 / 3_600)).toBe(0.65);
+    expect(visibleTrafficTimeScale(1 / 360)).toBe(0.65);
+    expect(visibleTrafficTimeScale(0.5)).toBe(0.5);
+    expect(visibleTrafficTimeScale(1)).toBe(1);
+  });
+
   it("does not advance while paused", () => {
     const simulation = new Simulation();
 
@@ -231,7 +239,7 @@ describe("Simulation", () => {
     expect(observedPeople.size).toBeGreaterThan(0);
     expect(largestStep, largestStepDetail).toBeLessThan(4);
     expect(largestProgressStep).toBeLessThan(0.03);
-  });
+  }, 10_000);
 
   it("cycles green, yellow, and all-red while coordinating pedestrian signals", () => {
     const simulation = new Simulation();

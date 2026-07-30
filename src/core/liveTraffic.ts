@@ -143,6 +143,11 @@ interface VehicleAgent {
   violatingUntilSeconds: number;
 }
 
+interface VehicleLeader {
+  distanceOnSegment: number;
+  length: number;
+}
+
 interface PedestrianAgent {
   id: number;
   personId?: string;
@@ -352,6 +357,12 @@ export class LiveTrafficSystem {
   private vehicles: VehicleAgent[] = [];
   private pedestrians: PedestrianAgent[] = [];
   private sampledVehicles: VehicleSnapshot[] = [];
+  private resolvedVehicleSnapshots: VehicleSnapshot[] | undefined;
+  private sampledVehicleHolds = new Map<number, {
+    snapshot: VehicleSnapshot;
+    intersectionId: string;
+    axis: "x" | "z";
+  }>();
   private sampledPedestrians: PedestrianSnapshot[] = [];
   private sampledPedestrianHolds = new Map<number, {
     snapshot: PedestrianSnapshot;
@@ -408,6 +419,8 @@ export class LiveTrafficSystem {
     this.vehicles = [];
     this.pedestrians = [];
     this.sampledVehicles = [];
+    this.resolvedVehicleSnapshots = undefined;
+    this.sampledVehicleHolds.clear();
     this.sampledPedestrians = [];
     this.sampledPedestrianHolds.clear();
     this.backgroundTrafficVisible = true;
@@ -441,6 +454,7 @@ export class LiveTrafficSystem {
     },
   ): void {
     if (deltaSeconds <= 0) return;
+    this.resolvedVehicleSnapshots = undefined;
     let remaining = deltaSeconds;
     while (remaining > 0) {
       const step = Math.min(0.1, remaining);
@@ -500,6 +514,7 @@ export class LiveTrafficSystem {
     streetObjects: readonly ExpansionStreetObject[],
     buildings: readonly T[],
   ): void {
+    this.resolvedVehicleSnapshots = undefined;
     for (const id of this.expansionSignalControllerIds) {
       this.controllers.delete(id);
     }
@@ -578,18 +593,32 @@ export class LiveTrafficSystem {
   setSampledMobility(
     vehicles: readonly VehicleSnapshot[],
     pedestrians: readonly PedestrianSnapshot[],
+    visibleTrafficDelta?: number,
   ): void {
+    const previousVehicles = new Map(
+      this.sampledVehicles.map((vehicle) => [vehicle.id, vehicle]),
+    );
     const previousPedestrians = new Map(
       this.sampledPedestrians.map((pedestrian) => [pedestrian.id, pedestrian]),
     );
-    this.sampledVehicles = vehicles.map((vehicle) =>
-      this.alignSampledVehicleToLane({
+    const activeVehicleIds = new Set(vehicles.map((vehicle) => vehicle.id));
+    for (const id of this.sampledVehicleHolds.keys()) {
+      if (!activeVehicleIds.has(id)) this.sampledVehicleHolds.delete(id);
+    }
+    this.sampledVehicles = vehicles.map((vehicle) => {
+      const aligned = this.alignSampledVehicleToLane({
         ...vehicle,
         occupantPersonIds: vehicle.occupantPersonIds
           ? [...vehicle.occupantPersonIds]
           : undefined,
-      })
-    );
+      });
+      return this.constrainSampledVehicle(
+        aligned,
+        previousVehicles.get(vehicle.id),
+        visibleTrafficDelta,
+      );
+    });
+    this.resolvedVehicleSnapshots = undefined;
     const activePedestrianIds = new Set(pedestrians.map((pedestrian) => pedestrian.id));
     for (const id of this.sampledPedestrianHolds.keys()) {
       if (!activePedestrianIds.has(id)) this.sampledPedestrianHolds.delete(id);
@@ -598,7 +627,13 @@ export class LiveTrafficSystem {
       const aligned = this.alignSampledPedestrianToSidewalk({ ...pedestrian });
       const previous = previousPedestrians.get(pedestrian.id);
       if (!previous) return aligned;
-      const smoothed = smoothSampledPedestrianCorner(previous, aligned);
+      const smoothed = smoothSampledPedestrianCorner(
+        previous,
+        aligned,
+        visibleTrafficDelta === undefined
+          ? Number.POSITIVE_INFINITY
+          : Math.max(0.05, 1.45 * visibleTrafficDelta),
+      );
       const hold = this.sampledPedestrianHolds.get(pedestrian.id);
       if (hold) {
         hold.snapshot = smoothed;
@@ -608,6 +643,9 @@ export class LiveTrafficSystem {
   }
 
   setBackgroundTrafficVisible(visible: boolean): void {
+    if (this.backgroundTrafficVisible !== visible) {
+      this.resolvedVehicleSnapshots = undefined;
+    }
     this.backgroundTrafficVisible = visible;
   }
 
@@ -709,6 +747,7 @@ export class LiveTrafficSystem {
     if (!feature) return;
     const model = createRoadSegmentModel(feature, overrides);
     this.roadSegments.set(segmentId, model);
+    this.resolvedVehicleSnapshots = undefined;
     this.routeCache.clear();
     this.reconcileVehicleRoutes();
   }
@@ -716,6 +755,7 @@ export class LiveTrafficSystem {
   setRoadDesigns(
     designs: ReadonlyMap<string, Readonly<LaneModelOverrides>>,
   ): void {
+    this.resolvedVehicleSnapshots = undefined;
     this.roadSegments.clear();
     for (const [segmentId, base] of ROAD_SEGMENT_BY_ID) {
       const feature = PENN_ROAD_GRAPH.find(
@@ -863,6 +903,7 @@ export class LiveTrafficSystem {
   }
 
   getVehicles(): VehicleSnapshot[] {
+    if (this.resolvedVehicleSnapshots) return this.resolvedVehicleSnapshots;
     const background = this.backgroundTrafficVisible ? this.vehicles.map((vehicle) => {
       const position = positionVehicle(vehicle);
       return {
@@ -882,7 +923,11 @@ export class LiveTrafficSystem {
         delaySeconds: vehicle.segmentDelaySeconds,
       };
     }) : [];
-    return [...this.sampledVehicles, ...background];
+    this.resolvedVehicleSnapshots = this.resolveVehicleSpacing([
+      ...this.sampledVehicles,
+      ...background,
+    ]);
+    return this.resolvedVehicleSnapshots;
   }
 
   getPedestrians(): PedestrianSnapshot[] {
@@ -1446,6 +1491,183 @@ export class LiveTrafficSystem {
     };
   }
 
+  private constrainSampledVehicle(
+    vehicle: VehicleSnapshot,
+    previous: VehicleSnapshot | undefined,
+    visibleTrafficDelta: number | undefined,
+  ): VehicleSnapshot {
+    const held = this.sampledVehicleHolds.get(vehicle.id);
+    if (held) {
+      const signal = this.controllers.get(held.intersectionId)?.getSnapshot();
+      if (
+        signal
+        && !vehicleMayProceed(signal.phase, held.axis, 20, 0)
+      ) {
+        return {
+          ...held.snapshot,
+          speedMetersPerSecond: 0,
+          queued: true,
+        };
+      }
+      this.sampledVehicleHolds.delete(vehicle.id);
+    }
+    const smoothed = previous
+      ? smoothSampledVehicleMovement(
+          previous,
+          vehicle,
+          visibleTrafficDelta === undefined
+            ? Number.POSITIVE_INFINITY
+            : Math.max(
+                0.1,
+                vehicle.speedMetersPerSecond * visibleTrafficDelta,
+              ),
+        )
+      : vehicle;
+    const segment = this.roadSegments.get(smoothed.segmentId);
+    const geometry = this.segmentGeometry(smoothed.segmentId);
+    const lane = segment?.lanes.find((candidate) =>
+      candidate.id === smoothed.laneId
+    );
+    if (!segment || !geometry || !lane) return smoothed;
+    const forward = lane.direction === "forward";
+    const start = forward ? geometry.start : geometry.end;
+    const end = forward ? geometry.end : geometry.start;
+    const projection = projectPointOntoSegment(
+      smoothed.x,
+      smoothed.z,
+      start,
+      end,
+    );
+    const segmentLength = distance(start, end);
+    const remaining = segmentLength - projection.distanceOnSegment;
+    if (remaining >= 40) return smoothed;
+    const signalNode = this.nearestSignalNode(end.x, end.z);
+    if (!signalNode) return smoothed;
+    const signal = this.controllers.get(signalNode.id)?.getSnapshot();
+    const axis = movementAxis(start, end);
+    if (
+      !signal
+      || vehicleMayProceed(
+        signal.phase,
+        axis,
+        remaining,
+        smoothed.speedMetersPerSecond,
+      )
+    ) {
+      return smoothed;
+    }
+    const stopCenterDistance = vehicleStopCenterDistance(
+      vehicleLengthMeters(smoothed.kind),
+    );
+    const distanceBeforeStop =
+      remaining - stopCenterDistance;
+    if (distanceBeforeStop > 0) {
+      return {
+        ...smoothed,
+        speedMetersPerSecond: Math.min(
+          smoothed.speedMetersPerSecond,
+          Math.max(0, distanceBeforeStop * 0.7),
+        ),
+      };
+    }
+    const stopped = positionAlongPath(
+      [start, end],
+      0,
+      Math.max(0, segmentLength - stopCenterDistance),
+      forward ? lane.offsetMeters : -lane.offsetMeters,
+    );
+    const snapshot = {
+      ...smoothed,
+      x: stopped.x,
+      z: stopped.z,
+      heading: stopped.heading,
+      speedMetersPerSecond: 0,
+      queued: true,
+    };
+    this.sampledVehicleHolds.set(smoothed.id, {
+      snapshot,
+      intersectionId: signalNode.id,
+      axis,
+    });
+    return snapshot;
+  }
+
+  private resolveVehicleSpacing(
+    vehicles: readonly VehicleSnapshot[],
+  ): VehicleSnapshot[] {
+    const resolved = vehicles.map((vehicle) => ({ ...vehicle }));
+    const sampledLaneIds = new Set(
+      this.sampledVehicles.map((vehicle) => vehicle.laneId),
+    );
+    const lanes = new Map<string, Array<{
+      vehicle: VehicleSnapshot;
+      start: AgentRouteNode;
+      end: AgentRouteNode;
+      lane: RoadLane;
+      progress: number;
+      length: number;
+    }>>();
+    for (const vehicle of resolved) {
+      if (!sampledLaneIds.has(vehicle.laneId)) continue;
+      const segment = this.roadSegments.get(vehicle.segmentId);
+      const geometry = this.segmentGeometry(vehicle.segmentId);
+      const lane = segment?.lanes.find((candidate) =>
+        candidate.id === vehicle.laneId
+      );
+      if (!segment || !geometry || !lane) continue;
+      const forward = lane.direction === "forward";
+      const start = forward ? geometry.start : geometry.end;
+      const end = forward ? geometry.end : geometry.start;
+      const progress = projectPointOntoSegment(
+        vehicle.x,
+        vehicle.z,
+        start,
+        end,
+      ).distanceOnSegment;
+      const bucket = lanes.get(lane.id) ?? [];
+      bucket.push({
+        vehicle,
+        start,
+        end,
+        lane,
+        progress,
+        length: vehicleLengthMeters(vehicle.kind),
+      });
+      lanes.set(lane.id, bucket);
+    }
+    for (const bucket of lanes.values()) {
+      bucket.sort((left, right) => right.progress - left.progress);
+      for (let index = 1; index < bucket.length; index += 1) {
+        const leader = bucket[index - 1];
+        const follower = bucket[index];
+        const maximumProgress =
+          leader.progress
+          - leader.length / 2
+          - follower.length / 2
+          - 2.8;
+        if (follower.progress <= maximumProgress) continue;
+        follower.progress = Math.max(0, maximumProgress);
+        const forward = follower.lane.direction === "forward";
+        const position = positionAlongPath(
+          [follower.start, follower.end],
+          0,
+          follower.progress,
+          forward
+            ? follower.lane.offsetMeters
+            : -follower.lane.offsetMeters,
+        );
+        Object.assign(follower.vehicle, {
+          x: position.x,
+          z: position.z,
+          heading: position.heading,
+          speedMetersPerSecond: 0,
+          queued: true,
+        });
+      }
+    }
+    return resolved;
+  }
+
   private alignSampledPedestrianToSidewalk(
     pedestrian: PedestrianSnapshot,
   ): PedestrianSnapshot {
@@ -1663,6 +1885,33 @@ export class LiveTrafficSystem {
   private updateVehicles(deltaSeconds: number): void {
     const buckets = new Map<string, VehicleAgent[]>();
     const directionBuckets = new Map<string, VehicleAgent[]>();
+    const sampledBlockers = new Map<string, VehicleLeader[]>();
+    for (const vehicle of this.sampledVehicles) {
+      const segment = this.roadSegments.get(vehicle.segmentId);
+      const geometry = this.segmentGeometry(vehicle.segmentId);
+      const lane = segment?.lanes.find((candidate) =>
+        candidate.id === vehicle.laneId
+      );
+      if (!segment || !geometry || !lane) continue;
+      const start = lane.direction === "forward"
+        ? geometry.start
+        : geometry.end;
+      const end = lane.direction === "forward"
+        ? geometry.end
+        : geometry.start;
+      const blocker = {
+        distanceOnSegment: projectPointOntoSegment(
+          vehicle.x,
+          vehicle.z,
+          start,
+          end,
+        ).distanceOnSegment,
+        length: vehicleLengthMeters(vehicle.kind),
+      };
+      const laneBlockers = sampledBlockers.get(lane.id) ?? [];
+      laneBlockers.push(blocker);
+      sampledBlockers.set(lane.id, laneBlockers);
+    }
     for (const vehicle of this.vehicles) {
       const bucket = buckets.get(vehicleSegmentKey(vehicle)) ?? [];
       bucket.push(vehicle);
@@ -1676,7 +1925,25 @@ export class LiveTrafficSystem {
       bucket.sort((a, b) => b.distanceOnSegment - a.distanceOnSegment);
       for (let index = 0; index < bucket.length; index += 1) {
         const vehicle = bucket[index];
-        const leader = bucket[index - 1];
+        const ambientLeader = bucket[index - 1];
+        const sampledLeader = (sampledBlockers.get(vehicle.lane.id) ?? [])
+          .filter((candidate) =>
+            candidate.distanceOnSegment > vehicle.distanceOnSegment
+          )
+          .reduce<VehicleLeader | undefined>((nearest, candidate) =>
+            !nearest
+            || candidate.distanceOnSegment < nearest.distanceOnSegment
+              ? candidate
+              : nearest, undefined);
+        const leader =
+          ambientLeader
+          && (
+            !sampledLeader
+            || ambientLeader.distanceOnSegment
+              < sampledLeader.distanceOnSegment
+          )
+            ? ambientLeader
+            : sampledLeader;
         this.advanceVehicle(
           vehicle,
           leader,
@@ -1774,7 +2041,7 @@ export class LiveTrafficSystem {
 
   private advanceVehicle(
     vehicle: VehicleAgent,
-    leader: VehicleAgent | undefined,
+    leader: VehicleLeader | undefined,
     directionBuckets: ReadonlyMap<string, readonly VehicleAgent[]>,
     deltaSeconds: number,
   ): void {
@@ -2502,7 +2769,7 @@ function expansionRoadModel(road: Readonly<ExpansionRoad>): RoadSegmentModel {
   return {
     ...model,
     totalWidthMeters: road.width,
-    speedLimitMph: road.width >= 20 ? 25 : 20,
+    speedLimitMph: 25,
     demandWeight: 0.9 + (road.laneDelta ?? 0) * 0.18,
   };
 }
@@ -3221,18 +3488,64 @@ function pedestrianAxisFromHeading(heading: number): "x" | "z" {
   return Math.abs(Math.sin(heading)) >= Math.abs(Math.cos(heading)) ? "x" : "z";
 }
 
+function smoothSampledVehicleMovement(
+  previous: Readonly<VehicleSnapshot>,
+  current: Readonly<VehicleSnapshot>,
+  maximumDistance: number,
+): VehicleSnapshot {
+  const deltaX = current.x - previous.x;
+  const deltaZ = current.z - previous.z;
+  const displacement = Math.hypot(deltaX, deltaZ);
+  if (displacement <= maximumDistance) return { ...current };
+  if (
+    previous.segmentId === current.segmentId
+    && previous.laneId === current.laneId
+  ) {
+    return {
+      ...current,
+      x: previous.x + deltaX / displacement * maximumDistance,
+      z: previous.z + deltaZ / displacement * maximumDistance,
+      heading: previous.heading,
+    };
+  }
+  const previousAxis =
+    Math.abs(Math.sin(previous.heading)) >= Math.abs(Math.cos(previous.heading))
+      ? "x"
+      : "z";
+  const primaryDelta = previousAxis === "x" ? deltaX : deltaZ;
+  const secondaryDelta = previousAxis === "x" ? deltaZ : deltaX;
+  const primaryStep =
+    Math.sign(primaryDelta)
+    * Math.min(maximumDistance, Math.abs(primaryDelta));
+  const remaining = maximumDistance - Math.abs(primaryStep);
+  const secondaryStep =
+    Math.sign(secondaryDelta) * Math.min(remaining, Math.abs(secondaryDelta));
+  const turned = Math.abs(secondaryStep) > 0.001;
+  return {
+    ...current,
+    segmentId: turned ? current.segmentId : previous.segmentId,
+    laneId: turned ? current.laneId : previous.laneId,
+    x: previous.x + (previousAxis === "x" ? primaryStep : secondaryStep),
+    z: previous.z + (previousAxis === "z" ? primaryStep : secondaryStep),
+    heading: turned ? current.heading : previous.heading,
+  };
+}
+
 function smoothSampledPedestrianCorner(
   previous: Readonly<PedestrianSnapshot>,
   current: Readonly<PedestrianSnapshot>,
+  maximumDistance: number,
 ): PedestrianSnapshot {
   const deltaX = current.x - previous.x;
   const deltaZ = current.z - previous.z;
-  if (Math.hypot(deltaX, deltaZ) <= 3) return { ...current };
+  if (Math.hypot(deltaX, deltaZ) <= maximumDistance) return { ...current };
   const previousAxis = pedestrianAxisFromHeading(previous.heading);
   const primaryDelta = previousAxis === "x" ? deltaX : deltaZ;
   const secondaryDelta = previousAxis === "x" ? deltaZ : deltaX;
-  const primaryStep = Math.sign(primaryDelta) * Math.min(1.5, Math.abs(primaryDelta));
-  const remaining = 1.5 - Math.abs(primaryStep);
+  const primaryStep =
+    Math.sign(primaryDelta)
+    * Math.min(maximumDistance, Math.abs(primaryDelta));
+  const remaining = maximumDistance - Math.abs(primaryStep);
   const secondaryStep =
     Math.sign(secondaryDelta) * Math.min(remaining, Math.abs(secondaryDelta));
   const movedOnSecondaryAxis = Math.abs(secondaryStep) > 0.001;

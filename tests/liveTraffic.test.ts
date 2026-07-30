@@ -267,8 +267,95 @@ describe("LiveTrafficSystem", () => {
     );
   });
 
-  it("snaps sampled pedestrians to the sidewalk and waits at a red crossing", () => {
+  it("stops icon-bearing resident vehicles at the same red signal", () => {
+    const traffic = new LiveTrafficSystem(3403);
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "spruce-34-36"
+    )!;
+    const [start, end] = feature.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    traffic.setSampledMobility([{
+      id: 8_003,
+      segmentId: feature.id,
+      laneId: `${feature.id}:sampled`,
+      x: end.x - Math.sign(end.x - start.x) * 2,
+      z: end.z,
+      heading: Math.atan2(end.x - start.x, end.z - start.z),
+      speedMetersPerSecond: 10.5,
+      queued: false,
+      kind: "compact",
+      color: "#ffffff",
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident",
+      driverPersonId: "person-3",
+      occupantPersonIds: ["person-3"],
+    }], []);
+
+    const vehicle = traffic.getVehicles()[0];
+    expect(vehicle.queued).toBe(true);
+    expect(vehicle.speedMetersPerSecond).toBe(0);
+    expect(Math.abs(end.x - vehicle.x)).toBeGreaterThanOrEqual(
+      vehicleStopCenterDistance(vehicleLengthMeters(vehicle.kind)) - 0.01,
+    );
+  });
+
+  it("keeps icon and ambient vehicles physically separated in one lane", () => {
     const traffic = new LiveTrafficSystem(3404);
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "spruce-34-36"
+    )!;
+    const [start, end] = feature.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    const baseVehicle = {
+      segmentId: feature.id,
+      laneId: `${feature.id}:sampled`,
+      x: (start.x + end.x) / 2,
+      z: (start.z + end.z) / 2,
+      heading: Math.atan2(end.x - start.x, end.z - start.z),
+      speedMetersPerSecond: 8.5,
+      queued: false,
+      kind: "compact" as const,
+      color: "#ffffff",
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident" as const,
+    };
+    traffic.setSampledMobility([
+      {
+        ...baseVehicle,
+        id: 8_004,
+        driverPersonId: "person-4",
+        occupantPersonIds: ["person-4"],
+      },
+      {
+        ...baseVehicle,
+        id: 8_006,
+        driverPersonId: "person-6",
+        occupantPersonIds: ["person-6"],
+      },
+    ], []);
+
+    const [first, second] = traffic.getVehicles();
+    const centerDistance = Math.hypot(first.x - second.x, first.z - second.z);
+    expect(first.laneId).toBe(second.laneId);
+    expect(centerDistance).toBeGreaterThanOrEqual(
+      vehicleLengthMeters(first.kind) / 2
+      + vehicleLengthMeters(second.kind) / 2
+      + 2.8
+      - 0.01,
+    );
+    expect([first, second].some((vehicle) => vehicle.queued)).toBe(true);
+  });
+
+  it("snaps sampled pedestrians to the sidewalk and waits at a red crossing", () => {
+    const traffic = new LiveTrafficSystem(3407);
     const feature = PENN_ROAD_GRAPH.find((candidate) =>
       candidate.kind === "street" && candidate.id === "spruce-34-36"
     )!;
@@ -781,6 +868,7 @@ describe("LiveTrafficSystem", () => {
       "walk",
     );
 
+    expect(traffic.getRoadSegment(road.id)?.speedLimitMph).toBe(25);
     expect(drivingRoute.segmentIds).toContain(road.id);
     expect(walkingRoute.segmentIds).toContain(road.id);
     expect(drivingRoute.points).toContainEqual({

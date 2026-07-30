@@ -74,6 +74,14 @@ const START_MINUTE = 7 * 60;
 const MAX_CITY_EVENTS = 8;
 const SLOW_STREET_ANIMATION_SCALE = 0.65;
 
+export function visibleTrafficTimeScale(
+  simulationSpeed: number,
+): number {
+  return simulationSpeed < 0.5
+    ? SLOW_STREET_ANIMATION_SCALE
+    : simulationSpeed;
+}
+
 const EMPTY_DESIGN_IMPACT: DesignImpact = {
   laneCapacityDelta: 0,
   bikeLanes: 0,
@@ -435,6 +443,8 @@ export class Simulation {
   update(deltaSeconds: number): void {
     if (!this.state.running || deltaSeconds <= 0) return;
     const simulationDelta = deltaSeconds * this.settings.simulationSpeed;
+    const visibleTrafficDelta =
+      deltaSeconds * visibleTrafficTimeScale(this.settings.simulationSpeed);
     this.state.elapsedSeconds += simulationDelta;
     const previousCompletedDays = Math.floor(
       this.state.cityElapsedMinutes / 1440,
@@ -492,7 +502,7 @@ export class Simulation {
       );
       this.syncEconomicRoadLoad();
     }
-    this.refreshSampledMobility();
+    this.refreshSampledMobility(visibleTrafficDelta);
     this.syncDemandFromCity();
     const timeDemand = getTimeDemandAdjustment(this.state.timeOfDayHours);
     const crashRisk = getPhillyCrashRiskProfile(this.state.timeOfDayHours);
@@ -506,9 +516,7 @@ export class Simulation {
     const showBackground = this.state.mobilityDetailMode !== "outcome";
     this.traffic.setBackgroundTrafficVisible(showBackground);
     const trafficDelta = showBackground
-      ? this.settings.simulationSpeed < 0.5
-        ? deltaSeconds * SLOW_STREET_ANIMATION_SCALE
-        : simulationDelta
+      ? visibleTrafficDelta
       : Math.min(simulationDelta, 0.1);
     this.traffic.update(trafficDelta, {
       ...this.settings,
@@ -550,7 +558,7 @@ export class Simulation {
     return buildingId === "outside-market" ? "outside-market" : "outside-work";
   }
 
-  private refreshSampledMobility(): void {
+  private refreshSampledMobility(visibleTrafficDelta?: number): void {
     const result = this.sampledMobility.update(
       this.state.entities.people,
       this.state.entities.buildings,
@@ -565,7 +573,11 @@ export class Simulation {
           mode,
         ),
     );
-    this.traffic.setSampledMobility(result.vehicles, result.pedestrians);
+    this.traffic.setSampledMobility(
+      result.vehicles,
+      result.pedestrians,
+      visibleTrafficDelta,
+    );
     const alignedVehicleByPerson = new Map(
       this.traffic.getVehicles()
         .filter((vehicle) => vehicle.source === "sampled-resident")
