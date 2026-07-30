@@ -182,6 +182,7 @@ export interface VehicleSnapshot {
   violationEventId?: string;
   source?: "sampled-resident" | "background";
   driverPersonId?: string;
+  displayName?: string;
   occupantPersonIds?: readonly string[];
   destinationBuildingId?: string;
   purpose?: string;

@@ -114,6 +114,8 @@ export interface TrafficRoutePath {
 
 interface VehicleAgent {
   id: number;
+  driverPersonId?: string;
+  displayName?: string;
   path: readonly AgentRouteNode[];
   segmentIds: readonly string[];
   segmentIndex: number;
@@ -469,10 +471,36 @@ export class LiveTrafficSystem {
     streetObjects: readonly ExpansionStreetObject[],
     buildings: readonly T[],
   ): void {
+    const nextRoadIds = new Set(roads.map((road) => road.id));
+    const removedRoadIds = new Set(
+      [...this.expansionRoadIds].filter((roadId) => !nextRoadIds.has(roadId)),
+    );
+    const affectedVehiclePositions = new Map(
+      this.vehicles
+        .filter((vehicle) =>
+          vehicle.segmentIds.some((segmentId) => removedRoadIds.has(segmentId))
+        )
+        .map((vehicle) => [vehicle.id, positionVehicle(vehicle)]),
+    );
+    const affectedPedestrianPositions = new Map(
+      this.pedestrians
+        .filter((pedestrian) =>
+          pedestrian.segmentIds.some((segmentId) =>
+            removedRoadIds.has(segmentId)
+          )
+        )
+        .map((pedestrian) => [
+          pedestrian.id,
+          positionPedestrian(
+            pedestrian,
+            this.roadSegments.get(pedestrian.segmentId),
+          ),
+        ]),
+    );
     for (const roadId of this.expansionRoadIds) this.roadSegments.delete(roadId);
     this.expansionRoads = roads.map((road) => ({ ...road }));
     this.expansionStreetObjects = streetObjects.map((object) => ({ ...object }));
-    this.expansionRoadIds = new Set(roads.map((road) => road.id));
+    this.expansionRoadIds = nextRoadIds;
     for (const road of roads) {
       this.roadSegments.set(road.id, expansionRoadModel(road));
     }
@@ -481,6 +509,11 @@ export class LiveTrafficSystem {
     this.walkingEconomicEdges = bidirectionalEconomicEdges(graph.nodes);
     this.expansionSegmentNodes = graph.expansionSegmentNodes;
     this.connectedEconomicNodes = graph.connectedNodeIds;
+    this.relocateAgentsFromRemovedRoads(
+      removedRoadIds,
+      affectedVehiclePositions,
+      affectedPedestrianPositions,
+    );
     this.setBuildingDestinations(buildings);
   }
 
@@ -770,6 +803,8 @@ export class LiveTrafficSystem {
         id: vehicle.id,
         ...position,
         segmentId: vehicle.segmentId,
+        driverPersonId: vehicle.driverPersonId,
+        displayName: vehicle.displayName,
         laneId: vehicle.lane.id,
         speedMetersPerSecond: vehicle.speed,
         queued: vehicle.queued,
@@ -1071,6 +1106,9 @@ export class LiveTrafficSystem {
         kind,
       );
       if (assignment && this.canSpawnVehicle(assignment.lane.id)) {
+        const expansionDriver = route.segmentIds.some((candidate) =>
+          this.expansionRoadIds.has(candidate)
+        );
         const complianceProbability = sampleComplianceProbability(
           this.random.next(),
         );
@@ -1091,6 +1129,12 @@ export class LiveTrafficSystem {
         if (speeding) this.trafficViolations += 1;
         this.vehicles.push({
           id: this.nextVehicleId,
+          driverPersonId: expansionDriver
+            ? `ambient-driver-${this.nextVehicleId}`
+            : undefined,
+          displayName: expansionDriver
+            ? ambientCitizenName(this.nextVehicleId)
+            : undefined,
           path: route.nodes,
           segmentIds: route.segmentIds,
           segmentIndex: 0,
@@ -1174,6 +1218,100 @@ export class LiveTrafficSystem {
       vehicle.segmentDelaySeconds = 0;
       return true;
     });
+  }
+
+  private relocateAgentsFromRemovedRoads(
+    removedRoadIds: ReadonlySet<string>,
+    vehiclePositions: ReadonlyMap<number, PositionedAgent>,
+    pedestrianPositions: ReadonlyMap<number, PositionedAgent>,
+  ): void {
+    if (removedRoadIds.size === 0) return;
+    this.vehicles = this.vehicles.filter((vehicle) => {
+      const position = vehiclePositions.get(vehicle.id);
+      if (!position) return true;
+      const relocation = this.nearestSurvivingRoute(
+        position.x,
+        position.z,
+        vehicle.kind,
+      );
+      if (!relocation?.assignment) return false;
+      vehicle.path = relocation.route.nodes;
+      vehicle.segmentIds = relocation.route.segmentIds;
+      vehicle.segmentIndex = 0;
+      vehicle.distanceOnSegment = relocation.distanceOnSegment;
+      vehicle.segmentId = relocation.assignment.segment.id;
+      vehicle.lane = relocation.assignment.lane;
+      vehicle.speed = Math.min(vehicle.speed, vehicle.desiredSpeed);
+      vehicle.queued = false;
+      vehicle.segmentDelaySeconds = 0;
+      vehicle.violationIntersectionId = null;
+      return true;
+    });
+    this.pedestrians = this.pedestrians.filter((pedestrian) => {
+      const position = pedestrianPositions.get(pedestrian.id);
+      if (!position) return true;
+      const relocation = this.nearestSurvivingRoute(position.x, position.z);
+      if (!relocation) return false;
+      pedestrian.path = relocation.route.nodes;
+      pedestrian.segmentIds = relocation.route.segmentIds;
+      pedestrian.segmentIndex = 0;
+      pedestrian.distanceOnSegment = relocation.distanceOnSegment;
+      pedestrian.segmentId = relocation.route.segmentIds[0];
+      pedestrian.waiting = false;
+      pedestrian.committedIntersectionId = null;
+      return true;
+    });
+  }
+
+  private nearestSurvivingRoute(
+    x: number,
+    z: number,
+    vehicleKind?: VehicleKind,
+  ): {
+    route: AgentRoute;
+    distanceOnSegment: number;
+    assignment?: { segment: RoadSegmentModel; lane: RoadLane };
+  } | null {
+    const candidates: Array<{
+      route: AgentRoute;
+      distance: number;
+      distanceOnSegment: number;
+    }> = [];
+    const edgeMap = vehicleKind
+      ? new Map(
+          [...this.economicRouteNodes].map(([id, node]) => [id, node.edges]),
+        )
+      : this.walkingEconomicEdges;
+    for (const [fromId, edges] of edgeMap) {
+      const from = this.economicRouteNodes.get(fromId);
+      if (!from) continue;
+      for (const edge of edges) {
+        if (!this.roadSegments.has(edge.segmentId)) continue;
+        const to = this.economicRouteNodes.get(edge.to);
+        if (!to) continue;
+        const projection = projectPointOntoSegment(x, z, from, to);
+        candidates.push({
+          route: {
+            nodes: [from, to],
+            segmentIds: [edge.segmentId],
+          },
+          distance: projection.distance,
+          distanceOnSegment: projection.distanceOnSegment,
+        });
+      }
+    }
+    candidates.sort((left, right) => left.distance - right.distance);
+    for (const candidate of candidates) {
+      if (!vehicleKind) return candidate;
+      const assignment = this.laneForPath(
+        candidate.route.nodes,
+        candidate.route.segmentIds,
+        0,
+        vehicleKind,
+      );
+      if (assignment) return { ...candidate, assignment };
+    }
+    return null;
   }
 
   private updatePedestrianSpawner(
@@ -2437,6 +2575,34 @@ function distanceToRoad(
     x - (road.startX + (road.endX - road.startX) * t),
     z - (road.startZ + (road.endZ - road.startZ) * t),
   );
+}
+
+function projectPointOntoSegment(
+  x: number,
+  z: number,
+  start: Readonly<{ x: number; z: number }>,
+  end: Readonly<{ x: number; z: number }>,
+): { distance: number; distanceOnSegment: number } {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  const progress = length <= 0
+    ? 0
+    : clamp(
+        ((x - start.x) * dx + (z - start.z) * dz) / (length * length),
+        0,
+        1,
+      );
+  return {
+    distance: Math.hypot(
+      x - (start.x + dx * progress),
+      z - (start.z + dz * progress),
+    ),
+    distanceOnSegment: Math.min(
+      Math.max(0, length - 0.5),
+      progress * length,
+    ),
+  };
 }
 
 function createManhattanPath(

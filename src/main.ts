@@ -46,6 +46,7 @@ import type {
   SceneHoverSelection,
   SignalControlMode,
   SignalTiming,
+  VehicleSnapshot,
   WeatherMode,
 } from "./models/types";
 import type {
@@ -2508,6 +2509,12 @@ function updateEntityInterface(): void {
         pedestrian.displayName
       )
     : undefined;
+  const selectedAmbientDriver = selectedEntity?.kind === "person"
+    ? state.vehicles.find((vehicle) =>
+        vehicle.driverPersonId === selectedEntity?.id &&
+        vehicle.displayName
+      )
+    : undefined;
   const selectedBuildingTraffic = selectedEntity?.kind === "building"
     ? simulation.getBuildingTrafficAttribution(selectedEntity.id)
     : null;
@@ -2530,6 +2537,9 @@ function updateEntityInterface(): void {
     selectedAmbientPerson?.segmentId ?? "no-ambient-person",
     selectedAmbientPerson?.waiting ?? false,
     Math.round(selectedAmbientPerson?.delaySeconds ?? 0),
+    selectedAmbientDriver?.segmentId ?? "no-ambient-driver",
+    selectedAmbientDriver?.queued ?? false,
+    Math.round(selectedAmbientDriver?.speedMetersPerSecond ?? 0),
     state.mobilityDetailMode,
     selectedEntity?.kind ?? "none",
     selectedEntity?.id ?? "none",
@@ -2594,6 +2604,8 @@ function updateEntityInterface(): void {
       renderPersonInspector(person);
     } else if (selectedAmbientPerson) {
       renderAmbientPersonInspector(selectedAmbientPerson);
+    } else if (selectedAmbientDriver) {
+      renderAmbientDriverInspector(selectedAmbientDriver);
     } else {
       clearInspectorSelection();
     }
@@ -3135,6 +3147,47 @@ function renderAmbientPersonInspector(
     </article>`;
 }
 
+function renderAmbientDriverInspector(
+  vehicle: Readonly<VehicleSnapshot>,
+): void {
+  const expansionRoad = expansionRoads.get(vehicle.segmentId);
+  const roadName = expansionRoad
+    ? expansionRoadDisplayName(expansionRoad)
+    : features.find((feature) => feature.id === vehicle.segmentId)?.name
+      ?? "University City street";
+  const movement = vehicle.queued ? "Waiting in traffic" : "Driving";
+  const compliance = Math.round(vehicle.complianceProbability * 100);
+  entityInspector.innerHTML = `
+    <article class="entity-card person-card">
+      ${renderInspectorBreadcrumb("Residents", vehicle.displayName ?? "City driver")}
+      <header class="entity-heading">
+        <div><small>City traveler · In vehicle</small><h3>${escapeHtml(vehicle.displayName ?? "City driver")}</h3></div>
+        <div class="entity-heading-actions">
+          <span>${movement}</span>
+        </div>
+      </header>
+      <p class="heading-diagnosis">This generated citizen is driving through the live expanded street network.</p>
+      <section class="accounting-section current-trip-section">
+        <h4>Current trip</h4>
+        <div class="accounting-flow journey-flow">
+          <span class="accounting-node income"><small>Mode</small><b>Driving</b></span><i>→</i>
+          <span class="accounting-node cost"><small>Current street</small><b>${escapeHtml(roadName)}</b></span><i>→</i>
+          <span class="accounting-node income"><small>Status</small><b>${movement}</b></span>
+        </div>
+        <div class="cost-breakdown">
+          <span>Current speed<b>${(vehicle.speedMetersPerSecond * 2.23694).toFixed(1)} mph</b></span>
+          <span>Traffic delay<b>${(vehicle.delaySeconds ?? 0).toFixed(1)} sec</b></span>
+          <span>Law compliance<b>${compliance}%</b></span>
+          <span>Rule violation<b>${vehicle.violating ? "Active" : "None"}</b></span>
+        </div>
+      </section>
+      <section class="entity-actions-section">
+        <h4>About this citizen</h4>
+        <p>Vehicle occupants use the same connected roads, intersections, traffic signals, and rerouting rules as the rest of the live city.</p>
+      </section>
+    </article>`;
+}
+
 function renderFavoritePeople(): void {
   const state = simulation.getState();
   const favorites = state.entities.people.filter((person) => favoritePersonIds.has(person.id));
@@ -3605,13 +3658,19 @@ function updateEntityTooltip(
       const pedestrian = state.pedestrians.find(
         (candidate) => candidate.personId === selection.id,
       );
-      if (!pedestrian?.displayName) return;
-      const expansionRoad = expansionRoads.get(pedestrian.segmentId);
+      const driver = state.vehicles.find(
+        (candidate) => candidate.driverPersonId === selection.id,
+      );
+      const traveler = pedestrian?.displayName ? pedestrian : driver;
+      if (!traveler?.displayName) return;
+      const expansionRoad = expansionRoads.get(traveler.segmentId);
       const roadName = expansionRoad
         ? expansionRoadDisplayName(expansionRoad)
-        : features.find((feature) => feature.id === pedestrian.segmentId)?.name
+        : features.find((feature) => feature.id === traveler.segmentId)?.name
           ?? "University City street";
-      entityTooltip.innerHTML = `<strong>${escapeHtml(pedestrian.displayName)}</strong><span>${pedestrian.waiting ? "Waiting to cross" : "Walking"} · ${Math.round(pedestrian.complianceProbability * 100)}% compliance</span><small>${escapeHtml(roadName)} · ${(pedestrian.delaySeconds ?? 0).toFixed(1)} sec signal delay</small>`;
+      entityTooltip.innerHTML = pedestrian
+        ? `<strong>${escapeHtml(pedestrian.displayName ?? "City traveler")}</strong><span>${pedestrian.waiting ? "Waiting to cross" : "Walking"} · ${Math.round(pedestrian.complianceProbability * 100)}% compliance</span><small>${escapeHtml(roadName)} · ${(pedestrian.delaySeconds ?? 0).toFixed(1)} sec signal delay</small>`
+        : `<strong>${escapeHtml(driver?.displayName ?? "City driver")}</strong><span>${driver?.queued ? "Waiting in traffic" : "Driving"} · ${Math.round((driver?.complianceProbability ?? 0) * 100)}% compliance</span><small>${escapeHtml(roadName)} · ${((driver?.speedMetersPerSecond ?? 0) * 2.23694).toFixed(1)} mph</small>`;
     }
   } else {
     const building = state.entities.buildings.find((candidate) => candidate.id === selection.id);

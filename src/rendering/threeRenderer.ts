@@ -2781,7 +2781,9 @@ export class ThreeRenderer {
       }
     }
     for (const vehicle of vehicles) {
-      for (const personId of vehicle.occupantPersonIds ?? []) {
+      const peopleInVehicle = new Set(vehicle.occupantPersonIds ?? []);
+      if (vehicle.driverPersonId) peopleInVehicle.add(vehicle.driverPersonId);
+      for (const personId of peopleInVehicle) {
         positions.set(personId, {
           x: vehicle.x,
           z: vehicle.z,

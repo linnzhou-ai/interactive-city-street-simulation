@@ -286,6 +286,7 @@ describe("LiveTrafficSystem", () => {
     traffic.setExpansionNetwork([road], [], []);
 
     let sawVehicle = false;
+    let sawNamedDriver = false;
     let sawPedestrian = false;
     let sawNamedPedestrian = false;
     let sawLiveRoadMetrics = false;
@@ -299,6 +300,10 @@ describe("LiveTrafficSystem", () => {
         vehicle.source === "background" && vehicle.segmentId === road.id
       );
       sawVehicle ||= roadVehicles.length > 0;
+      sawNamedDriver ||= roadVehicles.some((vehicle) =>
+        vehicle.driverPersonId?.startsWith("ambient-driver-") &&
+        /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(vehicle.displayName ?? "")
+      );
       const roadPedestrians = traffic.getPedestrians().filter((pedestrian) =>
         pedestrian.source === "background" && pedestrian.segmentId === road.id
       );
@@ -317,9 +322,75 @@ describe("LiveTrafficSystem", () => {
     }
 
     expect(sawVehicle).toBe(true);
+    expect(sawNamedDriver).toBe(true);
     expect(sawPedestrian).toBe(true);
     expect(sawNamedPedestrian).toBe(true);
     expect(sawLiveRoadMetrics).toBe(true);
+  });
+
+  it("moves active agents to surviving roads when an expansion road is deleted", () => {
+    const traffic = new LiveTrafficSystem(20260730);
+    const metersPerLongitude = 111_320
+      * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+    const avenue = PENN_AVENUES.find((candidate) => candidate.short === "34")!;
+    const walnut = PENN_STREETS.find((candidate) => candidate.slug === "walnut")!;
+    const sansom = PENN_STREETS.find((candidate) => candidate.slug === "sansom")!;
+    const junctionX = (avenue.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const junctionZ = -(
+      (walnut.latitude + sansom.latitude) / 2
+      - PENN_CENTER.latitude
+    ) * 111_320;
+    const road = {
+      id: "deleted-expansion-road",
+      startX: junctionX,
+      startZ: junctionZ,
+      endX: junctionX + 90,
+      endZ: junctionZ,
+      width: 18,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    let roadVehicleIds: number[] = [];
+    let roadPedestrianIds: number[] = [];
+    for (let step = 0; step < 240; step += 1) {
+      traffic.update(0.25, {
+        vehicleVolume: 3,
+        pedestrianVolume: 3,
+        speedLimitMph: 25,
+      });
+      roadVehicleIds = traffic.getVehicles()
+        .filter((vehicle) =>
+          vehicle.source === "background" && vehicle.segmentId === road.id
+        )
+        .map((vehicle) => vehicle.id);
+      roadPedestrianIds = traffic.getPedestrians()
+        .filter((pedestrian) =>
+          pedestrian.source === "background" && pedestrian.segmentId === road.id
+        )
+        .map((pedestrian) => pedestrian.id);
+      if (roadVehicleIds.length > 0 && roadPedestrianIds.length > 0) break;
+    }
+    expect(roadVehicleIds.length).toBeGreaterThan(0);
+    expect(roadPedestrianIds.length).toBeGreaterThan(0);
+
+    traffic.setExpansionNetwork([], [], []);
+
+    const relocatedVehicles = traffic.getVehicles().filter((vehicle) =>
+      roadVehicleIds.includes(vehicle.id)
+    );
+    const relocatedPedestrians = traffic.getPedestrians().filter((pedestrian) =>
+      roadPedestrianIds.includes(pedestrian.id)
+    );
+    expect(relocatedVehicles).toHaveLength(roadVehicleIds.length);
+    expect(relocatedPedestrians).toHaveLength(roadPedestrianIds.length);
+    for (const agent of [...relocatedVehicles, ...relocatedPedestrians]) {
+      expect(agent.segmentId).not.toBe(road.id);
+      expect(traffic.getRoadSegment(agent.segmentId)).toBeDefined();
+      expect(Number.isFinite(agent.x)).toBe(true);
+      expect(Number.isFinite(agent.z)).toBe(true);
+    }
   });
 
   it("applies one four-sided crosswalk set to both roads at its junction", () => {
