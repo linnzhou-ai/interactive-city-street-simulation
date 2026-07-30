@@ -261,6 +261,50 @@ describe("LiveTrafficSystem", () => {
       && point.x <= road.endX)).toBe(true);
   });
 
+  it("naturally populates connected user-built roads with ambient agents", () => {
+    const traffic = new LiveTrafficSystem(20260730);
+    const metersPerLongitude = 111_320
+      * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+    const avenue = PENN_AVENUES.find((candidate) => candidate.short === "34")!;
+    const walnut = PENN_STREETS.find((candidate) => candidate.slug === "walnut")!;
+    const sansom = PENN_STREETS.find((candidate) => candidate.slug === "sansom")!;
+    const junctionX = (avenue.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const junctionZ = -(
+      (walnut.latitude + sansom.latitude) / 2
+      - PENN_CENTER.latitude
+    ) * 111_320;
+    const road = {
+      id: "ambient-expansion-road",
+      startX: junctionX,
+      startZ: junctionZ,
+      endX: junctionX + 90,
+      endZ: junctionZ,
+      width: 18,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    let sawVehicle = false;
+    let sawPedestrian = false;
+    for (let step = 0; step < 80; step += 1) {
+      traffic.update(0.5, {
+        vehicleVolume: 3,
+        pedestrianVolume: 3,
+        speedLimitMph: 25,
+      });
+      sawVehicle ||= traffic.getVehicles().some((vehicle) =>
+        vehicle.source === "background" && vehicle.segmentId === road.id
+      );
+      sawPedestrian ||= traffic.getPedestrians().some((pedestrian) =>
+        pedestrian.source === "background" && pedestrian.segmentId === road.id
+      );
+    }
+
+    expect(sawVehicle).toBe(true);
+    expect(sawPedestrian).toBe(true);
+  });
+
   it("applies one four-sided crosswalk set to both roads at its junction", () => {
     const traffic = new LiveTrafficSystem(20260729);
     const horizontal = {
@@ -355,21 +399,29 @@ describe("LiveTrafficSystem", () => {
 
   it("marks isolated expansion parcels as disconnected", () => {
     const traffic = new LiveTrafficSystem(20260729);
+    const road = {
+      id: "isolated-road",
+      startX: 1_900,
+      startZ: 1_700,
+      endX: 2_100,
+      endZ: 1_700,
+      width: 16,
+    };
     traffic.setExpansionNetwork(
-      [{
-        id: "isolated-road",
-        startX: 1_900,
-        startZ: 1_700,
-        endX: 2_100,
-        endZ: 1_700,
-        width: 16,
-      }],
+      [road],
       [],
       [],
     );
+    traffic.update(20, {
+      vehicleVolume: 3,
+      pedestrianVolume: 3,
+      speedLimitMph: 25,
+    });
 
     expect(traffic.getRouteSegmentIds({ x: 2_000, z: 1_730 }, "outside-work")).toEqual([]);
     expect(traffic.getEndpointMobilitySupport({ x: 2_000, z: 1_730 }).connected).toBe(false);
+    expect(traffic.getVehicles().some((vehicle) => vehicle.segmentId === road.id)).toBe(false);
+    expect(traffic.getPedestrians().some((pedestrian) => pedestrian.segmentId === road.id)).toBe(false);
   });
 
   it("exposes active rule violations for renderer feedback", () => {
