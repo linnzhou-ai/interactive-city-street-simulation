@@ -3205,6 +3205,11 @@ html[data-ui-scale="large"] { font-size: 18px; }
 .accessibility-settings label:last-child { justify-content: space-between; }
 .accessibility-settings input { margin: 0; accent-color: #65d8b8; }
 .accessibility-settings select { max-width: 112px; }
+.accessibility-settings small {
+  color: #7f958b;
+  font-size: 0.53rem;
+  line-height: 1.35;
+}
 
 .inspector-breadcrumb {
   display: flex;

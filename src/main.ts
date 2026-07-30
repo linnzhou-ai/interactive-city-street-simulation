@@ -139,6 +139,9 @@ const simulationSeedControl = requireElement<HTMLInputElement>("simulation-seed-
 const timeOfDayControl = requireElement<HTMLInputElement>("time-of-day-control");
 const timeOfDayOutput = requireElement<HTMLOutputElement>("time-of-day-output");
 const weatherControl = requireElement<HTMLSelectElement>("weather-control");
+const dayNightBrightnessControl = requireElement<HTMLInputElement>(
+  "day-night-brightness-control",
+);
 const violationRiskOutput = requireElement<HTMLElement>("violation-risk-output");
 const pedestrianMarkersControl = requireElement<HTMLInputElement>("pedestrian-markers-control");
 const vehicleMarkersControl = requireElement<HTMLInputElement>("vehicle-markers-control");
@@ -522,6 +525,8 @@ weatherControl.addEventListener("change", () => {
   simulation.setWeather(weatherControl.value as WeatherMode);
   syncEnvironmentControls();
 });
+
+dayNightBrightnessControl.addEventListener("change", syncEnvironmentControls);
 
 pedestrianMarkersControl.addEventListener("change", () => {
   renderer.setPedestrianMarkersVisible(pedestrianMarkersControl.checked);
@@ -2027,7 +2032,10 @@ function syncEnvironmentControls(): void {
   const risk = getPhillyCrashRiskProfile(state.timeOfDayHours);
   violationRiskOutput.textContent =
     `Philly crash index: traffic ${risk.trafficMultiplier.toFixed(2)}× · pedestrian ${risk.pedestrianMultiplier.toFixed(2)}×`;
-  renderer.setTimeOfDay(state.timeOfDayHours);
+  renderer.setTimeOfDay(
+    state.timeOfDayHours,
+    dayNightBrightnessControl.checked,
+  );
   renderer.setWeather(state.weather);
 }
 

@@ -78,6 +78,14 @@ const RENDER_HEIGHTS = {
   crosswalk: 0.18,
   selectionSurface: 0.155,
 } as const;
+
+export function sceneLightingHour(
+  simulationHour: number,
+  dayNightBrightnessCycleEnabled: boolean,
+): number {
+  if (!dayNightBrightnessCycleEnabled) return 12;
+  return ((simulationHour % 24) + 24) % 24;
+}
 const ROAD_HEIGHT = RENDER_HEIGHTS.roadSurface;
 const FLY_COLLIDER_RADIUS = 0.45;
 const WALK_COLLIDER_RADIUS = 0.38;
@@ -630,8 +638,14 @@ export class ThreeRenderer {
     this.expansionBuilder.setSelectedBuilding(id);
   }
 
-  setTimeOfDay(hours: number): void {
-    const normalized = ((hours % 24) + 24) % 24;
+  setTimeOfDay(
+    hours: number,
+    dayNightBrightnessCycleEnabled = true,
+  ): void {
+    const normalized = sceneLightingHour(
+      hours,
+      dayNightBrightnessCycleEnabled,
+    );
     const daylight = THREE.MathUtils.clamp(
       Math.sin(((normalized - 6) / 12) * Math.PI),
       0.08,
