@@ -23,7 +23,9 @@ describe("Simulation", () => {
     expect(simulation.getState().city.metrics.municipalBalance).toBe(
       before - 250_000,
     );
+    expect(simulation.getMunicipalProjectSpending()).toBe(250_000);
     expect(simulation.fundMunicipalProject(before)).toBe(false);
+    expect(simulation.getMunicipalProjectSpending()).toBe(250_000);
   });
 
   it("advances district time after starting", () => {

@@ -165,6 +165,7 @@ const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
 const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
 const cityMigration = requireElement<HTMLElement>("city-migration");
 const cityGovernmentFunds = requireElement<HTMLElement>("city-government-funds");
+const cityGovernmentSpending = requireElement<HTMLElement>("city-government-spending");
 const performancePanel = requireElement<HTMLDetailsElement>("performance-panel");
 const performanceSummary = requireElement<HTMLElement>("performance-summary");
 const performanceMinimizeButton = requireElement<HTMLButtonElement>("performance-minimize-button");
@@ -266,6 +267,7 @@ const MUNICIPAL_RESERVE = 18_000_000;
 const MUNICIPAL_PROJECT_INTERVAL_DAYS = 3;
 const MUNICIPAL_ROAD_COST_PER_METER = 2_200;
 const MUNICIPAL_CROSSWALK_COST = 80_000;
+const MUNICIPAL_SIGNAL_COST = 60_000;
 const MUNICIPAL_BUILDING_BASE_COST = 190_000;
 const MUNICIPAL_FLOOR_COST = 55_000;
 const features = renderer.getFeatures();
@@ -903,6 +905,8 @@ renderer.setExpansionRoadInteractionHandlers({
       setBuildFeedback(validation.reason, "error");
       return;
     }
+    const projectCost = municipalRoadProjectCost(roadData);
+    if (!fundManualMunicipalProject(projectCost, "road")) return;
     recordEdit();
     const road: ExpansionRoad = {
       id: `expansion-road-${nextExpansionRoadId++}`,
@@ -916,8 +920,8 @@ renderer.setExpansionRoadInteractionHandlers({
     finishEdit();
     setBuildFeedback(
       safetyFeatures.crosswalks > 0
-        ? `Expansion road added with ${safetyFeatures.crosswalks} crosswalk set${safetyFeatures.crosswalks === 1 ? "" : "s"} and ${safetyFeatures.signals} signal set${safetyFeatures.signals === 1 ? "" : "s"}.`
-        : "Expansion road added. Connect it to another road to create automatic crosswalks and signals.",
+        ? `Government funded the road and safety package for ${formatDetailedMoney(projectCost)}. ${safetyFeatures.crosswalks} crosswalk set${safetyFeatures.crosswalks === 1 ? "" : "s"} and ${safetyFeatures.signals} signal set${safetyFeatures.signals === 1 ? "" : "s"} added.`
+        : `Government funded the road for ${formatDetailedMoney(projectCost)}. Connect it to another road to create automatic crosswalks and signals.`,
       "success",
     );
   },
@@ -927,6 +931,8 @@ renderer.setExpansionRoadInteractionHandlers({
 renderer.setExpansionStreetObjectInteractionHandlers({
   place: (objectData) => {
     if (appMode !== "build" || buildWorkspace !== "expansion") return;
+    const projectCost = municipalStreetObjectProjectCost(objectData.kind);
+    if (!fundManualMunicipalProject(projectCost, objectData.kind)) return;
     recordEdit();
     const object: ExpansionStreetObject = {
       id: `expansion-object-${nextExpansionStreetObjectId++}`,
@@ -937,8 +943,8 @@ renderer.setExpansionStreetObjectInteractionHandlers({
     finishEdit();
     setBuildFeedback(
       object.kind === "crosswalk"
-        ? "Four-sided crosswalk set placed at the expansion-road junction."
-        : "Traffic signal placed on the expansion road.",
+        ? `Four-sided crosswalk set funded for ${formatDetailedMoney(projectCost)}.`
+        : `Traffic signal funded for ${formatDetailedMoney(projectCost)}.`,
       "success",
     );
   },
@@ -971,6 +977,40 @@ function animationFrame(timestamp: number): void {
   window.requestAnimationFrame(animationFrame);
 }
 
+function municipalRoadProjectCost(
+  road: Readonly<Omit<ExpansionRoad, "id">>,
+): number {
+  return Math.round(
+    Math.hypot(road.endX - road.startX, road.endZ - road.startZ)
+      * MUNICIPAL_ROAD_COST_PER_METER
+      + MUNICIPAL_CROSSWALK_COST,
+  );
+}
+
+function municipalBuildingProjectCost(
+  building: Pick<PlacedBuilding, "floors">,
+): number {
+  return MUNICIPAL_BUILDING_BASE_COST
+    + building.floors * MUNICIPAL_FLOOR_COST;
+}
+
+function municipalStreetObjectProjectCost(
+  kind: ExpansionStreetObjectKind,
+): number {
+  return kind === "crosswalk"
+    ? MUNICIPAL_CROSSWALK_COST
+    : MUNICIPAL_SIGNAL_COST;
+}
+
+function fundManualMunicipalProject(cost: number, project: string): boolean {
+  if (simulation.fundMunicipalProject(cost)) return true;
+  setBuildFeedback(
+    `Government funds cannot cover this ${project}: ${formatDetailedMoney(cost)} required, ${formatDetailedMoney(simulation.getState().city.municipalBudget)} available.`,
+    "error",
+  );
+  return false;
+}
+
 function fundMunicipalGrowth(): void {
   const state = simulation.getState();
   if (!state.running) return;
@@ -996,8 +1036,7 @@ function fundMunicipalGrowth(): void {
       municipalBuildings.length,
     );
     if (building) {
-      const cost =
-        MUNICIPAL_BUILDING_BASE_COST + building.floors * MUNICIPAL_FLOOR_COST;
+      const cost = municipalBuildingProjectCost(building);
       if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
       if (!simulation.fundMunicipalProject(cost)) return;
       recordEdit();
@@ -1017,12 +1056,7 @@ function fundMunicipalGrowth(): void {
     municipalRoads.length,
   );
   if (!roadData) return;
-  const roadLength = Math.hypot(
-    roadData.endX - roadData.startX,
-    roadData.endZ - roadData.startZ,
-  );
-  const cost =
-    roadLength * MUNICIPAL_ROAD_COST_PER_METER + MUNICIPAL_CROSSWALK_COST;
+  const cost = municipalRoadProjectCost(roadData);
   if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
   if (!simulation.fundMunicipalProject(cost)) return;
   recordEdit();
@@ -1384,6 +1418,8 @@ function placeBuilding(x: number, z: number): void {
     setBuildFeedback(validation.reason, "error");
     return;
   }
+  const projectCost = municipalBuildingProjectCost(building);
+  if (!fundManualMunicipalProject(projectCost, "building")) return;
   recordEdit();
   nextBuildingId += 1;
   placedBuildings.set(building.id, building);
@@ -1392,7 +1428,7 @@ function placeBuilding(x: number, z: number): void {
   finishEdit();
   const access = simulation.getExpansionBuildingAccess(building.id);
   setBuildFeedback(
-    `${formatBuildingKind(building.kind)} placed. Drag it to move; use the editor below to change its use, floors, or rotation. ${access?.connected ? "Transport network connected." : "Draw a road nearby to connect it."}`,
+    `${formatBuildingKind(building.kind)} funded for ${formatDetailedMoney(projectCost)}. ${formatDetailedMoney(simulation.getState().city.municipalBudget)} remains. ${access?.connected ? "Transport network connected." : "Draw a road nearby to connect it."}`,
     "success",
   );
 }
@@ -2036,6 +2072,9 @@ function updateMetrics(): void {
   cityTrafficCost.textContent = `${formatCurrency(cityMetrics.congestionCostDaily)}/day`;
   cityMigration.textContent = `${formatSigned(cityMetrics.annualizedNetMigration)}/yr`;
   cityGovernmentFunds.textContent = formatCurrency(cityMetrics.municipalBalance);
+  cityGovernmentSpending.textContent = formatCurrency(
+    simulation.getMunicipalProjectSpending(),
+  );
   syncEnvironmentControls();
   updateSelectedSignalStatus();
   updateEntityInterface();
@@ -3536,6 +3575,7 @@ function cityStatInsight(stat: string, current: string): StatInsight {
     imports: "Imported goods share",
     migration: "Annualized net migration",
     governmentFunds: "Government funds",
+    governmentSpending: "Public construction",
   };
   const descriptions: Record<string, string> = {
     population: "Residents represented by the citywide economic model.",
@@ -3545,6 +3585,7 @@ function cityStatInsight(stat: string, current: string): StatInsight {
     imports: "Share of consumed goods supplied by regional or outside-city markets.",
     migration: "Projected yearly population change if current conditions persist.",
     governmentFunds: "Municipal funds available after tax revenue, operating costs, maintenance, and public construction.",
+    governmentSpending: "Cumulative municipal capital spent on roads, safety equipment, and buildings during this simulation.",
   };
   const historyValue = (point: (typeof points)[number]): number => {
     if (stat === "population") return point.population;
@@ -3591,13 +3632,28 @@ function cityStatInsight(stat: string, current: string): StatInsight {
       factor("City operations", `${formatDetailedMoney(metrics.maintenanceCostDaily)} per day`, metrics.maintenanceCostDaily <= metrics.taxRevenueDaily),
       factor("Growth reserve", "Automatic construction preserves an $18M operating reserve", metrics.municipalBalance >= 18_000_000),
     ],
+    governmentSpending: [
+      factor("Road construction", `${formatDetailedMoney(MUNICIPAL_ROAD_COST_PER_METER)} per meter plus safety equipment`, true),
+      factor("Building construction", `${formatDetailedMoney(MUNICIPAL_BUILDING_BASE_COST)} base plus ${formatDetailedMoney(MUNICIPAL_FLOOR_COST)} per floor`, true),
+      factor("Funds remaining", formatDetailedMoney(metrics.municipalBalance), metrics.municipalBalance >= MUNICIPAL_RESERVE),
+    ],
   };
   return {
     title: titles[stat] ?? capitalize(stat),
     current,
     description: descriptions[stat] ?? "A citywide value produced by the simulation.",
-    history: points.map((point) => ({ label: `Day ${point.day}`, value: historyValue(point) })),
-    historyLabel: "City history",
+    history: stat === "governmentSpending"
+      ? [{
+          label: "Current simulation",
+          value: simulation.getMunicipalProjectSpending(),
+        }]
+      : points.map((point) => ({
+          label: `Day ${point.day}`,
+          value: historyValue(point),
+        })),
+    historyLabel: stat === "governmentSpending"
+      ? "Capital ledger"
+      : "City history",
     factors: factors[stat] ?? [],
   };
 }

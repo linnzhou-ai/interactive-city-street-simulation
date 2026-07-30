@@ -3068,7 +3068,7 @@ body[data-city-inspector="minimized"] .metrics {
 
 .city-system-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 0.3rem;
   margin-bottom: 0.42rem;
 }

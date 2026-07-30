@@ -135,6 +135,7 @@ export class Simulation {
   private expansionRoads: ExpansionRoad[] = [];
   private expansionStreetObjects: ExpansionStreetObject[] = [];
   private demolishedBuildingIds = new Set<string>();
+  private municipalProjectSpending = 0;
 
   constructor(
     private readonly cityDefinition: CitySectionDefinition =
@@ -158,6 +159,10 @@ export class Simulation {
     return this.settings;
   }
 
+  getMunicipalProjectSpending(): number {
+    return this.municipalProjectSpending;
+  }
+
   fundMunicipalProject(cost: number): boolean {
     if (
       !Number.isFinite(cost)
@@ -165,6 +170,7 @@ export class Simulation {
       || this.state.city.municipalBudget < cost
     ) return false;
     this.state.city.municipalBudget -= cost;
+    this.municipalProjectSpending += cost;
     this.state.city.metrics = {
       ...this.state.city.metrics,
       municipalBalance: this.state.city.municipalBudget,
@@ -213,6 +219,7 @@ export class Simulation {
   }
 
   reset(): void {
+    this.municipalProjectSpending = 0;
     const city = createCitySectionState(this.cityDefinition);
     const activity = calculateCityActivity(city, 0);
     this.traffic.reset(
