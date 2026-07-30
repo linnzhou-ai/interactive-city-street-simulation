@@ -148,7 +148,7 @@ export function advanceCityEconomy(input: CityEconomyInput): CityEconomyResult {
     const employedResidents = district.laborForce * residentEmploymentRatio * accessReliability;
     const districtJobs = effectiveJobSlots(district, civicLaborScale);
     const vacancyRate = districtJobs > 0 ? Math.max(0, districtJobs - district.laborForce) / districtJobs : 0;
-    const averageWageDaily = (district.averageIncome / 260) * clamp(
+    const averageWageDaily = (district.averageIncome / 365) * clamp(
       0.96 + vacancyRate * 0.24 - district.congestionPercent / 900,
       0.72,
       1.35,

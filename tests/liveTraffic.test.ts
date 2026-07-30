@@ -3,6 +3,11 @@ import {
   IntersectionSignalController,
   LiveTrafficSystem,
 } from "../src/core/liveTraffic";
+import {
+  PENN_AVENUES,
+  PENN_CENTER,
+  PENN_STREETS,
+} from "../src/data/pennRoadGraph";
 
 describe("IntersectionSignalController", () => {
   it("runs the configured deterministic phase sequence", () => {
@@ -150,5 +155,239 @@ describe("LiveTrafficSystem", () => {
     );
     expect(coverage.vehicleSegments.size).toBeGreaterThan(70);
     expect(coverage.pedestrianSegments.size).toBeGreaterThan(90);
+  });
+
+  it("sends freight vehicles toward placed industrial buildings", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    traffic.setBuildingDestinations([
+      {
+        id: "industry",
+        kind: "industrial",
+        floors: 8,
+        x: 0,
+        z: 0,
+        rotation: 0,
+        color: "#a66b4e",
+      },
+    ]);
+
+    traffic.update(90, settings);
+
+    expect(
+      traffic.getVehicles().some((vehicle) => vehicle.kind === "truck"),
+    ).toBe(true);
+  });
+
+  it("routes economic trips over connected expansion roads", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const road = {
+      id: "expansion-road-1",
+      startX: 700,
+      startZ: -390,
+      endX: 900,
+      endZ: -390,
+      width: 18,
+      laneDelta: 0 as const,
+      bikeLane: true,
+      widenedSidewalk: true,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork(
+      [road],
+      [{ id: "crosswalk-1", kind: "crosswalk", x: 800, z: -390, rotation: 0 }],
+      [{
+        id: "placed-building-1",
+        kind: "commercial",
+        function: "retail",
+        floors: 5,
+        x: 860,
+        z: -350,
+        rotation: 0,
+        color: "#ffffff",
+      }],
+    );
+
+    const route = traffic.getRouteSegmentIds(
+      { x: 860, z: -350 },
+      "outside-market",
+    );
+    expect(route).toContain(road.id);
+    expect(traffic.getEndpointMobilitySupport({ x: 860, z: -350 })).toMatchObject({
+      connected: true,
+      walkingBonus: 13,
+      cyclingBonus: 7,
+    });
+
+    traffic.setEconomicRoadLoad(new Map([[road.id, 150]]));
+    const snapshot = traffic.getRoadTraffic().find((candidate) => candidate.segmentId === road.id);
+    expect(snapshot?.activeVehicles).toBeGreaterThan(0);
+    expect(snapshot?.congestionPercent).toBeGreaterThan(0);
+    expect(snapshot?.averageDelaySeconds).toBeGreaterThan(0);
+  });
+
+  it("routes visible pedestrians and drivers along user-built roads", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const road = {
+      id: "expansion-road-visible-route",
+      startX: 1_800,
+      startZ: 1_600,
+      endX: 2_000,
+      endZ: 1_600,
+      width: 18,
+      laneDirection: "forward" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    const walkingRoute = traffic.getRoutePath(
+      { x: 1_990, z: 1_630 },
+      { x: 1_810, z: 1_630 },
+      "walk",
+    );
+    const drivingRoute = traffic.getRoutePath(
+      { x: 1_810, z: 1_630 },
+      { x: 1_990, z: 1_630 },
+      "car",
+    );
+
+    expect(walkingRoute.segmentIds).toContain(road.id);
+    expect(drivingRoute.segmentIds).toContain(road.id);
+    expect(walkingRoute.points.some((point) =>
+      Math.abs(point.z - road.startZ) < 0.01
+      && point.x >= road.startX
+      && point.x <= road.endX)).toBe(true);
+    expect(drivingRoute.points.some((point) =>
+      Math.abs(point.z - road.startZ) < 0.01
+      && point.x >= road.startX
+      && point.x <= road.endX)).toBe(true);
+  });
+
+  it("applies one four-sided crosswalk set to both roads at its junction", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const horizontal = {
+      id: "crosswalk-horizontal",
+      startX: 700,
+      startZ: -390,
+      endX: 900,
+      endZ: -390,
+      width: 16,
+    };
+    const vertical = {
+      id: "crosswalk-vertical",
+      startX: 800,
+      startZ: -490,
+      endX: 800,
+      endZ: -290,
+      width: 16,
+    };
+    traffic.setExpansionNetwork(
+      [horizontal, vertical],
+      [{
+        id: "crosswalk-set",
+        kind: "crosswalk",
+        x: 800,
+        z: -390,
+        rotation: 0,
+      }],
+      [],
+    );
+    traffic.setEconomicRoadLoad(new Map([
+      [horizontal.id, 100],
+      [vertical.id, 100],
+    ]));
+
+    expect(traffic.getEndpointMobilitySupport({ x: 880, z: -390 }).walkingBonus)
+      .toBe(5);
+    expect(traffic.getEndpointMobilitySupport({ x: 800, z: -310 }).walkingBonus)
+      .toBe(5);
+    expect(
+      traffic.getRoadTraffic()
+        .filter((snapshot) =>
+          snapshot.segmentId === horizontal.id
+          || snapshot.segmentId === vertical.id
+        )
+        .every((snapshot) => snapshot.averageDelaySeconds > 3),
+    ).toBe(true);
+  });
+
+  it("splices a new street into the middle of an existing city block", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    const metersPerLongitude = 111_320
+      * Math.cos((PENN_CENTER.latitude * Math.PI) / 180);
+    const avenue = PENN_AVENUES.find((candidate) => candidate.short === "34")!;
+    const walnut = PENN_STREETS.find((candidate) => candidate.slug === "walnut")!;
+    const sansom = PENN_STREETS.find((candidate) => candidate.slug === "sansom")!;
+    const junctionX = (avenue.longitude - PENN_CENTER.longitude)
+      * metersPerLongitude;
+    const walnutZ = -(walnut.latitude - PENN_CENTER.latitude) * 111_320;
+    const junctionZ = -(
+      (walnut.latitude + sansom.latitude) / 2
+      - PENN_CENTER.latitude
+    ) * 111_320;
+    const road = {
+      id: "expansion-road-mid-block",
+      startX: junctionX + 60,
+      startZ: junctionZ,
+      endX: junctionX,
+      endZ: junctionZ,
+      width: 16,
+      laneDirection: "two-way" as const,
+    };
+    traffic.setExpansionNetwork([road], [], []);
+
+    const drivingRoute = traffic.getRoutePath(
+      { x: road.startX - 5, z: road.startZ },
+      { x: junctionX, z: walnutZ },
+      "car",
+    );
+    const walkingRoute = traffic.getRoutePath(
+      { x: junctionX, z: walnutZ },
+      { x: road.startX - 5, z: road.startZ },
+      "walk",
+    );
+
+    expect(drivingRoute.segmentIds).toContain(road.id);
+    expect(walkingRoute.segmentIds).toContain(road.id);
+    expect(drivingRoute.points).toContainEqual({
+      x: junctionX,
+      z: junctionZ,
+    });
+  });
+
+  it("marks isolated expansion parcels as disconnected", () => {
+    const traffic = new LiveTrafficSystem(20260729);
+    traffic.setExpansionNetwork(
+      [{
+        id: "isolated-road",
+        startX: 1_900,
+        startZ: 1_700,
+        endX: 2_100,
+        endZ: 1_700,
+        width: 16,
+      }],
+      [],
+      [],
+    );
+
+    expect(traffic.getRouteSegmentIds({ x: 2_000, z: 1_730 }, "outside-work")).toEqual([]);
+    expect(traffic.getEndpointMobilitySupport({ x: 2_000, z: 1_730 }).connected).toBe(false);
+  });
+
+  it("exposes active rule violations for renderer feedback", () => {
+    const traffic = new LiveTrafficSystem(20260728);
+    let sawActiveViolation = false;
+    for (let step = 0; step < 60; step += 1) {
+      traffic.update(0.5, {
+        vehicleVolume: 3,
+        pedestrianVolume: 2,
+        speedLimitMph: 25,
+      });
+      sawActiveViolation ||= [
+        ...traffic.getVehicles(),
+        ...traffic.getPedestrians(),
+      ].some((agent) => agent.violating);
+    }
+
+    expect(traffic.getMetrics().trafficViolations).toBeGreaterThan(0);
+    expect(sawActiveViolation).toBe(true);
   });
 });

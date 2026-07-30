@@ -194,6 +194,17 @@ export interface CityTimelinePoint {
   housingOccupancyPercent: number;
   municipalBalance: number;
   happiness: number;
+  unemploymentPercent: number;
+  goodsImportedDaily: number;
+  goodsConsumedDaily: number;
+  annualizedNetMigration: number;
+  averageTrafficDelayMinutes: number;
+  commuteTripsDaily: number;
+  shoppingTripsDaily: number;
+  vehicleTripsDaily: number;
+  pedestrianTripsDaily: number;
+  freightTripsDaily: number;
+  civicServiceCoveragePercent: number;
 }
 
 export interface CitySectionState {

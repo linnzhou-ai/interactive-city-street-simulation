@@ -18,6 +18,9 @@ describe("city section model", () => {
     expect(first.districts).toHaveLength(12);
     expect(first.links).toHaveLength(17);
     expect(first.metrics.population).toBeGreaterThan(80_000);
+    expect(first.metrics.unemploymentPercent).toBeGreaterThan(0);
+    expect(first.metrics.congestionCostDaily).toBeGreaterThan(0);
+    expect(first.metrics.annualizedNetMigration).not.toBe(0);
     expect(new Set(first.districts.map((district) => district.primaryZone))).toEqual(
       new Set(["residential", "commercial", "industrial", "civic", "park"]),
     );

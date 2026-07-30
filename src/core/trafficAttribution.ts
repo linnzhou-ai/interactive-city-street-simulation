@@ -10,6 +10,9 @@ import type {
 import type { RoadTrafficSnapshot } from "../models/types";
 
 type RouteResolver = (connection: Readonly<EntityConnection>) => readonly string[];
+type RoadDescriptionResolver = (
+  segmentId: string,
+) => { name: string; description: string } | undefined;
 
 interface MutableRoadImpact extends Omit<BuildingRoadTrafficImpact, "kinds"> {
   kinds: Set<BuildingConnectionKind>;
@@ -22,6 +25,7 @@ export function calculateBuildingTrafficAttribution(
   roadTraffic: readonly RoadTrafficSnapshot[],
   cityCongestionPercent: number,
   resolveRoute: RouteResolver,
+  resolveRoad?: RoadDescriptionResolver,
 ): BuildingTrafficAttribution | null {
   const building = entities.buildings.find((candidate) => candidate.id === buildingId);
   if (!building) return null;
@@ -36,24 +40,31 @@ export function calculateBuildingTrafficAttribution(
   let roadTripsDaily = 0;
   let routedVehicleTripsDaily = 0;
   let weightedRouteDelaySeconds = 0;
+  let workVehicleTripsDaily = 0;
+  let visitVehicleTripsDaily = 0;
+  let deliveryVehicleTripsDaily = 0;
 
   for (const connection of connections) {
     const segments = resolveRoute(connection);
     if (segments.length === 0) continue;
     const trips = connectionRoadTrips(connection, peopleById);
     if (trips <= 0.01) continue;
+    if (connection.kind === "work") workVehicleTripsDaily += trips;
+    else if (connection.kind === "visit") visitVehicleTripsDaily += trips;
+    else deliveryVehicleTripsDaily += trips;
     routedVehicleTripsDaily += trips;
     roadTripsDaily += trips * segments.length;
     let routeDelaySeconds = 0;
     for (const segmentId of segments) {
       const traffic = trafficById.get(segmentId);
       const feature = featureById.get(segmentId);
-      if (!traffic || !feature) continue;
+      const roadDescription = resolveRoad?.(segmentId);
+      if (!traffic || (!feature && !roadDescription)) continue;
       routeDelaySeconds += traffic.averageDelaySeconds;
       const existing = impacts.get(segmentId) ?? {
         segmentId,
-        roadName: feature.name,
-        description: feature.description,
+        roadName: feature?.name ?? roadDescription?.name ?? segmentId,
+        description: feature?.description ?? roadDescription?.description ?? "User-built road",
         kinds: new Set<BuildingConnectionKind>(),
         roadTripsDaily: 0,
         congestionPercent: traffic.congestionPercent,
@@ -122,7 +133,9 @@ export function calculateBuildingTrafficAttribution(
 
   return {
     buildingId,
-    connectedVolumeDaily: round(connections.reduce((total, connection) => total + connection.volume, 0)),
+    workVehicleTripsDaily: round(workVehicleTripsDaily),
+    visitVehicleTripsDaily: round(visitVehicleTripsDaily),
+    deliveryVehicleTripsDaily: round(deliveryVehicleTripsDaily),
     roadTripsDaily: round(roadTripsDaily),
     deliveryTransportCost,
     residentCommuteCost,
@@ -142,19 +155,24 @@ function connectionRoadTrips(
   connection: Readonly<EntityConnection>,
   peopleById: ReadonlyMap<string, DetailedEntityState["people"][number]>,
 ): number {
-  if (connection.kind === "supply") return Math.max(0.25, connection.volume / 18) * 2;
+  if (connection.kind === "delivery") return Math.max(0.25, connection.volume / 18) * 2;
   const modes = connection.personIds.flatMap((personId) => {
     const person = peopleById.get(personId);
     if (!person) return [];
-    const matching = person.schedule.find((item) =>
-      item.buildingId === connection.toBuildingId && item.activity !== "home"
-    );
-    return matching ? [matching.mode] : [];
+    for (let index = 1; index < person.schedule.length; index += 1) {
+      const previous = person.schedule[index - 1];
+      const current = person.schedule[index];
+      if (previous.buildingId === connection.fromBuildingId && current.buildingId === connection.toBuildingId) {
+        return [current.mode];
+      }
+    }
+    return [];
   });
   const carShare = modes.length > 0
     ? modes.filter((mode: TravelMode) => mode === "car").length / modes.length
     : 0.42;
-  return connection.volume * carShare * 2;
+  const inferredRoundTrip = connection.personIds.length === 0 ? 2 : 1;
+  return connection.volume * carShare * inferredRoundTrip;
 }
 
 function round(value: number): number {

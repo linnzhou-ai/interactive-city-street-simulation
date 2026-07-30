@@ -341,6 +341,17 @@ function maybeRecordTimeline(state: CitySectionState, calendarBoundary: boolean)
     housingOccupancyPercent: state.metrics.housingOccupancyPercent,
     municipalBalance: state.metrics.municipalBalance,
     happiness: state.metrics.happiness,
+    unemploymentPercent: state.metrics.unemploymentPercent,
+    goodsImportedDaily: state.metrics.goodsImportedDaily,
+    goodsConsumedDaily: state.metrics.goodsConsumedDaily,
+    annualizedNetMigration: state.metrics.annualizedNetMigration,
+    averageTrafficDelayMinutes: state.metrics.averageTrafficDelayMinutes,
+    commuteTripsDaily: state.metrics.commuteTripsDaily,
+    shoppingTripsDaily: state.metrics.shoppingTripsDaily,
+    vehicleTripsDaily: state.metrics.vehicleTripsDaily,
+    pedestrianTripsDaily: state.metrics.pedestrianTripsDaily,
+    freightTripsDaily: state.metrics.freightTripsDaily,
+    civicServiceCoveragePercent: state.metrics.civicServiceCoveragePercent,
   };
   state.timeline = [...state.timeline, point].slice(-MAX_TIMELINE_POINTS);
 }
