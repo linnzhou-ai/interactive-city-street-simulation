@@ -372,6 +372,14 @@ export class LiveTrafficSystem {
     for (const node of this.nodes.flat()) {
       this.controllers.set(node.id, new IntersectionSignalController(node.id));
     }
+    const graph = buildEconomicRouteGraph(
+      this.nodes,
+      this.roadSegments,
+      [],
+    );
+    this.economicRouteNodes = graph.nodes;
+    this.walkingEconomicEdges = bidirectionalEconomicEdges(graph.nodes);
+    this.connectedEconomicNodes = graph.connectedNodeIds;
     this.scheduleNextSpawns(2, 2);
   }
 
@@ -525,12 +533,14 @@ export class LiveTrafficSystem {
     vehicles: readonly VehicleSnapshot[],
     pedestrians: readonly PedestrianSnapshot[],
   ): void {
-    this.sampledVehicles = vehicles.map((vehicle) => ({
-      ...vehicle,
-      occupantPersonIds: vehicle.occupantPersonIds
-        ? [...vehicle.occupantPersonIds]
-        : undefined,
-    }));
+    this.sampledVehicles = vehicles.map((vehicle) =>
+      this.alignSampledVehicleToLane({
+        ...vehicle,
+        occupantPersonIds: vehicle.occupantPersonIds
+          ? [...vehicle.occupantPersonIds]
+          : undefined,
+      })
+    );
     this.sampledPedestrians = pedestrians.map((pedestrian) => ({ ...pedestrian }));
   }
 
@@ -1179,9 +1189,10 @@ export class LiveTrafficSystem {
 
   private reconcileVehicleRoutes(): void {
     this.vehicles = this.vehicles.filter((vehicle) => {
+      const position = positionVehicle(vehicle);
       const start = vehicle.path[vehicle.segmentIndex];
       const end = vehicle.path[vehicle.segmentIndex + 1];
-      if (!start || !end) return false;
+      if (!start || !end) return this.relocateVehicle(vehicle, position);
       const destination = vehicle.path.at(-1);
       if (
         isGridNode(start)
@@ -1189,7 +1200,7 @@ export class LiveTrafficSystem {
         && isGridNode(destination)
       ) {
         const continuation = this.findVehicleRoute(end, destination);
-        if (!continuation) return false;
+        if (!continuation) return this.relocateVehicle(vehicle, position);
         const revisedRoute = gridAgentRoute([start, ...continuation]);
         const assignment = this.laneForPath(
           revisedRoute.nodes,
@@ -1197,7 +1208,7 @@ export class LiveTrafficSystem {
           0,
           vehicle.kind,
         );
-        if (!assignment) return false;
+        if (!assignment) return this.relocateVehicle(vehicle, position);
         vehicle.path = revisedRoute.nodes;
         vehicle.segmentIds = revisedRoute.segmentIds;
         vehicle.segmentIndex = 0;
@@ -1212,7 +1223,7 @@ export class LiveTrafficSystem {
         vehicle.segmentIndex,
         vehicle.kind,
       );
-      if (!assignment) return false;
+      if (!assignment) return this.relocateVehicle(vehicle, position);
       vehicle.segmentId = assignment.segment.id;
       vehicle.lane = assignment.lane;
       vehicle.segmentDelaySeconds = 0;
@@ -1229,23 +1240,7 @@ export class LiveTrafficSystem {
     this.vehicles = this.vehicles.filter((vehicle) => {
       const position = vehiclePositions.get(vehicle.id);
       if (!position) return true;
-      const relocation = this.nearestSurvivingRoute(
-        position.x,
-        position.z,
-        vehicle.kind,
-      );
-      if (!relocation?.assignment) return false;
-      vehicle.path = relocation.route.nodes;
-      vehicle.segmentIds = relocation.route.segmentIds;
-      vehicle.segmentIndex = 0;
-      vehicle.distanceOnSegment = relocation.distanceOnSegment;
-      vehicle.segmentId = relocation.assignment.segment.id;
-      vehicle.lane = relocation.assignment.lane;
-      vehicle.speed = Math.min(vehicle.speed, vehicle.desiredSpeed);
-      vehicle.queued = false;
-      vehicle.segmentDelaySeconds = 0;
-      vehicle.violationIntersectionId = null;
-      return true;
+      return this.relocateVehicle(vehicle, position);
     });
     this.pedestrians = this.pedestrians.filter((pedestrian) => {
       const position = pedestrianPositions.get(pedestrian.id);
@@ -1261,6 +1256,29 @@ export class LiveTrafficSystem {
       pedestrian.committedIntersectionId = null;
       return true;
     });
+  }
+
+  private relocateVehicle(
+    vehicle: VehicleAgent,
+    position: Readonly<PositionedAgent>,
+  ): boolean {
+    const relocation = this.nearestSurvivingRoute(
+      position.x,
+      position.z,
+      vehicle.kind,
+    );
+    if (!relocation?.assignment) return false;
+    vehicle.path = relocation.route.nodes;
+    vehicle.segmentIds = relocation.route.segmentIds;
+    vehicle.segmentIndex = 0;
+    vehicle.distanceOnSegment = relocation.distanceOnSegment;
+    vehicle.segmentId = relocation.assignment.segment.id;
+    vehicle.lane = relocation.assignment.lane;
+    vehicle.speed = Math.min(vehicle.speed, vehicle.desiredSpeed);
+    vehicle.queued = false;
+    vehicle.segmentDelaySeconds = 0;
+    vehicle.violationIntersectionId = null;
+    return true;
   }
 
   private nearestSurvivingRoute(
@@ -1312,6 +1330,85 @@ export class LiveTrafficSystem {
       if (assignment) return { ...candidate, assignment };
     }
     return null;
+  }
+
+  private alignSampledVehicleToLane(
+    vehicle: VehicleSnapshot,
+  ): VehicleSnapshot {
+    const segment = this.roadSegments.get(vehicle.segmentId);
+    const geometry = this.segmentGeometry(vehicle.segmentId);
+    if (!segment || !geometry) return vehicle;
+    const movementX = Math.sin(vehicle.heading);
+    const movementZ = Math.cos(vehicle.heading);
+    const roadX = geometry.end.x - geometry.start.x;
+    const roadZ = geometry.end.z - geometry.start.z;
+    const direction: LaneTravelDirection =
+      movementX * roadX + movementZ * roadZ >= 0 ? "forward" : "reverse";
+    const lanes = segment.lanes.filter((lane) =>
+      lane.direction === direction &&
+      (lane.type === "general" || lane.type === "turn" || lane.type === "bus")
+    );
+    if (lanes.length === 0) return vehicle;
+    const preferred = vehicle.kind === "bus"
+      ? lanes.filter((lane) => lane.type === "bus")
+      : lanes.filter((lane) => lane.type !== "bus");
+    const choices = preferred.length > 0 ? preferred : lanes;
+    const lane = choices[Math.abs(vehicle.id) % choices.length];
+    const start = direction === "forward" ? geometry.start : geometry.end;
+    const end = direction === "forward" ? geometry.end : geometry.start;
+    const projection = projectPointOntoSegment(
+      vehicle.x,
+      vehicle.z,
+      start,
+      end,
+    );
+    const position = positionAlongPath(
+      [start, end],
+      0,
+      projection.distanceOnSegment,
+      direction === "forward" ? lane.offsetMeters : -lane.offsetMeters,
+    );
+    return {
+      ...vehicle,
+      x: position.x,
+      z: position.z,
+      heading: position.heading,
+      laneId: lane.id,
+    };
+  }
+
+  private segmentGeometry(
+    segmentId: string,
+  ): { start: AgentRouteNode; end: AgentRouteNode } | null {
+    const expansionRoad = this.expansionRoads.find((road) =>
+      road.id === segmentId
+    );
+    if (expansionRoad) {
+      return {
+        start: {
+          id: `${segmentId}:start`,
+          x: expansionRoad.startX,
+          z: expansionRoad.startZ,
+        },
+        end: {
+          id: `${segmentId}:end`,
+          x: expansionRoad.endX,
+          z: expansionRoad.endZ,
+        },
+      };
+    }
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === segmentId
+    );
+    if (!feature || feature.path.length < 2) return null;
+    const [start, end] = feature.path.map((point, index) => ({
+      id: `${segmentId}:${index}`,
+      x: (point.longitude - PENN_CENTER.longitude) *
+        METERS_PER_DEGREE_LONGITUDE,
+      z: -(point.latitude - PENN_CENTER.latitude) *
+        METERS_PER_DEGREE_LATITUDE,
+    }));
+    return { start, end };
   }
 
   private updatePedestrianSpawner(
@@ -1409,6 +1506,7 @@ export class LiveTrafficSystem {
     }
     this.vehicles = this.vehicles.filter((vehicle) => {
       if (vehicle.segmentIndex < vehicle.path.length - 1) return true;
+      if (this.continueVehicleToBoundary(vehicle)) return true;
       this.completedVehicleTrips += 1;
       this.completedVehicleTravelSeconds +=
         this.elapsedSeconds - vehicle.spawnedAt;
@@ -1418,6 +1516,79 @@ export class LiveTrafficSystem {
       }
       return false;
     });
+  }
+
+  private continueVehicleToBoundary(vehicle: VehicleAgent): boolean {
+    const destination = vehicle.path.at(-1);
+    if (!destination) return false;
+    if (!isGridNode(destination)) {
+      const route = findEconomicRoute(
+        this.economicRouteNodes,
+        this.expansionRoads,
+        this.expansionSegmentNodes,
+        this.nodes,
+        { x: destination.x, z: destination.z },
+        "outside-work",
+        undefined,
+      );
+      const nodes = route.nodeIds
+        .map((nodeId) => this.economicRouteNodes.get(nodeId))
+        .filter((node): node is EconomicRouteNode => Boolean(node));
+      if (
+        nodes.length === route.nodeIds.length &&
+        nodes.length >= 2 &&
+        this.applyVehicleContinuation(vehicle, {
+          nodes,
+          segmentIds: route.segmentIds,
+        })
+      ) {
+        return true;
+      }
+      return false;
+    }
+    if (
+      destination.column === 0 ||
+      destination.row === 0 ||
+      destination.column === this.nodes.length - 1 ||
+      destination.row === this.nodes[0].length - 1
+    ) {
+      return false;
+    }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const boundary = this.randomBoundaryNode();
+      if (boundary.id === destination.id) continue;
+      const route = this.findVehicleRoute(destination, boundary, 1.1);
+      if (!route || route.length < 2) continue;
+      const continuation = gridAgentRoute(route);
+      if (this.applyVehicleContinuation(vehicle, continuation)) {
+        if (this.isBuildingDestination(destination)) this.buildingArrivals += 1;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private applyVehicleContinuation(
+    vehicle: VehicleAgent,
+    continuation: Readonly<AgentRoute>,
+  ): boolean {
+    const assignment = this.laneForPath(
+      continuation.nodes,
+      continuation.segmentIds,
+      0,
+      vehicle.kind,
+    );
+    if (!assignment) return false;
+    vehicle.path = continuation.nodes;
+    vehicle.segmentIds = continuation.segmentIds;
+    vehicle.segmentIndex = 0;
+    vehicle.distanceOnSegment = 0;
+    vehicle.segmentId = assignment.segment.id;
+    vehicle.lane = assignment.lane;
+    vehicle.queued = false;
+    vehicle.segmentDelaySeconds = 0;
+    vehicle.violationIntersectionId = null;
+    return true;
   }
 
   private advanceVehicle(

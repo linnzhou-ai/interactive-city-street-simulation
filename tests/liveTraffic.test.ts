@@ -6,6 +6,7 @@ import {
 import {
   PENN_AVENUES,
   PENN_CENTER,
+  PENN_ROAD_GRAPH,
   PENN_STREETS,
 } from "../src/data/pennRoadGraph";
 
@@ -155,6 +156,141 @@ describe("LiveTrafficSystem", () => {
     );
     expect(coverage.vehicleSegments.size).toBeGreaterThan(70);
     expect(coverage.pedestrianSegments.size).toBeGreaterThan(90);
+    for (const vehicle of vehicles) {
+      const feature = PENN_ROAD_GRAPH.find((candidate) =>
+        candidate.kind === "street" && candidate.id === vehicle.segmentId
+      );
+      const lane = traffic.getRoadSegment(vehicle.segmentId)?.lanes.find(
+        (candidate) => candidate.id === vehicle.laneId,
+      );
+      expect(feature).toBeDefined();
+      expect(lane).toBeDefined();
+      if (!feature || !lane) continue;
+      const [start, end] = feature.path.map((point) => ({
+        x: (point.longitude - PENN_CENTER.longitude) *
+          111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+        z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+      }));
+      const dx = end.x - start.x;
+      const dz = end.z - start.z;
+      const distanceFromCenterline = Math.abs(
+        dx * (start.z - vehicle.z) - (start.x - vehicle.x) * dz,
+      ) / Math.hypot(dx, dz);
+      expect(distanceFromCenterline).toBeCloseTo(
+        Math.abs(lane.offsetMeters),
+        5,
+      );
+    }
+  });
+
+  it("snaps sampled resident vehicles to a real lane center", () => {
+    const traffic = new LiveTrafficSystem(3402);
+    const feature = PENN_ROAD_GRAPH.find((candidate) =>
+      candidate.kind === "street" && candidate.id === "spruce-34-36"
+    )!;
+    const [start, end] = feature.path.map((point) => ({
+      x: (point.longitude - PENN_CENTER.longitude) *
+        111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+      z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+    }));
+    traffic.setSampledMobility([{
+      id: 8_001,
+      segmentId: feature.id,
+      laneId: `${feature.id}:sampled`,
+      x: (start.x + end.x) / 2,
+      z: (start.z + end.z) / 2,
+      heading: Math.atan2(end.x - start.x, end.z - start.z),
+      speedMetersPerSecond: 8.5,
+      queued: false,
+      kind: "compact",
+      color: "#ffffff",
+      complianceProbability: 1,
+      violating: false,
+      source: "sampled-resident",
+      driverPersonId: "person-1",
+      occupantPersonIds: ["person-1"],
+    }], []);
+
+    const vehicle = traffic.getVehicles()[0];
+    const lane = traffic.getRoadSegment(feature.id)?.lanes.find(
+      (candidate) => candidate.id === vehicle.laneId,
+    );
+    expect(lane).toBeDefined();
+    expect(vehicle.laneId).not.toContain(":sampled");
+    expect(Math.abs(vehicle.z - start.z)).toBeCloseTo(
+      Math.abs(lane?.offsetMeters ?? 0),
+      5,
+    );
+  });
+
+  it("only removes background vehicles after they reach a city boundary", () => {
+    const traffic = new LiveTrafficSystem(3403);
+    const xValues = PENN_AVENUES.map((avenue) =>
+      (avenue.longitude - PENN_CENTER.longitude) *
+      111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180)
+    );
+    const zValues = PENN_STREETS.map((street) =>
+      -(street.latitude - PENN_CENTER.latitude) * 111_320
+    );
+    const minimumX = Math.min(...xValues);
+    const maximumX = Math.max(...xValues);
+    const minimumZ = Math.min(...zValues);
+    const maximumZ = Math.max(...zValues);
+    let previous = new Map<number, { x: number; z: number }>();
+    let completedExits = 0;
+    for (let step = 0; step < 900; step += 1) {
+      traffic.update(0.5, {
+        vehicleVolume: 3,
+        pedestrianVolume: 1,
+        speedLimitMph: 25,
+      });
+      const currentVehicles = traffic.getVehicles();
+      const current = new Map(
+        currentVehicles.map((vehicle) => [
+          vehicle.id,
+          { x: vehicle.x, z: vehicle.z },
+        ]),
+      );
+      for (const [id, position] of previous) {
+        if (current.has(id)) continue;
+        const reachedBoundary =
+          Math.abs(position.x - minimumX) < 15 ||
+          Math.abs(position.x - maximumX) < 15 ||
+          Math.abs(position.z - minimumZ) < 15 ||
+          Math.abs(position.z - maximumZ) < 15;
+        expect(reachedBoundary).toBe(true);
+        completedExits += 1;
+      }
+      previous = current;
+    }
+    expect(completedExits).toBeGreaterThan(0);
+  });
+
+  it("keeps active cars visible when a lane-direction edit invalidates their route", () => {
+    const traffic = new LiveTrafficSystem(3404);
+    traffic.update(45, {
+      vehicleVolume: 3,
+      pedestrianVolume: 1,
+      speedLimitMph: 25,
+    });
+    const reverseVehicle = traffic.getVehicles().find((vehicle) =>
+      vehicle.laneId.includes(":reverse:")
+    );
+    expect(reverseVehicle).toBeDefined();
+    if (!reverseVehicle) return;
+    const activeIds = new Set(traffic.getVehicles().map((vehicle) => vehicle.id));
+
+    traffic.setRoadDesign(reverseVehicle.segmentId, {
+      laneDirection: "forward",
+    });
+
+    const revisedVehicles = traffic.getVehicles();
+    expect(revisedVehicles).toHaveLength(activeIds.size);
+    expect(revisedVehicles.every((vehicle) => activeIds.has(vehicle.id))).toBe(true);
+    expect(
+      revisedVehicles.find((vehicle) => vehicle.id === reverseVehicle.id)
+        ?.laneId.includes(":forward:"),
+    ).toBe(true);
   });
 
   it("sends freight vehicles toward placed industrial buildings", () => {

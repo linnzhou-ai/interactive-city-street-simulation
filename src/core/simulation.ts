@@ -565,9 +565,35 @@ export class Simulation {
           mode,
         ),
     );
-    this.state.entities = { ...this.state.entities, people: result.people };
-    this.mobilityOutcomes = result.outcomes;
     this.traffic.setSampledMobility(result.vehicles, result.pedestrians);
+    const alignedVehicleByPerson = new Map(
+      this.traffic.getVehicles()
+        .filter((vehicle) => vehicle.source === "sampled-resident")
+        .flatMap((vehicle) =>
+          (vehicle.occupantPersonIds ?? []).map((personId) => [
+            personId,
+            vehicle,
+          ] as const)
+        ),
+    );
+    this.state.entities = {
+      ...this.state.entities,
+      people: result.people.map((person) => {
+        const vehicle = alignedVehicleByPerson.get(person.id);
+        if (!vehicle) return person;
+        return {
+          ...person,
+          mobility: {
+            ...person.mobility,
+            x: vehicle.x,
+            z: vehicle.z,
+            heading: vehicle.heading,
+            segmentId: vehicle.segmentId,
+          },
+        };
+      }),
+    };
+    this.mobilityOutcomes = result.outcomes;
     this.traffic.setBackgroundTrafficVisible(
       this.state.mobilityDetailMode !== "outcome",
     );
