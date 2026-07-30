@@ -7,6 +7,7 @@ import type {
   WeatherMode,
 } from "../models/types";
 import { functionForPlacedBuilding } from "./expansionEconomy";
+import { expansionRoadDisplayName } from "./expansionRoadNaming";
 
 export const PROJECT_STATE_VERSION = 1;
 
@@ -128,7 +129,10 @@ export function parseProjectSnapshot(raw: string): ProjectSnapshot {
     if (!isExpansionRoad(road)) {
       throw new Error("This design file contains an invalid expansion road.");
     }
-    expansionRoads.push({ ...road });
+    expansionRoads.push({
+      ...road,
+      name: expansionRoadDisplayName(road),
+    });
   }
 
   const demolishedBuildingIds = Array.isArray(value.demolishedBuildingIds)
@@ -190,6 +194,8 @@ function isExpansionRoad(value: unknown): value is ExpansionRoad {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
+    (value.name === undefined ||
+      typeof value.name === "string" && value.name.trim().length > 0) &&
     Number.isFinite(value.startX) &&
     Number.isFinite(value.startZ) &&
     Number.isFinite(value.endX) &&

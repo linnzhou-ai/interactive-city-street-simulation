@@ -37,6 +37,7 @@ import type {
   VehicleSnapshot,
 } from "../models/types";
 import type { TravelMode } from "../models/entityTypes";
+import { expansionRoadDisplayName } from "./expansionRoadNaming";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 const METERS_PER_DEGREE_LONGITUDE =
@@ -1749,7 +1750,7 @@ function expansionRoadModel(road: Readonly<ExpansionRoad>): RoadSegmentModel {
     {
       id: road.id,
       kind: "street",
-      name: `Expansion Road ${road.id.match(/\d+$/)?.[0] ?? ""}`.trim(),
+      name: expansionRoadDisplayName(road),
       description: "User-built expansion road",
       axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
         ? "x"

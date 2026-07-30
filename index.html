@@ -233,8 +233,16 @@
             </button>
           </div>
           <p id="expansion-road-count" class="placement-help">0 roads · 0 crosswalk sets · 0 signals</p>
+          <label class="expansion-road-picker" for="expansion-road-select">Built road
+            <select id="expansion-road-select">
+              <option value="">Select a named road</option>
+            </select>
+          </label>
           <div id="expansion-road-editor" hidden>
             <p class="tool-section-label">Selected road</p>
+            <label class="expansion-road-name-field" for="selected-expansion-road-name">Road name
+              <input id="selected-expansion-road-name" type="text" maxlength="48" autocomplete="off" />
+            </label>
             <div class="building-tool-grid">
               <button type="button" data-expansion-road-tool="add-lane">Add lane</button>
               <button type="button" data-expansion-road-tool="remove-lane">Remove lane</button>

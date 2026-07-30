@@ -18,6 +18,9 @@ import {
   type EditorSnapshot,
   type ProjectSnapshot,
 } from "./core/projectState";
+import {
+  expansionRoadDisplayName,
+} from "./core/expansionRoadNaming";
 import { getPhillyCrashRiskProfile } from "./data/phillyCrashProfile";
 import { PENN_LANDMARKS } from "./data/pennRoadGraph";
 import type {
@@ -97,7 +100,11 @@ const placeExpansionSignalButton = requireElement<HTMLButtonElement>("place-expa
 const eraseExpansionRoadButton = requireElement<HTMLButtonElement>("erase-expansion-road-button");
 const eraseExpansionButton = requireElement<HTMLButtonElement>("erase-expansion-button");
 const expansionRoadCount = requireElement<HTMLElement>("expansion-road-count");
+const expansionRoadSelect = requireElement<HTMLSelectElement>("expansion-road-select");
 const expansionRoadEditor = requireElement<HTMLElement>("expansion-road-editor");
+const selectedExpansionRoadName = requireElement<HTMLInputElement>(
+  "selected-expansion-road-name",
+);
 const deleteExpansionRoadButton = requireElement<HTMLButtonElement>("delete-expansion-road-button");
 const buildingFloorsControl = requireElement<HTMLInputElement>("building-floors-control");
 const buildingColorControl = requireElement<HTMLInputElement>("building-color-control");
@@ -373,6 +380,18 @@ selectedBuildingKind.addEventListener("change", updateSelectedBuilding);
 rotateBuildingButton.addEventListener("click", rotateSelectedBuilding);
 deleteBuildingButton.addEventListener("click", deleteSelectedBuilding);
 deleteExpansionRoadButton.addEventListener("click", deleteSelectedExpansionRoad);
+expansionRoadSelect.addEventListener("change", () => {
+  const id = expansionRoadSelect.value || null;
+  selectExpansionRoad(id);
+  const road = id ? expansionRoads.get(id) : undefined;
+  if (road) renderer.focusExpansionRoad(road);
+});
+selectedExpansionRoadName.addEventListener("blur", renameSelectedExpansionRoad);
+selectedExpansionRoadName.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  selectedExpansionRoadName.blur();
+});
 
 walkStartMarker.addEventListener("pointerdown", (event) => {
   if (!walkPlacementActive) return;
@@ -908,8 +927,10 @@ renderer.setExpansionRoadInteractionHandlers({
     const projectCost = municipalRoadProjectCost(roadData);
     if (!fundManualMunicipalProject(projectCost, "road")) return;
     recordEdit();
+    const sequence = nextExpansionRoadId++;
     const road: ExpansionRoad = {
-      id: `expansion-road-${nextExpansionRoadId++}`,
+      id: `expansion-road-${sequence}`,
+      name: `New Street ${sequence}`,
       ...roadData,
     };
     expansionRoads.set(road.id, road);
@@ -1060,8 +1081,10 @@ function fundMunicipalGrowth(): void {
   if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
   if (!simulation.fundMunicipalProject(cost)) return;
   recordEdit();
+  const sequence = nextExpansionRoadId++;
   const road: ExpansionRoad = {
-    id: `municipal-road-${nextExpansionRoadId++}`,
+    id: `municipal-road-${sequence}`,
+    name: `Civic Way ${sequence}`,
     ...roadData,
   };
   expansionRoads.set(road.id, road);
@@ -1165,8 +1188,10 @@ function updateBuildSelectionName(): void {
     return;
   }
   if (selectedExpansionRoadId) {
-    buildSelectionName.textContent =
-      `Expansion road ${selectedExpansionRoadId.match(/\d+$/)?.[0] ?? ""}`.trim();
+    const road = expansionRoads.get(selectedExpansionRoadId);
+    buildSelectionName.textContent = road
+      ? expansionRoadDisplayName(road)
+      : "Added road";
     return;
   }
   if (activeBuildingTool) {
@@ -1536,15 +1561,19 @@ function selectExpansionRoad(id: string | null): void {
   selectedPlacedBuildingId = null;
   renderer.setSelectedExpansionRoad(id);
   renderer.setSelectedPlacedBuilding(null);
+  const road = id ? expansionRoads.get(id) : undefined;
+  expansionRoadSelect.value = road?.id ?? "";
+  selectedExpansionRoadName.value = road
+    ? expansionRoadDisplayName(road)
+    : "";
   if (appMode === "simulate" && id) {
-    const road = expansionRoads.get(id);
     if (!road) return;
     selectedEntity = null;
     selectedFeature = undefined;
     selectedTrafficFeature = {
       id: road.id,
       kind: "street",
-      name: `Expansion Road ${road.id.match(/\d+$/)?.[0] ?? ""}`.trim(),
+      name: expansionRoadDisplayName(road),
       description: `${Math.round(Math.hypot(road.endX - road.startX, road.endZ - road.startZ))} m user-built road`,
       axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
         ? "x"
@@ -1565,6 +1594,36 @@ function selectExpansionRoad(id: string | null): void {
       "Road selected. Adjust its capacity and walking or cycling support below.",
     );
   }
+}
+
+function renameSelectedExpansionRoad(): void {
+  if (!selectedExpansionRoadId) return;
+  const road = expansionRoads.get(selectedExpansionRoadId);
+  if (!road) return;
+  const name = selectedExpansionRoadName.value.trim().replace(/\s+/g, " ");
+  if (!name) {
+    selectedExpansionRoadName.setCustomValidity("Enter a road name.");
+    selectedExpansionRoadName.reportValidity();
+    selectedExpansionRoadName.value = expansionRoadDisplayName(road);
+    return;
+  }
+  const duplicate = [...expansionRoads.values()].some((candidate) =>
+    candidate.id !== road.id &&
+    expansionRoadDisplayName(candidate).toLowerCase() === name.toLowerCase()
+  );
+  if (duplicate) {
+    selectedExpansionRoadName.setCustomValidity("Use a unique road name.");
+    selectedExpansionRoadName.reportValidity();
+    return;
+  }
+  selectedExpansionRoadName.setCustomValidity("");
+  if (name === expansionRoadDisplayName(road)) return;
+  recordEdit();
+  expansionRoads.set(road.id, { ...road, name });
+  syncExpansion();
+  selectExpansionRoad(road.id);
+  finishEdit();
+  setBuildFeedback(`${name} saved and available in search.`, "success");
 }
 
 function applyExpansionRoadTool(tool: BuildTool): void {
@@ -1673,6 +1732,32 @@ function syncExpansion(): void {
   ).length;
   expansionRoadCount.textContent =
     `${expansionRoads.size} roads · ${crosswalks} crosswalk sets · ${expansionStreetObjects.size - crosswalks} signals`;
+  updateExpansionRoadOptions();
+  initializeSearch();
+}
+
+function updateExpansionRoadOptions(): void {
+  const selectedId = selectedExpansionRoadId;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = expansionRoads.size > 0
+    ? "Select a named road"
+    : "No roads built";
+  expansionRoadSelect.replaceChildren(
+    placeholder,
+    ...[...expansionRoads.values()]
+      .sort((left, right) =>
+        expansionRoadDisplayName(left).localeCompare(expansionRoadDisplayName(right))
+      )
+      .map((road) => {
+        const option = document.createElement("option");
+        option.value = road.id;
+        option.textContent = expansionRoadDisplayName(road);
+        return option;
+      }),
+  );
+  expansionRoadSelect.value =
+    selectedId && expansionRoads.has(selectedId) ? selectedId : "";
 }
 
 function captureEditorSnapshot(): EditorSnapshot {
@@ -1710,7 +1795,10 @@ function applyEditorSnapshot(snapshot: EditorSnapshot): void {
   expansionStreetObjects.clear();
   for (const [id, design] of snapshot.designs) designs.set(id, { ...design });
   for (const road of snapshot.expansionRoads) {
-    expansionRoads.set(road.id, { ...road });
+    expansionRoads.set(road.id, {
+      ...road,
+      name: expansionRoadDisplayName(road),
+    });
   }
   for (const id of snapshot.demolishedBuildingIds) {
     demolishedBuildingIds.add(id);
@@ -4398,6 +4486,9 @@ function initializeSearch(): void {
   for (const feature of features) optionNames.add(feature.name);
   for (const building of simulation.getState().entities.buildings) optionNames.add(building.name);
   for (const person of simulation.getState().entities.people) optionNames.add(person.name);
+  for (const road of expansionRoads.values()) {
+    optionNames.add(expansionRoadDisplayName(road));
+  }
   locationOptions.replaceChildren(
     ...Array.from(optionNames)
       .sort()
@@ -4428,6 +4519,17 @@ function flyToSearchResult(rawQuery: string): void {
   if (person) {
     locationSearchInput.setCustomValidity("");
     focusTrackedPerson(person.id);
+    return;
+  }
+  const expansionRoad = [...expansionRoads.values()].find((candidate) => {
+    const name = expansionRoadDisplayName(candidate).toLowerCase();
+    return name === query || name.includes(query);
+  });
+  if (expansionRoad) {
+    locationSearchInput.setCustomValidity("");
+    if (appMode === "build") setBuildWorkspace("expansion");
+    renderer.focusExpansionRoad(expansionRoad);
+    selectExpansionRoad(expansionRoad.id);
     return;
   }
   const landmark = PENN_LANDMARKS.find(

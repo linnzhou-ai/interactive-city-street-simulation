@@ -136,6 +136,7 @@ describe("parseProjectSnapshot", () => {
     );
     expect(parsed.expansionRoads).toHaveLength(1);
     expect(parsed.expansionRoads[0]).toMatchObject({
+      name: "New Street 1",
       laneDelta: 1,
       bikeLane: true,
       widenedSidewalk: true,

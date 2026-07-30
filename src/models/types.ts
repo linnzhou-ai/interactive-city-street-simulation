@@ -62,6 +62,7 @@ export interface PlacedBuilding {
 
 export interface ExpansionRoad {
   id: string;
+  name?: string;
   startX: number;
   startZ: number;
   endX: number;

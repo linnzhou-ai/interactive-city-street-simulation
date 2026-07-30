@@ -409,6 +409,15 @@ export class ThreeRenderer {
     return true;
   }
 
+  focusExpansionRoad(
+    road: Pick<ExpansionRoad, "startX" | "startZ" | "endX" | "endZ">,
+  ): void {
+    this.flyTo(worldToGeo(
+      (road.startX + road.endX) / 2,
+      (road.startZ + road.endZ) / 2,
+    ), 185);
+  }
+
   setSelectionHandler(handler: (feature: DistrictFeature) => void): void {
     this.selectionHandler = handler;
   }

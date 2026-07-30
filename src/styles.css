@@ -719,6 +719,26 @@ body[data-app-mode="simulate"] .tools-panel,
   line-height: 1.45;
 }
 
+.expansion-road-picker,
+.expansion-road-name-field {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.5rem 0;
+  color: #9eb1a8;
+  font-size: 0.57rem;
+}
+
+.expansion-road-picker select,
+.expansion-road-name-field input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 7px;
+  padding: 0.4rem;
+  color: #edf3ef;
+  background: rgb(7 17 20 / 72%);
+}
+
 .building-placement-settings,
 .building-editor {
   display: grid;
