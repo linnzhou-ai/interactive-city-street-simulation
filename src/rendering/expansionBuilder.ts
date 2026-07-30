@@ -101,8 +101,6 @@ export class ExpansionBuilder {
   private draggingBuildingId: string | null = null;
   private selectedBuildingId: string | null = null;
   private selectedRoadId: string | null = null;
-  private roadTraffic = new Map<string, RoadTrafficSnapshot>();
-  private roadAnalysisMode: MapOverlayMode = "none";
   private roadAnalysisSignature = "";
   private highlightedRoadIds = new Set<string>();
   private existingBuildingMeshes: THREE.Object3D[] = [];
@@ -158,8 +156,6 @@ export class ExpansionBuilder {
       .join("|")}`;
     if (signature === this.roadAnalysisSignature) return;
     this.roadAnalysisSignature = signature;
-    this.roadAnalysisMode = mode;
-    this.roadTraffic = new Map(traffic.map((snapshot) => [snapshot.segmentId, snapshot]));
     this.setRoads(this.roads);
   }
 
@@ -233,9 +229,6 @@ export class ExpansionBuilder {
       this.roadGroup.add(createRoadMesh(
         road,
         road.id === this.selectedRoadId || this.highlightedRoadIds.has(road.id),
-        this.roadAnalysisMode === "congestion"
-          ? this.roadTraffic.get(road.id)?.congestionPercent
-          : undefined,
         relevantJunctions,
         this.objects,
       ));
@@ -945,7 +938,6 @@ function createExpansionBoundaryGuide(coreBounds: ExpansionBounds): THREE.Group 
 function createRoadMesh(
   road: ExpansionRoad,
   selected: boolean,
-  congestionPercent?: number,
   junctions: readonly RoadJunction[] = [],
   streetObjects: readonly ExpansionStreetObject[] = [],
 ): THREE.Group {
@@ -986,20 +978,13 @@ function createRoadMesh(
     length,
     [...junctionIntervals, ...crosswalkIntervals],
   );
-  const congestionColor = congestionPercent === undefined
-    ? null
-    : new THREE.Color().setHSL(
-        (1 - Math.min(100, Math.max(0, congestionPercent)) / 100) * 0.32,
-        0.72,
-        0.47,
-      );
   const roadSurface = box(
     road.width,
     0.18,
     length + 0.8,
     new THREE.MeshStandardMaterial({
-      color: selected ? "#0b181b" : congestionColor ?? "#071417",
-      roughness: 0.97,
+      color: "#071417",
+      roughness: selected ? 0.92 : 0.97,
       transparent: false,
       opacity: 1,
       depthWrite: true,

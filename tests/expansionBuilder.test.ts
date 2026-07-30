@@ -35,18 +35,33 @@ describe("ExpansionBuilder crosswalk sets", () => {
     const expansion = builder(scene);
     expansion.setRoads([horizontalRoad]);
 
-    let roadGroup: THREE.Object3D | undefined;
-    scene.traverse((object) => {
-      if (
-        object.userData.expansionType === "road"
-        && object.userData.expansionId === horizontalRoad.id
-      ) roadGroup = object;
-    });
-    const surface = roadGroup?.children[0] as THREE.Mesh;
-    const material = surface.material as THREE.MeshStandardMaterial;
-    expect(material.color.getHexString()).toBe("071417");
-    expect(material.transparent).toBe(false);
-    expect(material.opacity).toBe(1);
+    const expectBlackAsphalt = () => {
+      let roadGroup: THREE.Object3D | undefined;
+      scene.traverse((object) => {
+        if (
+          object.userData.expansionType === "road"
+          && object.userData.expansionId === horizontalRoad.id
+        ) roadGroup = object;
+      });
+      const surface = roadGroup?.children[0] as THREE.Mesh;
+      const material = surface.material as THREE.MeshStandardMaterial;
+      expect(material.color.getHexString()).toBe("071417");
+      expect(material.transparent).toBe(false);
+      expect(material.opacity).toBe(1);
+    };
+
+    expectBlackAsphalt();
+    expansion.setRoadAnalysis("congestion", [{
+      segmentId: horizontalRoad.id,
+      activeVehicles: 20,
+      queuedVehicles: 12,
+      averageSpeedMph: 4,
+      congestionPercent: 95,
+      averageDelaySeconds: 80,
+    }]);
+    expectBlackAsphalt();
+    expansion.setHighlightedRoads([horizontalRoad.id]);
+    expectBlackAsphalt();
   });
 
   it("snaps one placement to a junction and renders all four crosswalks", () => {
