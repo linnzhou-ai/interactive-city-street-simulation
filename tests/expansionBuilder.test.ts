@@ -44,6 +44,29 @@ function builder(
   );
 }
 
+function interactiveBuilder(scene: THREE.Scene): ExpansionBuilder {
+  const camera = new THREE.OrthographicCamera(-100, 100, 100, -100, 0.1, 500);
+  camera.position.set(0, 100, 0);
+  camera.up.set(0, 0, -1);
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  const canvas = {
+    getBoundingClientRect: () => ({
+      left: 0,
+      top: 0,
+      width: 200,
+      height: 200,
+    }),
+  } as HTMLCanvasElement;
+  return new ExpansionBuilder(
+    scene,
+    camera,
+    canvas,
+    { minX: -500, maxX: 500, minZ: -500, maxZ: 500 },
+  );
+}
+
 describe("ExpansionBuilder crosswalk sets", () => {
   it("renders added roads with opaque black asphalt", () => {
     const scene = new THREE.Scene();
@@ -124,6 +147,32 @@ describe("ExpansionBuilder crosswalk sets", () => {
 
     expect(expansion.pointerDown(100, 100)).toBe(true);
     expect(expansion.pointerUp(120, 120, false)).toBe(true);
+  });
+
+  it("shows and clears a translucent snapped road preview", () => {
+    const scene = new THREE.Scene();
+    const expansion = interactiveBuilder(scene);
+    expansion.setEnabled(true);
+    expansion.setRoadDrawEnabled(true);
+
+    expect(expansion.pointerUp(100, 100, true)).toBe(true);
+    expect(expansion.pointerMove(150, 100)).toBe(true);
+
+    const preview = scene.getObjectByName("road-placement-preview") as THREE.Group;
+    expect(preview.children).toHaveLength(1);
+    const surface = preview.children[0]?.children[0] as THREE.Mesh;
+    const material = surface.material as THREE.MeshStandardMaterial;
+    expect(material.transparent).toBe(true);
+    expect(material.opacity).toBeGreaterThan(0);
+    expect(material.opacity).toBeLessThan(1);
+    expect(surface.position.x).toBeGreaterThan(0);
+
+    expansion.pointerLeave();
+    expect(preview.children).toHaveLength(0);
+    expansion.pointerMove(150, 100);
+    expect(preview.children).toHaveLength(1);
+    expansion.cancelPendingRoad();
+    expect(preview.children).toHaveLength(0);
   });
 
   it("snaps one placement to a junction and renders all four crosswalks", () => {

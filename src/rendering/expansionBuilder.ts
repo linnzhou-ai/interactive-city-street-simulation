@@ -89,6 +89,7 @@ export class ExpansionBuilder {
   private readonly buildingGroup = new THREE.Group();
   private readonly boundaryGroup = new THREE.Group();
   private readonly guideGroup = new THREE.Group();
+  private readonly roadPreviewGroup = new THREE.Group();
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -127,7 +128,9 @@ export class ExpansionBuilder {
       this.buildingGroup,
       this.boundaryGroup,
       this.guideGroup,
+      this.roadPreviewGroup,
     );
+    this.roadPreviewGroup.name = "road-placement-preview";
     this.boundaryGroup.add(createExpansionBoundaryGuide(this.coreBounds));
     this.boundaryGroup.visible = false;
     scene.add(this.group);
@@ -141,6 +144,7 @@ export class ExpansionBuilder {
     this.enabled = enabled;
     this.boundaryGroup.visible = enabled;
     this.guideGroup.visible = enabled;
+    this.roadPreviewGroup.visible = enabled;
     if (!enabled) {
       this.roadStart = null;
       this.draggingBuildingId = null;
@@ -527,7 +531,12 @@ export class ExpansionBuilder {
   }
 
   pointerMove(clientX: number, clientY: number): boolean {
-    if (!this.enabled || !this.draggingBuildingId) return false;
+    if (!this.enabled) return false;
+    if (this.roadDrawEnabled && this.roadStart) {
+      this.updateRoadPreview(clientX, clientY);
+      return true;
+    }
+    if (!this.draggingBuildingId) return false;
     const point = this.groundPoint(clientX, clientY);
     const building = this.buildings.find(
       (candidate) => candidate.id === this.draggingBuildingId,
@@ -619,23 +628,7 @@ export class ExpansionBuilder {
           "Road start set. Click the endpoint; the road will snap horizontally or vertically.",
         );
       } else {
-        const dx = Math.abs(snapped.x - this.roadStart.x);
-        const dz = Math.abs(snapped.z - this.roadStart.z);
-        const end =
-          dx >= dz
-            ? new THREE.Vector3(snapped.x, 0, this.roadStart.z)
-            : new THREE.Vector3(this.roadStart.x, 0, snapped.z);
-        const road = {
-          startX: this.roadStart.x,
-          startZ: this.roadStart.z,
-          endX: end.x,
-          endZ: end.z,
-          width: 16,
-          laneDelta: 0 as const,
-          bikeLane: false,
-          widenedSidewalk: false,
-          laneDirection: "two-way" as const,
-        };
+        const road = this.roadCandidate(snapped);
         const validation = this.validateRoad(road);
         if (validation.valid) {
           this.handlers.createRoad?.(road);
@@ -689,6 +682,10 @@ export class ExpansionBuilder {
   cancelPendingRoad(): void {
     this.roadStart = null;
     this.clearGuides();
+  }
+
+  pointerLeave(): void {
+    clearGroup(this.roadPreviewGroup);
   }
 
   get isDragging(): boolean {
@@ -796,8 +793,64 @@ export class ExpansionBuilder {
     this.guideGroup.add(marker);
   }
 
+  private roadCandidate(point: Readonly<THREE.Vector3>): Omit<ExpansionRoad, "id"> {
+    const start = this.roadStart ?? point;
+    const dx = Math.abs(point.x - start.x);
+    const dz = Math.abs(point.z - start.z);
+    const end =
+      dx >= dz
+        ? new THREE.Vector3(point.x, 0, start.z)
+        : new THREE.Vector3(start.x, 0, point.z);
+    return {
+      startX: start.x,
+      startZ: start.z,
+      endX: end.x,
+      endZ: end.z,
+      width: 16,
+      laneDelta: 0,
+      bikeLane: false,
+      widenedSidewalk: false,
+      laneDirection: "two-way",
+    };
+  }
+
+  private updateRoadPreview(clientX: number, clientY: number): void {
+    clearGroup(this.roadPreviewGroup);
+    const point = this.groundPoint(clientX, clientY);
+    if (!point || !this.roadStart) return;
+    const snappedPoint = snapRoadPoint(
+      point.x,
+      point.z,
+      [...this.existingRoads, ...this.roads],
+    );
+    const road = this.roadCandidate(
+      new THREE.Vector3(snappedPoint.x, 0, snappedPoint.z),
+    );
+    if (Math.hypot(road.endX - road.startX, road.endZ - road.startZ) < 0.5) {
+      return;
+    }
+    const previewRoad: ExpansionRoad = {
+      id: "road-placement-preview-segment",
+      ...road,
+    };
+    const network = [...this.existingRoads, ...this.roads, previewRoad];
+    const junctions = roadJunctions(network).filter((junction) =>
+      projectPointToRoad(previewRoad, junction.x, junction.z).distance < 1
+    );
+    const preview = createRoadMesh(previewRoad, false, junctions);
+    for (const junction of junctions) {
+      preview.add(createRoadJunctionMesh(
+        junction,
+        junctionRoadMetrics(junction.x, junction.z, network),
+      ));
+    }
+    makeRoadPreviewTransparent(preview, this.validateRoad(road).valid);
+    this.roadPreviewGroup.add(preview);
+  }
+
   private clearGuides(): void {
     clearGroup(this.guideGroup);
+    clearGroup(this.roadPreviewGroup);
   }
 }
 
@@ -1597,4 +1650,27 @@ function clearGroup(group: THREE.Group): void {
       for (const material of materials) material.dispose();
     });
   }
+}
+
+function makeRoadPreviewTransparent(
+  group: THREE.Group,
+  valid: boolean,
+): void {
+  const invalidTint = new THREE.Color("#d85b55");
+  group.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(object.material)
+      ? object.material
+      : [object.material];
+    for (const material of materials) {
+      material.transparent = true;
+      material.opacity = valid ? 0.52 : 0.38;
+      material.depthWrite = false;
+      if (!valid && "color" in material && material.color instanceof THREE.Color) {
+        material.color.lerp(invalidTint, 0.5);
+      }
+      material.needsUpdate = true;
+    }
+    object.renderOrder = 4;
+  });
 }

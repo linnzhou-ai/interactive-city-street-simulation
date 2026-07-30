@@ -2112,6 +2112,7 @@ export class ThreeRenderer {
     });
     this.canvas.addEventListener("pointerleave", () => {
       this.entityHoverHandler?.(null, 0, 0);
+      this.expansionBuilder.pointerLeave();
     });
     this.canvas.addEventListener("pointerup", (event) => {
       const clicked = Math.hypot(
