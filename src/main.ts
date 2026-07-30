@@ -849,6 +849,10 @@ searchRestoreButton.addEventListener("click", () => {
 });
 
 renderer.setSelectionHandler((feature) => {
+  clearExpansionRoadSelectionState();
+  selectedPlacedBuildingId = null;
+  renderer.setSelectedPlacedBuilding(null);
+  buildingEditor.hidden = true;
   showAffectedRoads = false;
   selectedTrafficFeature = feature;
   selectedEntity = null;
@@ -863,6 +867,10 @@ renderer.setSelectionHandler((feature) => {
 });
 
 renderer.setEntitySelectionHandler((selection) => {
+  clearExpansionRoadSelectionState();
+  selectedPlacedBuildingId = null;
+  renderer.setSelectedPlacedBuilding(null);
+  buildingEditor.hidden = true;
   showAffectedRoads = false;
   selectedTrafficFeature = null;
   selectedFeature = undefined;
@@ -883,6 +891,7 @@ renderer.setBuildingInteractionHandlers({
   place: placeBuilding,
   select: (id) => {
     if (appMode === "simulate" && id) {
+      clearExpansionRoadSelectionState();
       selectedPlacedBuildingId = id;
       selectedEntity = { kind: "building", id };
       selectedTrafficFeature = null;
@@ -1566,40 +1575,96 @@ function deleteSelectedBuilding(): void {
   eraseExpansionObject("building", selectedPlacedBuildingId);
 }
 
+function clearExpansionRoadSelectionState(): void {
+  selectedExpansionRoadId = null;
+  renderer.setSelectedExpansionRoad(null);
+  expansionRoadSelect.value = "";
+  selectedExpansionRoadName.value = "";
+  expansionRoadEditor.hidden = true;
+}
+
+function expansionRoadAsFeature(road: ExpansionRoad): DistrictFeature {
+  const length = Math.round(
+    Math.hypot(road.endX - road.startX, road.endZ - road.startZ),
+  );
+  return {
+    id: road.id,
+    kind: "street",
+    name: expansionRoadDisplayName(road),
+    description: `${length} m user-built road`,
+    axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
+      ? "x"
+      : "z",
+    path: [],
+  };
+}
+
+function updateExpansionRoadSelectionPanel(
+  road: ExpansionRoad,
+  feature: DistrictFeature,
+): void {
+  selectionTitle.textContent = feature.name;
+  selectionDescription.textContent = feature.description;
+  featureKind.textContent = "Street";
+  featureKind.dataset.kind = "street";
+  simulationTitle.textContent = feature.name;
+  sceneSubtitle.textContent = feature.description;
+  signalEditor.hidden = true;
+  const summaries = [
+    road.laneDelta === 1
+      ? "Expanded vehicle capacity"
+      : road.laneDelta === -1
+        ? "Reduced vehicle capacity"
+        : "Standard vehicle capacity",
+    road.bikeLane ? "Protected cycling" : "Standard cycling",
+    road.widenedSidewalk ? "Widened sidewalk" : "Standard sidewalk",
+  ];
+  designSummary.replaceChildren(
+    ...summaries.map((summary) => {
+      const tag = document.createElement("span");
+      tag.textContent = summary;
+      tag.dataset.active = "true";
+      return tag;
+    }),
+  );
+}
+
 function selectExpansionRoad(id: string | null): void {
-  selectedExpansionRoadId = id;
-  selectedPlacedBuildingId = null;
-  renderer.setSelectedExpansionRoad(id);
-  renderer.setSelectedPlacedBuilding(null);
+  const previousId = selectedExpansionRoadId;
   const road = id ? expansionRoads.get(id) : undefined;
+  selectedExpansionRoadId = road?.id ?? null;
+  selectedPlacedBuildingId = null;
+  renderer.setSelectedExpansionRoad(road?.id ?? null);
+  renderer.setSelectedPlacedBuilding(null);
+  buildingEditor.hidden = true;
   expansionRoadSelect.value = road?.id ?? "";
   selectedExpansionRoadName.value = road
     ? expansionRoadDisplayName(road)
     : "";
-  if (appMode === "simulate" && id) {
-    if (!road) return;
-    selectedEntity = null;
-    selectedFeature = undefined;
-    selectedTrafficFeature = {
-      id: road.id,
-      kind: "street",
-      name: expansionRoadDisplayName(road),
-      description: `${Math.round(Math.hypot(road.endX - road.startX, road.endZ - road.startZ))} m user-built road`,
-      axis: Math.abs(road.endX - road.startX) >= Math.abs(road.endZ - road.startZ)
-        ? "x"
-        : "z",
-      path: [],
-    };
-    inspectorTab = "overview";
+  expansionRoadEditor.hidden = !road;
+  if (!road) {
+    if (previousId && selectedTrafficFeature?.id === previousId) {
+      selectedTrafficFeature = null;
+    }
+    updateBuildSelectionName();
     syncEntitySelectionState();
     entityInterfaceSignature = "";
     updateEntityInterface();
     return;
   }
-  buildingEditor.hidden = true;
-  expansionRoadEditor.hidden = id === null;
+  const feature = expansionRoadAsFeature(road);
+  selectedEntity = null;
+  selectedFeature = undefined;
+  selectedTrafficFeature = feature;
+  inspectorTab = "overview";
+  renderer.setSelectedEntity(null);
+  renderer.setSelectedFeature(null);
+  updateExpansionRoadSelectionPanel(road, feature);
   updateBuildSelectionName();
-  if (id) {
+  syncEntitySelectionState();
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+  if (appMode === "build") {
     setBuildFeedback(
       "Road selected. Adjust its capacity and walking or cycling support below.",
     );
@@ -2116,13 +2181,31 @@ function clearInspectorSelection(): void {
   selectedEntity = null;
   selectedTrafficFeature = null;
   selectedFeature = undefined;
+  selectedPlacedBuildingId = null;
+  clearExpansionRoadSelectionState();
   inspectorTab = "overview";
   interventionFeedback = "";
   renderer.setSelectedEntity(null);
   renderer.setSelectedFeature(null);
   renderer.setSelectedPlacedBuilding(null);
-  renderer.setSelectedExpansionRoad(null);
+  buildingEditor.hidden = true;
+  simulationTitle.textContent = "Penn · University City";
+  sceneSubtitle.textContent = "Live traffic, pedestrian, and signal operations";
+  selectionTitle.textContent = "No infrastructure selected";
+  selectionDescription.textContent = "Select a street or intersection in the city.";
+  featureKind.textContent = "None";
+  featureKind.dataset.kind = "";
+  designSummary.replaceChildren();
+  signalEditor.hidden = true;
   entityTooltip.hidden = true;
+  updateBuildSelectionName();
+  if (appMode === "build") {
+    setBuildFeedback(
+      buildWorkspace === "expansion"
+        ? "Select a built road or choose a tool to continue expanding the city."
+        : "Select a highlighted street or intersection to edit it.",
+    );
+  }
   syncEntitySelectionState();
   updateSelectionPanel();
   entityInterfaceSignature = "";
