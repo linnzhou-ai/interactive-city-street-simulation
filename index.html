@@ -138,6 +138,19 @@
           <span class="notification-symbol" aria-hidden="true">!</span>
           <span id="notification-count" class="notification-count">0</span>
         </button>
+        <button
+          id="building-rankings-button"
+          class="building-rankings-button"
+          type="button"
+          aria-label="Open building rankings"
+          aria-expanded="false"
+          aria-controls="building-rankings-panel"
+          title="Building rankings"
+        >
+          <span class="building-rankings-symbol" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </span>
+        </button>
         <aside
           id="notification-panel"
           class="notification-panel hud-panel"
@@ -158,6 +171,63 @@
           </header>
           <p id="notification-summary" class="notification-summary"></p>
           <div id="notification-list" class="notification-list"></div>
+        </aside>
+        <aside
+          id="building-rankings-panel"
+          class="building-rankings-panel hud-panel"
+          aria-labelledby="building-rankings-title"
+          hidden
+        >
+          <header>
+            <div>
+              <p class="panel-kicker">City economy</p>
+              <h2 id="building-rankings-title">Building rankings</h2>
+            </div>
+            <button
+              id="building-rankings-close-button"
+              class="icon-button"
+              type="button"
+              aria-label="Close building rankings"
+            >×</button>
+          </header>
+          <div
+            id="building-rankings-tabs"
+            class="building-rankings-tabs"
+            role="tablist"
+            aria-label="Building ranking"
+          >
+            <button
+              type="button"
+              role="tab"
+              data-ranking-tab="output"
+              aria-selected="true"
+            >Top output</button>
+            <button
+              type="button"
+              role="tab"
+              data-ranking-tab="impact"
+              aria-selected="false"
+            >Latest edit impact</button>
+          </div>
+          <div class="building-rankings-context">
+            <p id="building-rankings-summary"></p>
+            <div
+              id="building-rankings-horizon"
+              class="impact-horizon-selector"
+              aria-label="Building impact projection horizon"
+              hidden
+            >
+              <button type="button" data-impact-horizon="30">30d</button>
+              <button type="button" data-impact-horizon="90" aria-pressed="true">90d</button>
+              <button type="button" data-impact-horizon="365">1yr</button>
+            </div>
+          </div>
+          <div
+            id="building-rankings-list"
+            class="building-rankings-list"
+            role="tabpanel"
+            aria-live="polite"
+          ></div>
         </aside>
       </div>
 

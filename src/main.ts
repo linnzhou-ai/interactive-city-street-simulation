@@ -4,6 +4,10 @@ import {
   type BuildingIssue,
   type BuildingIssueCategory,
 } from "./core/buildingIssues";
+import {
+  rankBuildingsByCurrentOutput,
+  rankBuildingsByLatestImpact,
+} from "./core/buildingRankings";
 import { Simulation } from "./core/simulation";
 import { deriveBuildingRole } from "./core/buildingActivity";
 import {
@@ -214,6 +218,13 @@ const notificationPanel = requireElement<HTMLElement>("notification-panel");
 const notificationCloseButton = requireElement<HTMLButtonElement>("notification-close-button");
 const notificationSummary = requireElement<HTMLElement>("notification-summary");
 const notificationList = requireElement<HTMLElement>("notification-list");
+const buildingRankingsButton = requireElement<HTMLButtonElement>("building-rankings-button");
+const buildingRankingsPanel = requireElement<HTMLElement>("building-rankings-panel");
+const buildingRankingsCloseButton = requireElement<HTMLButtonElement>("building-rankings-close-button");
+const buildingRankingsTabs = requireElement<HTMLElement>("building-rankings-tabs");
+const buildingRankingsSummary = requireElement<HTMLElement>("building-rankings-summary");
+const buildingRankingsHorizon = requireElement<HTMLElement>("building-rankings-horizon");
+const buildingRankingsList = requireElement<HTMLElement>("building-rankings-list");
 const entityTooltip = requireElement<HTMLElement>("entity-tooltip");
 const statTooltip = requireElement<HTMLElement>("stat-tooltip");
 const trackedPeople = requireElement<HTMLDetailsElement>("tracked-people");
@@ -346,7 +357,10 @@ let previousTimestamp = performance.now();
 let lastMunicipalGrowthDay = 0;
 let selectedImpactHorizon: ImpactHorizon = 90;
 let latestCityEditImpact: CityEditImpact | null = null;
+let impactProjectionError = "";
 let impactRequestId = 0;
+let buildingRankingTab: "output" | "impact" = "output";
+let buildingRankingsSignature = "";
 let pendingImpactBaseline: {
   design: EditorSnapshot;
   checkpoint: ImpactProjectionCheckpoint;
@@ -638,9 +652,45 @@ analysisOverlay.addEventListener("change", () => {
 });
 
 notificationButton.addEventListener("click", () => {
-  setNotificationOpen(notificationPanel.hidden);
+  const open = notificationPanel.hidden;
+  if (open) setBuildingRankingsOpen(false);
+  setNotificationOpen(open);
 });
 notificationCloseButton.addEventListener("click", () => setNotificationOpen(false));
+buildingRankingsButton.addEventListener("click", () => {
+  const open = buildingRankingsPanel.hidden;
+  if (open) setNotificationOpen(false);
+  setBuildingRankingsOpen(open);
+});
+buildingRankingsCloseButton.addEventListener(
+  "click",
+  () => setBuildingRankingsOpen(false),
+);
+buildingRankingsTabs.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-ranking-tab]")
+    : null;
+  const tab = target?.dataset.rankingTab;
+  if (tab !== "output" && tab !== "impact") return;
+  buildingRankingTab = tab;
+  buildingRankingsSignature = "";
+  renderBuildingRankings();
+});
+buildingRankingsHorizon.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-impact-horizon]")
+    : null;
+  selectImpactHorizon(Number(target?.dataset.impactHorizon));
+});
+buildingRankingsList.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-ranking-building]")
+    : null;
+  const buildingId = target?.dataset.rankingBuilding;
+  if (!buildingId) return;
+  setBuildingRankingsOpen(false);
+  focusImpactBuilding(buildingId);
+});
 notificationList.addEventListener("click", (event) => {
   const target = event.target instanceof Element
     ? event.target.closest<HTMLButtonElement>("[data-issue-building]")
@@ -650,8 +700,14 @@ notificationList.addEventListener("click", (event) => {
   if (buildingId && category) focusIssueBuilding(buildingId, category);
 });
 document.addEventListener("pointerdown", (event) => {
-  if (notificationPanel.hidden || !(event.target instanceof Node)) return;
-  if (!notificationCenter.contains(event.target)) setNotificationOpen(false);
+  if (
+    (notificationPanel.hidden && buildingRankingsPanel.hidden) ||
+    !(event.target instanceof Node)
+  ) return;
+  if (!notificationCenter.contains(event.target)) {
+    setNotificationOpen(false);
+    setBuildingRankingsOpen(false);
+  }
 });
 document.addEventListener("keydown", (event) => {
   const commandKey = event.metaKey || event.ctrlKey;
@@ -684,6 +740,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!notificationPanel.hidden) {
     setNotificationOpen(false);
+    return;
+  }
+  if (!buildingRankingsPanel.hidden) {
+    setBuildingRankingsOpen(false);
     return;
   }
   if (!settingsDrawer.hidden) {
@@ -867,14 +927,19 @@ impactHorizonSelector.addEventListener("click", (event) => {
   const target = event.target instanceof Element
     ? event.target.closest<HTMLButtonElement>("[data-impact-horizon]")
     : null;
-  const horizon = Number(target?.dataset.impactHorizon);
+  selectImpactHorizon(Number(target?.dataset.impactHorizon));
+});
+
+function selectImpactHorizon(horizon: number): void {
   if (horizon !== 30 && horizon !== 90 && horizon !== 365) return;
   selectedImpactHorizon = horizon;
   renderImpactProjection();
   renderTrackedBuildings();
+  buildingRankingsSignature = "";
+  renderBuildingRankings();
   entityInterfaceSignature = "";
   updateEntityInterface();
-});
+}
 
 buildingComparison.addEventListener("click", (event) => {
   const focusTarget = event.target instanceof Element
@@ -2125,14 +2190,20 @@ function createImpactWorker(): Worker {
       if (event.data.requestId !== impactRequestId) return;
       if (!event.data.ok) {
         latestCityEditImpact = null;
+        impactProjectionError = event.data.error;
         impactEditLabel.textContent = "Economic projection unavailable";
         impactProjectionStatus.textContent = event.data.error;
         renderImpactProjection();
+        buildingRankingsSignature = "";
+        renderBuildingRankings();
         return;
       }
       latestCityEditImpact = event.data.impact;
+      impactProjectionError = "";
       renderImpactProjection();
       renderTrackedBuildings();
+      buildingRankingsSignature = "";
+      renderBuildingRankings();
       entityInterfaceSignature = "";
       updateEntityInterface();
     },
@@ -2148,6 +2219,7 @@ function requestImpactProjection(
 ): void {
   impactRequestId += 1;
   latestCityEditImpact = null;
+  impactProjectionError = "";
   impactEditLabel.textContent = context.editLabel;
   impactProjectionStatus.textContent =
     "Projecting matched cities at 30, 90, and 365 days…";
@@ -2161,6 +2233,8 @@ function requestImpactProjection(
   impactWorker = createImpactWorker();
   impactWorker.postMessage(request);
   renderTrackedBuildings();
+  buildingRankingsSignature = "";
+  renderBuildingRankings();
 }
 
 function clearImpactTracking(clearPins: boolean): void {
@@ -2170,6 +2244,7 @@ function clearImpactTracking(clearPins: boolean): void {
   pendingImpactBaseline = null;
   latestImpactContext = null;
   latestCityEditImpact = null;
+  impactProjectionError = "";
   if (clearPins) trackedBuildingIds.clear();
   impactEditLabel.textContent =
     "Make a city edit to measure its economic effect.";
@@ -2177,6 +2252,8 @@ function clearImpactTracking(clearPins: boolean): void {
     "The current snapshot will remain live.";
   renderImpactProjection();
   renderTrackedBuildings();
+  buildingRankingsSignature = "";
+  renderBuildingRankings();
 }
 
 function describeCityEdit(
@@ -2580,6 +2657,7 @@ function updateMetrics(): void {
     simulation.getMunicipalProjectSpending(),
   );
   renderImpactProjection();
+  if (!buildingRankingsPanel.hidden) renderBuildingRankings();
   syncEnvironmentControls();
   updateSelectedSignalStatus();
   updateEntityInterface();
@@ -4218,9 +4296,193 @@ function renderNotificationCenter(): void {
 }
 
 function setNotificationOpen(open: boolean): void {
+  if (open) setBuildingRankingsOpen(false);
   notificationPanel.hidden = !open;
   notificationButton.setAttribute("aria-expanded", String(open));
   notificationButton.dataset.open = String(open);
+}
+
+function setBuildingRankingsOpen(open: boolean): void {
+  if (open) setNotificationOpen(false);
+  buildingRankingsPanel.hidden = !open;
+  buildingRankingsButton.setAttribute("aria-expanded", String(open));
+  if (open) {
+    buildingRankingsSignature = "";
+    renderBuildingRankings();
+  }
+}
+
+function renderBuildingRankings(): void {
+  for (const button of buildingRankingsTabs.querySelectorAll<HTMLButtonElement>(
+    "[data-ranking-tab]",
+  )) {
+    button.setAttribute(
+      "aria-selected",
+      String(button.dataset.rankingTab === buildingRankingTab),
+    );
+  }
+  for (const button of buildingRankingsHorizon.querySelectorAll<HTMLButtonElement>(
+    "[data-impact-horizon]",
+  )) {
+    button.setAttribute(
+      "aria-pressed",
+      String(Number(button.dataset.impactHorizon) === selectedImpactHorizon),
+    );
+  }
+  buildingRankingsHorizon.hidden = buildingRankingTab !== "impact";
+  if (buildingRankingTab === "output") {
+    renderCurrentOutputRanking();
+    return;
+  }
+  renderLatestImpactRanking();
+}
+
+function renderCurrentOutputRanking(): void {
+  const ranking = rankBuildingsByCurrentOutput(
+    simulation.getState().entities.buildings,
+  );
+  const signature = `output:${ranking
+    .map((row) => `${row.buildingId}:${row.outputDaily}:${row.inactive}`)
+    .join("|")}`;
+  if (signature === buildingRankingsSignature) return;
+  buildingRankingsSignature = signature;
+  buildingRankingsSummary.textContent =
+    "Current operating revenue across every active building.";
+  if (ranking.length === 0) {
+    buildingRankingsList.innerHTML =
+      `<p class="building-rankings-empty">No buildings are available to rank.</p>`;
+    return;
+  }
+  buildingRankingsList.innerHTML = ranking
+    .map((row, index) => `
+      <button
+        type="button"
+        class="building-ranking-row"
+        data-ranking-building="${escapeHtml(row.buildingId)}"
+        data-status="${row.inactive ? "inactive" : "active"}"
+        aria-label="Rank ${index + 1}, ${escapeHtml(row.buildingName)}, ${escapeHtml(formatDetailedMoney(row.outputDaily))} per day"
+      >
+        <i class="building-ranking-position" aria-hidden="true">${index + 1}</i>
+        <span>
+          <b>${escapeHtml(row.buildingName)}</b>
+          <small>${escapeHtml(formatBuildingFunction(row.buildingFunction))}${row.inactive ? " · Inactive" : ""}</small>
+        </span>
+        <strong>${escapeHtml(formatDetailedMoney(row.outputDaily))}<small>/day</small></strong>
+      </button>`)
+    .join("");
+}
+
+function renderLatestImpactRanking(): void {
+  const impact = latestCityEditImpact;
+  const projectionState = impact
+    ? `ready:${impact.requestId}`
+    : impactProjectionError
+      ? `error:${impactProjectionError}`
+      : latestImpactContext
+        ? `pending:${impactRequestId}`
+        : "empty";
+  const signature =
+    `impact:${selectedImpactHorizon}:${projectionState}:` +
+    (impact?.buildingSummaries
+      .map((building) => {
+        const output = building.horizons[selectedImpactHorizon];
+        return `${building.buildingId}:${output.before}:${output.after}`;
+      })
+      .join("|") ?? "");
+  if (signature === buildingRankingsSignature) return;
+  buildingRankingsSignature = signature;
+  if (!impact) {
+    buildingRankingsSummary.textContent = impactProjectionError
+      ? "The latest controlled projection could not be completed."
+      : latestImpactContext
+        ? "Comparing matched control and edited cities…"
+        : "Make a city edit to create a controlled building comparison.";
+    buildingRankingsList.innerHTML = `<p class="building-rankings-empty">${
+      impactProjectionError
+        ? escapeHtml(impactProjectionError)
+        : latestImpactContext
+          ? "Projection running…"
+          : "No city edit has been projected yet."
+    }</p>`;
+    return;
+  }
+  const ranking = rankBuildingsByLatestImpact(
+    impact.buildingSummaries,
+    selectedImpactHorizon,
+  );
+  const changed = ranking.some((row) => Math.abs(row.output.delta) > 0.005);
+  buildingRankingsSummary.textContent =
+    `${impact.editLabel} · controlled ${selectedImpactHorizon}-day projection`;
+  const noChange = changed
+    ? ""
+    : `<p class="building-rankings-empty">This edit produced no projected building-output changes at ${selectedImpactHorizon} days.</p>`;
+  buildingRankingsList.innerHTML = noChange + ranking
+    .map((row, index) => {
+      const tone =
+        row.output.delta > 0.005
+          ? "gain"
+          : row.output.delta < -0.005
+            ? "loss"
+            : "neutral";
+      const percent =
+        row.output.percentDelta === null
+          ? row.output.after > 0
+            ? "New output"
+            : "0%"
+          : `${formatSigned(row.output.percentDelta)}%`;
+      const status =
+        row.status === "added"
+          ? "Added"
+          : row.status === "removed"
+            ? "Removed"
+            : "";
+      return `
+        <button
+          type="button"
+          class="building-ranking-row"
+          data-ranking-building="${escapeHtml(row.buildingId)}"
+          data-status="${row.status}"
+          data-impact-tone="${tone}"
+          aria-label="Rank ${index + 1}, ${escapeHtml(row.buildingName)}, projected output change ${escapeHtml(formatSignedMoney(row.output.delta))} per day"
+        >
+          <i class="building-ranking-position" aria-hidden="true">${index + 1}</i>
+          <span>
+            <b>${escapeHtml(row.buildingName)}</b>
+            <small>${escapeHtml(formatBuildingFunction(row.buildingFunction))}${status ? ` · ${status}` : ""}</small>
+          </span>
+          <strong>${escapeHtml(formatSignedMoney(row.output.delta))}<small>${escapeHtml(percent)}</small></strong>
+        </button>`;
+    })
+    .join("");
+}
+
+function focusImpactBuilding(buildingId: string): void {
+  const building = simulation.getState().entities.buildings.find(
+    (candidate) => candidate.id === buildingId,
+  );
+  if (building) {
+    if (appMode !== "simulate") setAppMode("simulate");
+    focusInspectorBuilding(buildingId);
+    return;
+  }
+  const removed = latestCityEditImpact?.buildingSummaries.find(
+    (candidate) =>
+      candidate.buildingId === buildingId &&
+      candidate.status === "removed",
+  );
+  if (!removed) return;
+  if (appMode !== "simulate") setAppMode("simulate");
+  if (!trackedBuildingIds.has(buildingId)) {
+    trackedBuildingIds.add(buildingId);
+    if (latestImpactContext) requestImpactProjection(latestImpactContext);
+    renderTrackedBuildings();
+  }
+  selectedRemovedImpactBuildingId = buildingId;
+  selectedEntity = null;
+  selectedTrafficFeature = null;
+  selectedFeature = undefined;
+  entityInterfaceSignature = "";
+  updateEntityInterface();
 }
 
 function focusIssueBuilding(

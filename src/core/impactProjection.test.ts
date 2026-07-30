@@ -58,6 +58,11 @@ describe("projectCityEditImpact", () => {
         expect(
           impact.horizons[horizon].metrics.governmentFunds.delta,
         ).toBe(0);
+        expect(
+          impact.buildingSummaries.every(
+            (building) => building.horizons[horizon].delta === 0,
+          ),
+        ).toBe(true);
       }
     },
     30_000,
@@ -87,6 +92,11 @@ describe("projectCityEditImpact", () => {
       expect(
         projection.horizons[90].metrics.staffing.after,
       ).toBe(0);
+      const summary = impact.buildingSummaries.find(
+        (candidate) => candidate.buildingId === building.id,
+      );
+      expect(summary?.status).toBe("removed");
+      expect(summary?.horizons[90].after).toBe(0);
     },
     30_000,
   );
@@ -159,6 +169,11 @@ describe("projectCityEditImpact", () => {
       expect(
         projection.horizons[30].metrics.operatingCost.after,
       ).toBeGreaterThanOrEqual(0);
+      const summary = impact.buildingSummaries.find(
+        (candidate) => candidate.buildingId === buildingId,
+      );
+      expect(summary?.status).toBe("added");
+      expect(summary?.horizons[30].before).toBe(0);
     },
     30_000,
   );

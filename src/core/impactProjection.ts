@@ -9,6 +9,7 @@ import type {
   EntityConnection,
 } from "../models/entityTypes";
 import type {
+  BuildingEconomicImpactSummary,
   BuildingImpactHorizon,
   BuildingImpactMetrics,
   BuildingImpactProjection,
@@ -95,6 +96,11 @@ export function projectCityEditImpact(
       status: BuildingImpactProjection["status"];
     }
   >();
+  const economicIdentity = buildingEconomicIdentities(control, intervention);
+  const economicHorizons = new Map<
+    string,
+    Partial<Record<ImpactHorizon, ImpactMetricPair>>
+  >();
 
   for (let day = 1; day <= IMPACT_HORIZONS.at(-1)!; day += 1) {
     advanceBranchDay(control, day <= 30);
@@ -102,6 +108,20 @@ export function projectCityEditImpact(
     if (!isImpactHorizon(day)) continue;
 
     cityHorizons[day] = compareCityBranches(control, intervention, day);
+    const controlBuildings = new Map(
+      control.entities.buildings.map((building) => [building.id, building]),
+    );
+    const interventionBuildings = new Map(
+      intervention.entities.buildings.map((building) => [building.id, building]),
+    );
+    for (const buildingId of economicIdentity.keys()) {
+      const horizons = economicHorizons.get(buildingId) ?? {};
+      horizons[day] = metricPair(
+        controlBuildings.get(buildingId)?.accounting.operatingRevenue ?? 0,
+        interventionBuildings.get(buildingId)?.accounting.operatingRevenue ?? 0,
+      );
+      economicHorizons.set(buildingId, horizons);
+    }
     for (const buildingId of request.trackedBuildingIds) {
       const beforeBuilding = control.entities.buildings.find(
         (building) => building.id === buildingId,
@@ -151,6 +171,23 @@ export function projectCityEditImpact(
         left.horizons[90].metrics.primaryOutput.delta,
       )
     );
+  const buildingSummaries = [...economicIdentity]
+    .map(([buildingId, identity]): BuildingEconomicImpactSummary => ({
+      buildingId,
+      buildingName: identity.name,
+      buildingFunction: identity.buildingFunction,
+      status: identity.status,
+      horizons: economicHorizons.get(buildingId) as Record<
+        ImpactHorizon,
+        ImpactMetricPair
+      >,
+    }))
+    .sort((left, right) =>
+      Math.abs(right.horizons[90].delta) -
+        Math.abs(left.horizons[90].delta) ||
+      left.buildingName.localeCompare(right.buildingName) ||
+      left.buildingId.localeCompare(right.buildingId)
+    );
 
   return {
     requestId: request.requestId,
@@ -158,7 +195,50 @@ export function projectCityEditImpact(
     createdAtDay: request.checkpoint.city.elapsedDays,
     horizons: cityHorizons,
     buildings,
+    buildingSummaries,
   };
+}
+
+function buildingEconomicIdentities(
+  control: Readonly<ProjectionBranch>,
+  intervention: Readonly<ProjectionBranch>,
+): Map<
+  string,
+  {
+    name: string;
+    buildingFunction: BuildingFunction;
+    status: BuildingEconomicImpactSummary["status"];
+  }
+> {
+  const controlBuildings = new Map(
+    control.entities.buildings.map((building) => [building.id, building]),
+  );
+  const interventionBuildings = new Map(
+    intervention.entities.buildings.map((building) => [building.id, building]),
+  );
+  const identities = new Map<
+    string,
+    {
+      name: string;
+      buildingFunction: BuildingFunction;
+      status: BuildingEconomicImpactSummary["status"];
+    }
+  >();
+  for (const buildingId of new Set([
+    ...controlBuildings.keys(),
+    ...interventionBuildings.keys(),
+  ])) {
+    const before = controlBuildings.get(buildingId);
+    const after = interventionBuildings.get(buildingId);
+    const building = after ?? before;
+    if (!building) continue;
+    identities.set(buildingId, {
+      name: building.name,
+      buildingFunction: building.function,
+      status: before ? after ? "active" : "removed" : "added",
+    });
+  }
+  return identities;
 }
 
 function createBranch(

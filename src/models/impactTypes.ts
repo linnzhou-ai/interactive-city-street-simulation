@@ -108,12 +108,21 @@ export interface BuildingImpactProjection {
   horizons: Record<ImpactHorizon, BuildingImpactHorizon>;
 }
 
+export interface BuildingEconomicImpactSummary {
+  buildingId: string;
+  buildingName: string;
+  buildingFunction: BuildingFunction;
+  status: "active" | "added" | "removed";
+  horizons: Record<ImpactHorizon, ImpactMetricPair>;
+}
+
 export interface CityEditImpact {
   requestId: number;
   editLabel: string;
   createdAtDay: number;
   horizons: Record<ImpactHorizon, CityImpactHorizon>;
   buildings: BuildingImpactProjection[];
+  buildingSummaries: BuildingEconomicImpactSummary[];
 }
 
 export interface ImpactProjectionRequest {
