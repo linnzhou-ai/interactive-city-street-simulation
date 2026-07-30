@@ -63,6 +63,14 @@ import type {
   PersonHistoryPoint,
 } from "./models/entityTypes";
 import type { TimeHorizon } from "./models/cityTypes";
+import type {
+  CityEditImpact,
+  ImpactHorizon,
+  ImpactMetricPair,
+  ImpactProjectionCheckpoint,
+  ImpactProjectionRequest,
+  ImpactProjectionWorkerResponse,
+} from "./models/impactTypes";
 import { ThreeRenderer } from "./rendering/threeRenderer";
 import {
   installStatTooltips,
@@ -180,6 +188,15 @@ const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
 const cityMigration = requireElement<HTMLElement>("city-migration");
 const cityGovernmentFunds = requireElement<HTMLElement>("city-government-funds");
 const cityGovernmentSpending = requireElement<HTMLElement>("city-government-spending");
+const impactEditLabel = requireElement<HTMLElement>("impact-edit-label");
+const impactProjectionStatus = requireElement<HTMLElement>("impact-projection-status");
+const impactHorizonSelector = requireElement<HTMLElement>("impact-horizon-selector");
+const impactCityOutput = requireElement<HTMLElement>("impact-city-output");
+const impactCityUnemployment = requireElement<HTMLElement>("impact-city-unemployment");
+const impactCityTrafficCost = requireElement<HTMLElement>("impact-city-traffic-cost");
+const impactCityMigration = requireElement<HTMLElement>("impact-city-migration");
+const impactCityGovernmentFunds = requireElement<HTMLElement>("impact-city-government-funds");
+const impactCityGovernmentSpending = requireElement<HTMLElement>("impact-city-government-spending");
 const performancePanel = requireElement<HTMLDetailsElement>("performance-panel");
 const performanceSummary = requireElement<HTMLElement>("performance-summary");
 const performanceMinimizeButton = requireElement<HTMLButtonElement>("performance-minimize-button");
@@ -202,6 +219,9 @@ const statTooltip = requireElement<HTMLElement>("stat-tooltip");
 const trackedPeople = requireElement<HTMLDetailsElement>("tracked-people");
 const trackedPeopleCount = requireElement<HTMLElement>("tracked-people-count");
 const trackedPeopleList = requireElement<HTMLElement>("tracked-people-list");
+const trackedBuildings = requireElement<HTMLDetailsElement>("tracked-buildings");
+const trackedBuildingsCount = requireElement<HTMLElement>("tracked-buildings-count");
+const trackedBuildingsList = requireElement<HTMLElement>("tracked-buildings-list");
 const buildingComparison = requireElement<HTMLElement>("building-comparison");
 const settingsButton = requireElement<HTMLButtonElement>("settings-button");
 const settingsCloseButton = requireElement<HTMLButtonElement>("settings-close-button");
@@ -262,6 +282,7 @@ reducedMotionControl.checked = window.matchMedia("(prefers-reduced-motion: reduc
 applyDisplayAccessibility();
 const liveStatHistory = new Map<string, StatHistorySample[]>();
 const favoritePersonIds = new Set<string>();
+const trackedBuildingIds = new Set<string>();
 const comparedBuildingIds: string[] = [];
 const visibleFlowKinds = new Set<BuildingConnectionKind>([
   "work",
@@ -276,6 +297,7 @@ const demolishedBuildingIds = new Set<string>();
 const expansionRoads = new Map<string, ExpansionRoad>();
 const expansionStreetObjects = new Map<string, ExpansionStreetObject>();
 const editHistory = new EditHistory();
+let impactWorker = createImpactWorker();
 const PROJECT_SAVE_KEY = "penn-campus-simulator:linn-project";
 const MUNICIPAL_RESERVE = 18_000_000;
 const MUNICIPAL_PROJECT_INTERVAL_DAYS = 3;
@@ -302,6 +324,7 @@ let cameraMode: CameraMode = "orbit";
 let selectedFeature: DistrictFeature | undefined =
   features.find((feature) => feature.id === "walnut-34-36") ?? features[0];
 let selectedEntity: EntitySelection | null = null;
+let selectedRemovedImpactBuildingId: string | null = null;
 let selectedTrafficFeature: DistrictFeature | null = null;
 let inspectorTab: "overview" | "causes" | "actions" = "overview";
 let interventionFeedback = "";
@@ -321,6 +344,17 @@ let walkMarkerStart = { x: 0, y: 0 };
 let restoreInspectorAfterBuild = false;
 let previousTimestamp = performance.now();
 let lastMunicipalGrowthDay = 0;
+let selectedImpactHorizon: ImpactHorizon = 90;
+let latestCityEditImpact: CityEditImpact | null = null;
+let impactRequestId = 0;
+let pendingImpactBaseline: {
+  design: EditorSnapshot;
+  checkpoint: ImpactProjectionCheckpoint;
+} | null = null;
+let latestImpactContext: Omit<
+  ImpactProjectionRequest,
+  "requestId" | "trackedBuildingIds"
+> | null = null;
 
 buildModeButton.addEventListener("click", () => {
   simulation.pause();
@@ -462,6 +496,7 @@ pauseButton.addEventListener("click", () => {
 resetButton.addEventListener("click", () => {
   simulation.reset();
   lastMunicipalGrowthDay = 0;
+  clearImpactTracking(true);
   updateInterface();
 });
 
@@ -693,6 +728,14 @@ entityInspector.addEventListener("click", (event) => {
     clearInspectorSelection();
     return;
   }
+  const trackTarget = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-track-building]")
+    : null;
+  const trackedBuildingId = trackTarget?.dataset.trackBuilding;
+  if (trackedBuildingId) {
+    toggleTrackedBuilding(trackedBuildingId);
+    return;
+  }
   const compareTarget = event.target instanceof Element
     ? event.target.closest<HTMLButtonElement>("[data-compare-building]")
     : null;
@@ -799,6 +842,40 @@ trackedPeopleList.addEventListener("click", (event) => {
   if (personId) focusTrackedPerson(personId);
 });
 
+trackedBuildingsList.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-tracked-building]")
+    : null;
+  const buildingId = target?.dataset.trackedBuilding;
+  if (!buildingId) return;
+  const building = simulation.getState().entities.buildings.find(
+    (candidate) => candidate.id === buildingId,
+  );
+  if (building) {
+    focusInspectorBuilding(buildingId);
+    return;
+  }
+  selectedRemovedImpactBuildingId = buildingId;
+  selectedEntity = null;
+  selectedTrafficFeature = null;
+  selectedFeature = undefined;
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+});
+
+impactHorizonSelector.addEventListener("click", (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLButtonElement>("[data-impact-horizon]")
+    : null;
+  const horizon = Number(target?.dataset.impactHorizon);
+  if (horizon !== 30 && horizon !== 90 && horizon !== 365) return;
+  selectedImpactHorizon = horizon;
+  renderImpactProjection();
+  renderTrackedBuildings();
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+});
+
 buildingComparison.addEventListener("click", (event) => {
   const focusTarget = event.target instanceof Element
     ? event.target.closest<HTMLButtonElement>("[data-comparison-focus]")
@@ -857,6 +934,7 @@ searchRestoreButton.addEventListener("click", () => {
 });
 
 renderer.setSelectionHandler((feature) => {
+  selectedRemovedImpactBuildingId = null;
   clearExpansionRoadSelectionState();
   selectedPlacedBuildingId = null;
   renderer.setSelectedPlacedBuilding(null);
@@ -875,6 +953,7 @@ renderer.setSelectionHandler((feature) => {
 });
 
 renderer.setEntitySelectionHandler((selection) => {
+  selectedRemovedImpactBuildingId = null;
   clearExpansionRoadSelectionState();
   selectedPlacedBuildingId = null;
   renderer.setSelectedPlacedBuilding(null);
@@ -1047,7 +1126,15 @@ function municipalStreetObjectProjectCost(
 }
 
 function fundManualMunicipalProject(cost: number, project: string): boolean {
-  if (simulation.fundMunicipalProject(cost)) return true;
+  if (
+    Number.isFinite(cost) &&
+    cost > 0 &&
+    simulation.getState().city.municipalBudget >= cost
+  ) {
+    prepareImpactBaseline();
+    if (simulation.fundMunicipalProject(cost)) return true;
+    pendingImpactBaseline = null;
+  }
   setBuildFeedback(
     `Government funds cannot cover this ${project}: ${formatDetailedMoney(cost)} required, ${formatDetailedMoney(simulation.getState().city.municipalBudget)} available.`,
     "error",
@@ -1082,7 +1169,11 @@ function fundMunicipalGrowth(): void {
     if (building) {
       const cost = municipalBuildingProjectCost(building);
       if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
-      if (!simulation.fundMunicipalProject(cost)) return;
+      prepareImpactBaseline();
+      if (!simulation.fundMunicipalProject(cost)) {
+        pendingImpactBaseline = null;
+        return;
+      }
       recordEdit();
       nextBuildingId += 1;
       placedBuildings.set(building.id, building);
@@ -1102,7 +1193,11 @@ function fundMunicipalGrowth(): void {
   if (!roadData) return;
   const cost = municipalRoadProjectCost(roadData);
   if (state.city.municipalBudget - cost < MUNICIPAL_RESERVE) return;
-  if (!simulation.fundMunicipalProject(cost)) return;
+  prepareImpactBaseline();
+  if (!simulation.fundMunicipalProject(cost)) {
+    pendingImpactBaseline = null;
+    return;
+  }
   recordEdit();
   const sequence = nextExpansionRoadId++;
   const id = `municipal-road-${sequence}`;
@@ -1786,6 +1881,7 @@ function eraseExpansionObject(
   }
   if (!changed) {
     editHistory.undo(captureEditorSnapshot());
+    pendingImpactBaseline = null;
     updateHistoryButtons();
     return;
   }
@@ -1918,6 +2014,7 @@ function applyEditorSnapshot(snapshot: EditorSnapshot): void {
 }
 
 function applyProjectSnapshot(snapshot: ProjectSnapshot): void {
+  clearImpactTracking(true);
   applyEditorSnapshot(snapshot);
   simulation.setSimulationSpeed(snapshot.settings.simulationSpeed);
   simulation.setTimeHorizon(snapshot.settings.timeHorizon ?? "day");
@@ -1945,27 +2042,235 @@ function applyProjectSnapshot(snapshot: ProjectSnapshot): void {
 }
 
 function recordEdit(): void {
+  prepareImpactBaseline();
   editHistory.record(captureEditorSnapshot());
   updateHistoryButtons();
 }
 
 function finishEdit(): void {
   localStorage.setItem(PROJECT_SAVE_KEY, JSON.stringify(captureProjectSnapshot()));
+  if (pendingImpactBaseline) {
+    const baseline = pendingImpactBaseline;
+    pendingImpactBaseline = null;
+    const afterDesign = captureEditorSnapshot();
+    const capitalCost = Math.max(
+      0,
+      baseline.checkpoint.city.municipalBudget -
+        simulation.getState().city.municipalBudget,
+    );
+    const context: Omit<
+      ImpactProjectionRequest,
+      "requestId" | "trackedBuildingIds"
+    > = {
+      editLabel: describeCityEdit(
+        baseline.design,
+        afterDesign,
+        baseline.checkpoint,
+      ),
+      checkpoint: baseline.checkpoint,
+      beforeDesign: baseline.design,
+      afterDesign,
+      interventionCapitalCost: capitalCost,
+    };
+    latestImpactContext = context;
+    requestImpactProjection(context);
+  }
   updateHistoryButtons();
 }
 
 function undoEdit(): void {
+  prepareImpactBaseline();
   const snapshot = editHistory.undo(captureEditorSnapshot());
-  if (!snapshot) return;
+  if (!snapshot) {
+    pendingImpactBaseline = null;
+    return;
+  }
   applyEditorSnapshot(snapshot);
   finishEdit();
 }
 
 function redoEdit(): void {
+  prepareImpactBaseline();
   const snapshot = editHistory.redo(captureEditorSnapshot());
-  if (!snapshot) return;
+  if (!snapshot) {
+    pendingImpactBaseline = null;
+    return;
+  }
   applyEditorSnapshot(snapshot);
   finishEdit();
+}
+
+function prepareImpactBaseline(): void {
+  if (pendingImpactBaseline) return;
+  pendingImpactBaseline = {
+    design: captureEditorSnapshot(),
+    checkpoint: {
+      city: structuredClone(simulation.getState().city),
+      entities: structuredClone(simulation.getState().entities),
+      settings: { ...simulation.getSettings() },
+      municipalProjectSpending:
+        simulation.getMunicipalProjectSpending(),
+    },
+  };
+}
+
+function createImpactWorker(): Worker {
+  const worker = new Worker(
+    new URL("./workers/impactProjectionWorker.ts", import.meta.url),
+    { type: "module" },
+  );
+  worker.addEventListener(
+    "message",
+    (event: MessageEvent<ImpactProjectionWorkerResponse>) => {
+      if (event.data.requestId !== impactRequestId) return;
+      if (!event.data.ok) {
+        latestCityEditImpact = null;
+        impactEditLabel.textContent = "Economic projection unavailable";
+        impactProjectionStatus.textContent = event.data.error;
+        renderImpactProjection();
+        return;
+      }
+      latestCityEditImpact = event.data.impact;
+      renderImpactProjection();
+      renderTrackedBuildings();
+      entityInterfaceSignature = "";
+      updateEntityInterface();
+    },
+  );
+  return worker;
+}
+
+function requestImpactProjection(
+  context: Omit<
+    ImpactProjectionRequest,
+    "requestId" | "trackedBuildingIds"
+  >,
+): void {
+  impactRequestId += 1;
+  latestCityEditImpact = null;
+  impactEditLabel.textContent = context.editLabel;
+  impactProjectionStatus.textContent =
+    "Projecting matched cities at 30, 90, and 365 days…";
+  setImpactMetricPending();
+  const request: ImpactProjectionRequest = {
+    ...context,
+    requestId: impactRequestId,
+    trackedBuildingIds: [...trackedBuildingIds],
+  };
+  impactWorker.terminate();
+  impactWorker = createImpactWorker();
+  impactWorker.postMessage(request);
+  renderTrackedBuildings();
+}
+
+function clearImpactTracking(clearPins: boolean): void {
+  impactRequestId += 1;
+  impactWorker.terminate();
+  impactWorker = createImpactWorker();
+  pendingImpactBaseline = null;
+  latestImpactContext = null;
+  latestCityEditImpact = null;
+  if (clearPins) trackedBuildingIds.clear();
+  impactEditLabel.textContent =
+    "Make a city edit to measure its economic effect.";
+  impactProjectionStatus.textContent =
+    "The current snapshot will remain live.";
+  renderImpactProjection();
+  renderTrackedBuildings();
+}
+
+function describeCityEdit(
+  before: Readonly<EditorSnapshot>,
+  after: Readonly<EditorSnapshot>,
+  checkpoint: Readonly<ImpactProjectionCheckpoint>,
+): string {
+  const beforeRoads = new Map(
+    before.expansionRoads.map((road) => [road.id, road]),
+  );
+  const afterRoads = new Map(
+    after.expansionRoads.map((road) => [road.id, road]),
+  );
+  const addedRoad = after.expansionRoads.find(
+    (road) => !beforeRoads.has(road.id),
+  );
+  if (addedRoad) {
+    return `Added ${expansionRoadDisplayName(addedRoad)}`;
+  }
+  const removedRoad = before.expansionRoads.find(
+    (road) => !afterRoads.has(road.id),
+  );
+  if (removedRoad) {
+    return `Removed ${expansionRoadDisplayName(removedRoad)}`;
+  }
+  const changedRoad = after.expansionRoads.find((road) => {
+    const previous = beforeRoads.get(road.id);
+    return previous && JSON.stringify(previous) !== JSON.stringify(road);
+  });
+  if (changedRoad) {
+    return `Updated ${expansionRoadDisplayName(changedRoad)}`;
+  }
+  const beforeBuildings = new Map(
+    before.buildings.map((building) => [building.id, building]),
+  );
+  const afterBuildings = new Map(
+    after.buildings.map((building) => [building.id, building]),
+  );
+  const addedBuilding = after.buildings.find(
+    (building) => !beforeBuildings.has(building.id),
+  );
+  if (addedBuilding) {
+    const detailed = simulation
+      .getState()
+      .entities.buildings.find(
+        (building) => building.id === addedBuilding.id,
+      );
+    return `Added ${detailed?.name ?? formatBuildingKind(addedBuilding.kind)}`;
+  }
+  const removedBuilding = before.buildings.find(
+    (building) => !afterBuildings.has(building.id),
+  );
+  if (removedBuilding) {
+    const detailed = checkpoint.entities.buildings.find(
+      (building) => building.id === removedBuilding.id,
+    );
+    return `Removed ${detailed?.name ?? formatBuildingKind(removedBuilding.kind)}`;
+  }
+  const newlyDemolished = after.demolishedBuildingIds.find(
+    (id) => !before.demolishedBuildingIds.includes(id),
+  );
+  if (newlyDemolished) {
+    const detailed = checkpoint.entities.buildings.find(
+      (building) => building.id === newlyDemolished,
+    );
+    return `Removed ${detailed?.name ?? "city building"}`;
+  }
+  if (
+    before.expansionStreetObjects.length !==
+    after.expansionStreetObjects.length
+  ) {
+    return after.expansionStreetObjects.length >
+      before.expansionStreetObjects.length
+      ? "Added street safety infrastructure"
+      : "Removed street safety infrastructure";
+  }
+  const changedDesignId = after.designs.find(([id, design]) => {
+    const previous = before.designs.find(([candidate]) => candidate === id)?.[1];
+    return JSON.stringify(previous) !== JSON.stringify(design);
+  })?.[0];
+  if (changedDesignId) {
+    return `Updated ${features.find((feature) => feature.id === changedDesignId)?.name ?? "city street"}`;
+  }
+  if (
+    before.designs.length +
+      before.buildings.length +
+      before.expansionRoads.length >
+    after.designs.length +
+      after.buildings.length +
+      after.expansionRoads.length
+  ) {
+    return "Reset city design";
+  }
+  return "Updated city design";
 }
 
 function updateHistoryButtons(): void {
@@ -2189,6 +2494,7 @@ function syncEntitySelectionState(): void {
 
 function clearInspectorSelection(): void {
   showAffectedRoads = false;
+  selectedRemovedImpactBuildingId = null;
   selectedEntity = null;
   selectedTrafficFeature = null;
   selectedFeature = undefined;
@@ -2273,9 +2579,174 @@ function updateMetrics(): void {
   cityGovernmentSpending.textContent = formatCurrency(
     simulation.getMunicipalProjectSpending(),
   );
+  renderImpactProjection();
   syncEnvironmentControls();
   updateSelectedSignalStatus();
   updateEntityInterface();
+}
+
+function renderImpactProjection(): void {
+  for (const button of impactHorizonSelector.querySelectorAll<HTMLButtonElement>(
+    "[data-impact-horizon]",
+  )) {
+    button.setAttribute(
+      "aria-pressed",
+      String(Number(button.dataset.impactHorizon) === selectedImpactHorizon),
+    );
+  }
+  const impact = latestCityEditImpact;
+  const horizon = impact?.horizons[selectedImpactHorizon];
+  if (!horizon) {
+    if (!latestImpactContext) {
+      setImpactMetricEmpty();
+    }
+    return;
+  }
+  impactEditLabel.textContent = impact.editLabel;
+  impactProjectionStatus.textContent =
+    `Controlled ${selectedImpactHorizon}-day projection · same time, demand, weather, and random seed`;
+  setImpactMetric(
+    impactCityOutput,
+    horizon.metrics.dailyOutput,
+    "currency",
+  );
+  setImpactMetric(
+    impactCityUnemployment,
+    horizon.metrics.unemploymentPercent,
+    "points",
+    true,
+  );
+  setImpactMetric(
+    impactCityTrafficCost,
+    horizon.metrics.trafficCostDaily,
+    "currency-per-day",
+    true,
+  );
+  setImpactMetric(
+    impactCityMigration,
+    horizon.metrics.annualizedNetMigration,
+    "number-per-year",
+  );
+  setImpactMetric(
+    impactCityGovernmentFunds,
+    horizon.metrics.governmentFunds,
+    "currency",
+  );
+  setImpactMetric(
+    impactCityGovernmentSpending,
+    horizon.metrics.publicConstruction,
+    "currency",
+    false,
+    true,
+  );
+}
+
+function setImpactMetric(
+  element: HTMLElement,
+  metric: Readonly<ImpactMetricPair>,
+  format:
+    | "currency"
+    | "currency-per-day"
+    | "number-per-year"
+    | "points",
+  lowerIsBetter = false,
+  neutral = false,
+): void {
+  element.textContent = `${selectedImpactHorizon}d ${formatImpactDelta(metric.delta, metric.percentDelta, format)}`;
+  const beneficial = lowerIsBetter ? metric.delta < 0 : metric.delta > 0;
+  element.dataset.tone =
+    neutral || Math.abs(metric.delta) < 0.005
+      ? "neutral"
+      : beneficial
+        ? "good"
+        : "bad";
+  element.title =
+    `${formatImpactValue(metric.before, format)} before → ${formatImpactValue(metric.after, format)} after`;
+}
+
+function setImpactMetricPending(): void {
+  for (const element of impactMetricElements()) {
+    element.textContent = "Projecting…";
+    element.dataset.tone = "pending";
+    element.removeAttribute("title");
+  }
+}
+
+function setImpactMetricEmpty(): void {
+  for (const element of impactMetricElements()) {
+    element.textContent = "No projected change";
+    element.dataset.tone = "neutral";
+    element.removeAttribute("title");
+  }
+}
+
+function impactMetricElements(): HTMLElement[] {
+  return [
+    impactCityOutput,
+    impactCityUnemployment,
+    impactCityTrafficCost,
+    impactCityMigration,
+    impactCityGovernmentFunds,
+    impactCityGovernmentSpending,
+  ];
+}
+
+function formatImpactDelta(
+  delta: number,
+  percentDelta: number | null,
+  format:
+    | "currency"
+    | "currency-per-day"
+    | "number-per-year"
+    | "points"
+    | "number",
+): string {
+  const value =
+    format === "currency" || format === "currency-per-day"
+      ? formatSignedMoney(delta)
+      : format === "points"
+        ? `${formatSigned(delta)} pts`
+        : format === "number-per-year"
+          ? `${formatSigned(delta)}/yr`
+          : formatSigned(delta);
+  return percentDelta === null
+    ? value
+    : `${value} (${formatSigned(percentDelta)}%)`;
+}
+
+function formatImpactValue(
+  value: number,
+  format:
+    | "currency"
+    | "currency-per-day"
+    | "number-per-year"
+    | "points",
+): string {
+  if (format === "currency") return formatDetailedMoney(value);
+  if (format === "currency-per-day") {
+    return `${formatDetailedMoney(value)}/day`;
+  }
+  if (format === "number-per-year") {
+    return `${Math.round(value).toLocaleString()}/yr`;
+  }
+  return `${value.toFixed(2)} points`;
+}
+
+function formatDriverDelta(
+  item: Readonly<CityEditImpact["horizons"][ImpactHorizon]["drivers"][number]>,
+): string {
+  if (item.unit === "currency") return formatSignedMoney(item.delta);
+  if (item.unit === "currency-per-day") {
+    return `${formatSignedMoney(item.delta)}/day`;
+  }
+  if (item.unit === "percent") return `${formatSigned(item.delta)}%`;
+  if (item.unit === "minutes") return `${formatSigned(item.delta)} min`;
+  if (item.unit === "people") {
+    return `${formatSigned(item.delta)} people`;
+  }
+  if (item.unit === "trips") return `${formatSigned(item.delta)} trips`;
+  if (item.unit === "score") return `${formatSigned(item.delta)} pts`;
+  return `${formatSigned(item.delta)} units`;
 }
 
 function updateSelectionPanel(): void {
@@ -2555,6 +3026,7 @@ function updateEntityInterface(): void {
     state.mobilityDetailMode,
     selectedEntity?.kind ?? "none",
     selectedEntity?.id ?? "none",
+    selectedRemovedImpactBuildingId ?? "no-removed-impact-building",
     selectedTrafficFeature?.id ?? "no-road",
     selectedTrafficSignal
       ? `${selectedTrafficSignal.phase}-${selectedTrafficSignal.pedestrianState}-${selectedTrafficSignal.pedestrianAxis ?? "none"}`
@@ -2574,7 +3046,13 @@ function updateEntityInterface(): void {
   renderMapLegend(analysisOverlay.value as MapOverlayMode);
   renderNotificationCenter();
   renderFavoritePeople();
+  renderTrackedBuildings();
   renderBuildingComparison();
+
+  if (selectedRemovedImpactBuildingId) {
+    renderRemovedBuildingImpact(selectedRemovedImpactBuildingId);
+    return;
+  }
 
   if (!selectedEntity && selectedTrafficFeature) {
     renderTrafficInspector(selectedTrafficFeature);
@@ -2708,6 +3186,7 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   const overview = `
     <div class="inspector-stat-grid">${primaryStats.map(([label, value, key]) => statCell(label, value, "building", key, renderBuildingTrend(building, key))).join("")}</div>
     ${building.developmentStage === "construction" ? `<section class="public-funding-section"><h4>Development</h4><p>${civic ? "Municipal capital funding" : "Private development capital"} pays the ${formatDetailedMoney(building.constructionCost)} project cost. Material deliveries create freight traffic now; occupancy, hiring, services, and sales begin only after opening.</p></section>` : ""}
+    ${renderBuildingImpactDetail(building.id)}
     ${renderBuildingBenchmark(building, state.entities.buildings)}
     ${residentContext}
     <section class="accounting-section">
@@ -2796,6 +3275,7 @@ function renderBuildingInspector(building: DetailedBuilding): void {
       <header class="entity-heading">
         <div><small>${formatBuildingFunction(building.function)} · ${escapeHtml(building.address)}</small><h3>${escapeHtml(building.name)}</h3></div>
         <div class="entity-heading-actions">
+          <button type="button" class="compare-building-button track-building-button" data-track-building="${escapeHtml(building.id)}" aria-pressed="${trackedBuildingIds.has(building.id)}" aria-label="${trackedBuildingIds.has(building.id) ? "Stop tracking" : "Track"} economic impact for ${escapeHtml(building.name)}" title="Track economic impact">&#9673;</button>
           <button type="button" class="compare-building-button" data-compare-building="${escapeHtml(building.id)}" aria-pressed="${comparedBuildingIds.includes(building.id)}" aria-label="${comparedBuildingIds.includes(building.id) ? "Remove from" : "Add to"} building comparison" title="Compare building">&#8644;</button>
           <span data-entity-status="${accounting.status}">${formatEntityStatus(accounting.status)}</span>
         </div>
@@ -3235,6 +3715,155 @@ function toggleFavoritePerson(personId: string): void {
   updateEntityInterface();
 }
 
+function toggleTrackedBuilding(buildingId: string): void {
+  if (trackedBuildingIds.has(buildingId)) {
+    trackedBuildingIds.delete(buildingId);
+    if (selectedRemovedImpactBuildingId === buildingId) {
+      selectedRemovedImpactBuildingId = null;
+    }
+  } else trackedBuildingIds.add(buildingId);
+  if (latestImpactContext) requestImpactProjection(latestImpactContext);
+  renderTrackedBuildings();
+  entityInterfaceSignature = "";
+  updateEntityInterface();
+}
+
+function renderTrackedBuildings(): void {
+  trackedBuildings.hidden = trackedBuildingIds.size === 0;
+  trackedBuildingsCount.textContent = String(trackedBuildingIds.size);
+  if (trackedBuildingIds.size === 0) {
+    trackedBuildingsList.replaceChildren();
+    return;
+  }
+  const activeById = new Map(
+    simulation
+      .getState()
+      .entities.buildings.map((building) => [building.id, building]),
+  );
+  const projections = new Map(
+    (latestCityEditImpact?.buildings ?? []).map((building) => [
+      building.buildingId,
+      building,
+    ]),
+  );
+  const rows = [...trackedBuildingIds]
+    .map((buildingId) => {
+      const projection = projections.get(buildingId);
+      const active = activeById.get(buildingId);
+      const name =
+        projection?.buildingName ?? active?.name ?? "Removed building";
+      const detail = projection?.horizons[selectedImpactHorizon];
+      const metric = detail?.metrics.primaryOutput;
+      return {
+        buildingId,
+        name,
+        status: projection?.status ?? (active ? "active" : "removed"),
+        label:
+          projection?.primaryMetricLabel ??
+          (latestImpactContext
+            ? "Projection pending"
+            : "Waiting for a city edit"),
+        delta: metric?.delta,
+        percentDelta: metric?.percentDelta,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Math.abs(right.delta ?? 0) - Math.abs(left.delta ?? 0),
+    );
+  trackedBuildingsList.innerHTML = rows
+    .map((row) => {
+      const delta =
+        row.delta === undefined
+          ? "Pending"
+          : formatImpactDelta(
+              row.delta,
+              row.percentDelta ?? null,
+              "number",
+            );
+      return `<button type="button" data-tracked-building="${escapeHtml(row.buildingId)}" data-impact-status="${row.status}" data-impact-tone="${(row.delta ?? 0) < 0 ? "bad" : "good"}">
+        <span><b>${escapeHtml(row.name)}</b><small>${escapeHtml(row.status === "removed" ? "Removed · production projected at zero" : row.label)}</small></span>
+        <strong>${escapeHtml(delta)}</strong>
+      </button>`;
+    })
+    .join("");
+}
+
+function renderBuildingImpactDetail(buildingId: string): string {
+  if (!trackedBuildingIds.has(buildingId)) {
+    return `<section class="building-impact-detail building-impact-empty">
+      <h4>Economic impact</h4>
+      <p>Track this building to measure how the next city edit changes its production, access, staffing, costs, and profit.</p>
+    </section>`;
+  }
+  const projection = latestCityEditImpact?.buildings.find(
+    (building) => building.buildingId === buildingId,
+  );
+  if (!projection) {
+    return `<section class="building-impact-detail">
+      <h4>Economic impact · ${selectedImpactHorizon} days</h4>
+      <p>${latestImpactContext ? "Projection is running…" : "Make a city edit to create a controlled before-and-after projection."}</p>
+    </section>`;
+  }
+  const horizon = projection.horizons[selectedImpactHorizon];
+  const primary = horizon.metrics.primaryOutput;
+  const profit = horizon.metrics.profit;
+  const chain = horizon.drivers
+    .slice(0, 5)
+    .map(
+      (item) =>
+        `<span><small>${escapeHtml(item.label)}</small><b>${escapeHtml(formatDriverDelta(item))}</b></span>`,
+    )
+    .join("<i>→</i>");
+  return `<section class="building-impact-detail">
+    <h4>Latest edit impact · ${selectedImpactHorizon} days</h4>
+    <div class="building-impact-summary">
+      <span><small>${escapeHtml(projection.primaryMetricLabel)}</small><b>${escapeHtml(formatImpactDelta(primary.delta, primary.percentDelta, "number"))}</b></span>
+      <span><small>Net result</small><b>${escapeHtml(formatImpactDelta(profit.delta, profit.percentDelta, "currency"))}</b></span>
+      <span><small>Access</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.accessibility.delta, horizon.metrics.accessibility.percentDelta, "points"))}</b></span>
+    </div>
+    <div class="building-impact-chain">${chain}</div>
+    <p>${horizon.affectedRoads.length > 0 ? `Affected roads: ${escapeHtml(horizon.affectedRoads.join(", "))}.` : "No routed road changed materially for this building."}</p>
+  </section>`;
+}
+
+function renderRemovedBuildingImpact(buildingId: string): void {
+  const projection = latestCityEditImpact?.buildings.find(
+    (building) => building.buildingId === buildingId,
+  );
+  if (!projection) {
+    entityInspector.innerHTML = `
+      <div class="inspector-empty">
+        <strong>Removed building</strong>
+        <p>The retained impact projection is still being calculated.</p>
+      </div>`;
+    return;
+  }
+  const horizon = projection.horizons[selectedImpactHorizon];
+  entityInspector.innerHTML = `
+    <article class="entity-card">
+      ${renderInspectorBreadcrumb("Tracked impacts", projection.buildingName)}
+      <header class="entity-heading">
+        <div><small>${formatBuildingFunction(projection.buildingFunction)} · Removed</small><h3>${escapeHtml(projection.buildingName)}</h3></div>
+        <div class="entity-heading-actions">
+          <button type="button" class="compare-building-button track-building-button" data-track-building="${escapeHtml(buildingId)}" aria-pressed="true" aria-label="Stop tracking economic impact for ${escapeHtml(projection.buildingName)}" title="Stop tracking economic impact">&#9673;</button>
+          <span data-entity-status="closed">Removed</span>
+        </div>
+      </header>
+      <p class="heading-diagnosis">The building no longer exists in the edited city. Its control-city production and employment remain available for comparison.</p>
+      <section class="building-impact-detail">
+        <h4>Lost output after ${selectedImpactHorizon} days</h4>
+        <div class="building-impact-summary">
+          <span><small>${escapeHtml(projection.primaryMetricLabel)}</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.primaryOutput.delta, horizon.metrics.primaryOutput.percentDelta, "number"))}</b></span>
+          <span><small>Jobs filled</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.staffing.delta, horizon.metrics.staffing.percentDelta, "number"))}</b></span>
+          <span><small>Net result</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.profit.delta, horizon.metrics.profit.percentDelta, "currency"))}</b></span>
+        </div>
+        <div class="building-impact-chain">${horizon.drivers.slice(0, 5).map((item) => `<span><small>${escapeHtml(item.label)}</small><b>${escapeHtml(formatDriverDelta(item))}</b></span>`).join("<i>→</i>")}</div>
+        <p>${horizon.affectedRoads.length > 0 ? `Previously connected roads: ${escapeHtml(horizon.affectedRoads.join(", "))}.` : "No routed road attribution was available."}</p>
+      </section>
+    </article>`;
+}
+
 function focusTrackedPerson(personId: string): void {
   const state = simulation.getState();
   const person = state.entities.people.find((candidate) => candidate.id === personId);
@@ -3263,6 +3892,7 @@ function focusInspectorBuilding(buildingId: string): void {
     (candidate) => candidate.id === buildingId,
   );
   if (!building) return;
+  selectedRemovedImpactBuildingId = null;
   showAffectedRoads = false;
   selectedTrafficFeature = null;
   selectedFeature = undefined;
@@ -3968,11 +4598,48 @@ function cityStatInsight(stat: string, current: string): StatInsight {
       factor("Funds remaining", formatDetailedMoney(metrics.municipalBalance), metrics.municipalBalance >= MUNICIPAL_RESERVE),
     ],
   };
+  const projected = latestCityEditImpact?.horizons[selectedImpactHorizon];
+  const projectedMetric =
+    stat === "output"
+      ? projected?.metrics.dailyOutput
+      : stat === "unemployment"
+        ? projected?.metrics.unemploymentPercent
+        : stat === "trafficCost"
+          ? projected?.metrics.trafficCostDaily
+          : stat === "migration"
+            ? projected?.metrics.annualizedNetMigration
+            : stat === "governmentFunds"
+              ? projected?.metrics.governmentFunds
+              : stat === "governmentSpending"
+                ? projected?.metrics.publicConstruction
+                : undefined;
+  const impactFactors = projected
+    ? projected.drivers.slice(0, 4).map((item) =>
+        factor(
+          item.label,
+          `${formatDriverDelta(item)} after ${selectedImpactHorizon} days`,
+          item.lowerIsBetter ? item.delta <= 0 : item.delta >= 0,
+        )
+      )
+    : [];
   return {
     title: titles[stat] ?? capitalize(stat),
     current,
-    description: descriptions[stat] ?? "A citywide value produced by the simulation.",
-    history: stat === "governmentSpending"
+    description: projectedMetric
+      ? `${descriptions[stat] ?? "A citywide value produced by the simulation."} Latest edit: ${latestCityEditImpact?.editLabel}; projected change ${formatSigned(projectedMetric.delta)} after ${selectedImpactHorizon} days.`
+      : descriptions[stat] ?? "A citywide value produced by the simulation.",
+    history: projectedMetric
+      ? [
+          {
+            label: "Without latest edit",
+            value: projectedMetric.before,
+          },
+          {
+            label: `With edit · ${selectedImpactHorizon}d`,
+            value: projectedMetric.after,
+          },
+        ]
+      : stat === "governmentSpending"
       ? [{
           label: "Current simulation",
           value: simulation.getMunicipalProjectSpending(),
@@ -3981,10 +4648,14 @@ function cityStatInsight(stat: string, current: string): StatInsight {
           label: `Day ${point.day}`,
           value: historyValue(point),
         })),
-    historyLabel: stat === "governmentSpending"
+    historyLabel: projectedMetric
+      ? "Controlled projection"
+      : stat === "governmentSpending"
       ? "Capital ledger"
       : "City history",
-    factors: factors[stat] ?? [],
+    factors: impactFactors.length > 0
+      ? impactFactors
+      : factors[stat] ?? [],
   };
 }
 

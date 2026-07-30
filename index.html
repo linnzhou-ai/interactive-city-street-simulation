@@ -506,6 +506,13 @@
           </summary>
           <div id="tracked-people-list" class="tracked-people-list"></div>
         </details>
+        <details id="tracked-buildings" class="tracked-buildings" hidden>
+          <summary>
+            <span>Tracked building impacts</span>
+            <b id="tracked-buildings-count">0</b>
+          </summary>
+          <div id="tracked-buildings-list" class="tracked-buildings-list"></div>
+        </details>
         <div id="building-comparison" class="building-comparison" aria-live="polite" hidden></div>
         <div id="entity-inspector" class="entity-inspector" aria-live="polite">
           <div class="inspector-empty">
@@ -640,30 +647,48 @@
           >×</button>
         </summary>
         <div class="metrics-content">
+          <section class="impact-projection" aria-labelledby="impact-projection-title">
+            <div>
+              <span id="impact-projection-title">Latest city change</span>
+              <strong id="impact-edit-label">Make a city edit to measure its economic effect.</strong>
+              <small id="impact-projection-status">The current snapshot will remain live.</small>
+            </div>
+            <div id="impact-horizon-selector" class="impact-horizon-selector" aria-label="Economic projection horizon">
+              <button type="button" data-impact-horizon="30">30d</button>
+              <button type="button" data-impact-horizon="90" aria-pressed="true">90d</button>
+              <button type="button" data-impact-horizon="365">1yr</button>
+            </div>
+          </section>
           <div class="city-system-grid" aria-label="City economy and infrastructure">
             <article data-stat="output" data-stat-scope="city" tabindex="0">
               <span>Daily output</span>
               <strong id="city-output" data-stat-value>$0</strong>
+              <small id="impact-city-output" class="metric-impact">No projected change</small>
             </article>
             <article data-stat="unemployment" data-stat-scope="city" tabindex="0">
               <span>Unemployment</span>
               <strong id="city-unemployment" data-stat-value>0%</strong>
+              <small id="impact-city-unemployment" class="metric-impact">No projected change</small>
             </article>
             <article data-stat="trafficCost" data-stat-scope="city" tabindex="0">
               <span>Traffic cost</span>
               <strong id="city-traffic-cost" data-stat-value>$0/day</strong>
+              <small id="impact-city-traffic-cost" class="metric-impact">No projected change</small>
             </article>
             <article data-stat="migration" data-stat-scope="city" tabindex="0">
               <span>Net migration</span>
               <strong id="city-migration" data-stat-value>0/yr</strong>
+              <small id="impact-city-migration" class="metric-impact">No projected change</small>
             </article>
             <article data-stat="governmentFunds" data-stat-scope="city" tabindex="0">
               <span>Government funds</span>
               <strong id="city-government-funds" data-stat-value>$0</strong>
+              <small id="impact-city-government-funds" class="metric-impact">No projected change</small>
             </article>
             <article data-stat="governmentSpending" data-stat-scope="city" tabindex="0">
               <span>Public construction</span>
               <strong id="city-government-spending" data-stat-value>$0</strong>
+              <small id="impact-city-government-spending" class="metric-impact">No projected change</small>
             </article>
           </div>
           <div class="metric-grid">
