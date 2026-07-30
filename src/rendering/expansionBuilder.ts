@@ -1465,18 +1465,6 @@ function createBuildingMesh(
     group.add(path);
   }
 
-  const windowMaterial = new THREE.MeshBasicMaterial({
-    color: building.kind === "industrial" ? "#9fc5c2" : "#d8e5c5",
-  });
-  const visibleFloors = Math.min(building.floors, 12);
-  for (let floor = 0; floor < visibleFloors; floor += 1) {
-    const y = 2.1 + floor * (height - 2) / Math.max(1, visibleFloors);
-    for (const side of [-1, 1]) {
-      const windows = box(size.width * 0.62, 0.65, 0.08, windowMaterial);
-      windows.position.set(0, y, side * (size.depth / 2 + 0.045));
-      group.add(windows);
-    }
-  }
   group.position.set(building.x, 0, building.z);
   group.rotation.y = building.rotation;
   return group;

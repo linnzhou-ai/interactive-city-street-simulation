@@ -3161,19 +3161,11 @@ export class ThreeRenderer {
 }
 
 function createWorldMaterials() {
-  const brickTexture = createFacadeTexture("#8f5142", "#d69a78", "brick");
-  const redBrickTexture = createFacadeTexture("#a45d4c", "#e2b58b", "brick");
-  const stoneTexture = createFacadeTexture("#8c7469", "#d5c1a7", "arched");
-  const glassTexture = createFacadeTexture("#466a77", "#a9d2d4", "glass");
-  const limestoneTexture = createFacadeTexture("#b2aa90", "#eee2c1", "regular");
-  const concreteTexture = createFacadeTexture("#8f9894", "#cad4cf", "regular");
-  const darkTexture = createFacadeTexture("#555e5c", "#9fb4b4", "glass");
-  const material = (texture: THREE.Texture, color = "#ffffff") =>
+  const material = (color: string, metalness = 0.03) =>
     new THREE.MeshStandardMaterial({
-      map: texture,
       color,
       roughness: 0.72,
-      metalness: texture === glassTexture ? 0.2 : 0.03,
+      metalness,
     });
   return {
     ground: new THREE.MeshStandardMaterial({ color: "#71866d", roughness: 1 }),
@@ -3192,26 +3184,26 @@ function createWorldMaterials() {
     yellowLine: new THREE.MeshStandardMaterial({ color: "#f1ca56", roughness: 0.75 }),
     whiteLine: new THREE.MeshStandardMaterial({ color: "#f1efe8", roughness: 0.8 }),
     bikeLane: new THREE.MeshStandardMaterial({ color: "#2ca79f", roughness: 0.84 }),
-    historicBrick: material(brickTexture),
-    redBrick: material(redBrickTexture),
-    rowhouseRed: material(redBrickTexture, "#c9826f"),
-    rowhouseTan: material(brickTexture, "#d3a37d"),
-    landmarkStone: material(stoneTexture, "#9e6757"),
-    darkStone: material(stoneTexture, "#6d5149"),
-    fisherBrick: material(redBrickTexture, "#8e3f36"),
-    huntsmanStone: material(limestoneTexture, "#c7b88e"),
-    vanPelt: material(stoneTexture, "#8d8171"),
-    limestone: material(limestoneTexture),
-    museumBrick: material(brickTexture, "#b36f5c"),
-    glass: material(glassTexture),
-    office: material(darkTexture),
-    concrete: material(concreteTexture),
-    silver: material(concreteTexture, "#bac5c3"),
-    dorm: material(brickTexture, "#9c6f5d"),
-    hospital: material(concreteTexture, "#e0e2dd"),
-    parking: material(concreteTexture, "#a6aaa3"),
-    retail: material(redBrickTexture, "#bc8064"),
-    academic: material(stoneTexture, "#a88975"),
+    historicBrick: material("#8f5142"),
+    redBrick: material("#a45d4c"),
+    rowhouseRed: material("#c9826f"),
+    rowhouseTan: material("#d3a37d"),
+    landmarkStone: material("#9e6757"),
+    darkStone: material("#6d5149"),
+    fisherBrick: material("#8e3f36"),
+    huntsmanStone: material("#c7b88e"),
+    vanPelt: material("#8d8171"),
+    limestone: material("#b2aa90"),
+    museumBrick: material("#b36f5c"),
+    glass: material("#466a77", 0.2),
+    office: material("#555e5c"),
+    concrete: material("#8f9894"),
+    silver: material("#bac5c3"),
+    dorm: material("#9c6f5d"),
+    hospital: material("#e0e2dd"),
+    parking: material("#a6aaa3"),
+    retail: material("#bc8064"),
+    academic: material("#a88975"),
     darkBand: new THREE.MeshStandardMaterial({ color: "#465056", roughness: 0.7 }),
     awning: new THREE.MeshStandardMaterial({ color: "#7d2c35", roughness: 0.8 }),
     rooftop: new THREE.MeshStandardMaterial({ color: "#697277", roughness: 0.88 }),
@@ -3232,59 +3224,6 @@ function createWorldMaterials() {
     carGlass: new THREE.MeshStandardMaterial({ color: "#a8c4cc", roughness: 0.25, metalness: 0.08 }),
     signalHousing: new THREE.MeshStandardMaterial({ color: "#172126", roughness: 0.72 }),
   };
-}
-
-function createFacadeTexture(
-  base: string,
-  windowColor: string,
-  style: "brick" | "arched" | "glass" | "regular",
-): THREE.CanvasTexture {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Canvas textures are unavailable.");
-  context.fillStyle = base;
-  context.fillRect(0, 0, 128, 128);
-  if (style === "brick") {
-    context.strokeStyle = "rgba(35,22,18,0.16)";
-    context.lineWidth = 1;
-    for (let y = 0; y < 128; y += 8) {
-      context.beginPath();
-      context.moveTo(0, y);
-      context.lineTo(128, y);
-      context.stroke();
-    }
-  }
-  const columns = style === "glass" ? 6 : 5;
-  const rows = style === "arched" ? 4 : 5;
-  const marginX = 9;
-  const marginY = 9;
-  const cellWidth = (128 - marginX * 2) / columns;
-  const cellHeight = (128 - marginY * 2) / rows;
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      const x = marginX + column * cellWidth + 2;
-      const y = marginY + row * cellHeight + 3;
-      context.fillStyle = windowColor;
-      if (style === "arched") {
-        context.beginPath();
-        context.roundRect(x, y, cellWidth - 5, cellHeight - 6, [7, 7, 1, 1]);
-        context.fill();
-      } else {
-        context.fillRect(x, y, cellWidth - 5, cellHeight - 6);
-      }
-      context.fillStyle = "rgba(255,255,255,0.2)";
-      context.fillRect(x + 1, y + 1, 1.5, cellHeight - 8);
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(style === "glass" ? 2 : 1.5, style === "arched" ? 1.4 : 2.2);
-  texture.anisotropy = 4;
-  return texture;
 }
 
 function roadWidth(feature: DistrictFeature): number {
