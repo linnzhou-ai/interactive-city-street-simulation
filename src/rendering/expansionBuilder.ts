@@ -33,6 +33,7 @@ const GRID_SIZE = EXPANSION_GRID_SIZE;
 const WORLD_LIMIT = EXPANSION_WORLD_LIMIT;
 const CORE_PADDING = 10;
 const SURFACE_HEIGHT = 0.11;
+const ROAD_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.04;
 
 export interface ExpansionBounds {
   minX: number;
@@ -990,7 +991,7 @@ function createRoadMesh(
       depthWrite: true,
     }),
   );
-  roadSurface.position.set(centerX, SURFACE_HEIGHT, centerZ);
+  roadSurface.position.set(centerX, ROAD_SURFACE_HEIGHT, centerZ);
   roadSurface.rotation.y = heading;
   roadSurface.receiveShadow = true;
   group.add(roadSurface);
@@ -1105,7 +1106,7 @@ function createRoadMesh(
       road.width / 2 - 1.7,
       2.3,
       0.03,
-      SURFACE_HEIGHT + 0.115,
+      ROAD_SURFACE_HEIGHT + 0.105,
       new THREE.MeshBasicMaterial({ color: "#2ca79f", transparent: true, opacity: 0.9 }),
     );
   }
@@ -1119,7 +1120,7 @@ function createRoadJunctionMesh(junction: Readonly<RoadJunction>): THREE.Group {
     new THREE.BoxGeometry(size, 0.2, size),
     new THREE.MeshStandardMaterial({ color: "#071417", roughness: 0.92 }),
   );
-  surface.position.set(junction.x, SURFACE_HEIGHT + 0.02, junction.z);
+  surface.position.set(junction.x, ROAD_SURFACE_HEIGHT, junction.z);
   surface.receiveShadow = true;
   group.add(surface);
   return group;
@@ -1146,7 +1147,7 @@ function addRoadLine(
     lateralOffset,
     width,
     0.035,
-    SURFACE_HEIGHT + 0.125,
+    ROAD_SURFACE_HEIGHT + 0.11,
     material,
   );
 }
@@ -1176,7 +1177,7 @@ function addDashedRoadLine(
       );
       dash.position.set(
         centerX + Math.sin(heading) * along + Math.cos(heading) * lateralOffset,
-        SURFACE_HEIGHT + 0.13,
+        ROAD_SURFACE_HEIGHT + 0.115,
         centerZ + Math.cos(heading) * along - Math.sin(heading) * lateralOffset,
       );
       dash.rotation.y = heading;

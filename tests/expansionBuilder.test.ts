@@ -48,6 +48,10 @@ describe("ExpansionBuilder crosswalk sets", () => {
       expect(material.color.getHexString()).toBe("071417");
       expect(material.transparent).toBe(false);
       expect(material.opacity).toBe(1);
+      expect(
+        surface.position.y
+          + (surface.geometry as THREE.BoxGeometry).parameters.height / 2,
+      ).toBeGreaterThan(0.23);
     };
 
     expectBlackAsphalt();
