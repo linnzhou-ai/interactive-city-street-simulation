@@ -25,6 +25,7 @@ import type {
   LaneDirection,
   ExpansionRoad,
   ExpansionStreetObject,
+  PedestrianSignalState,
   PedestrianSnapshot,
   RoadTrafficSnapshot,
   ScenarioSettings,
@@ -76,8 +77,8 @@ const VEHICLE_KINDS: readonly VehicleKind[] = [
 ];
 
 export const DEFAULT_SIGNAL_TIMING: SignalTiming = {
-  northSouthGreenSeconds: 30,
-  eastWestGreenSeconds: 30,
+  northSouthGreenSeconds: 37.5,
+  eastWestGreenSeconds: 37.5,
   yellowSeconds: 3,
   allRedSeconds: 1,
   pedestrianSeconds: 15,
@@ -232,7 +233,10 @@ export class IntersectionSignalController {
     if (deltaSeconds <= 0) return;
     let remaining = deltaSeconds;
     while (remaining > 0) {
-      if (this.mode === "manual" && this.manualQueue.length === 0) return;
+      if (this.mode === "manual" && this.manualQueue.length === 0) {
+        this.phaseElapsed += remaining;
+        return;
+      }
       const duration = this.currentDuration();
       const available = Math.max(0, duration - this.phaseElapsed);
       const consumed = Math.min(remaining, available);
@@ -291,6 +295,11 @@ export class IntersectionSignalController {
   }
 
   getSnapshot(): SignalSnapshot {
+    const pedestrian = pedestrianIndication(
+      this.phase,
+      this.phaseElapsed,
+      this.timing,
+    );
     const nextPhase =
       this.mode === "manual"
         ? (this.manualQueue[0] ?? this.phase)
@@ -305,6 +314,9 @@ export class IntersectionSignalController {
         this.mode === "manual" && this.manualQueue.length === 0
           ? null
           : Math.max(0, this.currentDuration() - this.phaseElapsed),
+      pedestrianState: pedestrian.state,
+      pedestrianAxis: pedestrian.axis,
+      pedestrianTimeRemainingSeconds: pedestrian.timeRemainingSeconds,
       timing: { ...this.timing },
     };
   }
@@ -325,8 +337,6 @@ export class IntersectionSignalController {
       { phase: "ew-green", duration: this.timing.eastWestGreenSeconds },
       { phase: "ew-yellow", duration: this.timing.yellowSeconds },
       { phase: "all-red", duration: this.timing.allRedSeconds },
-      { phase: "pedestrian-walk", duration: this.timing.pedestrianSeconds },
-      { phase: "all-red", duration: this.timing.allRedSeconds },
     ];
   }
 }
@@ -346,6 +356,7 @@ export class LiveTrafficSystem {
   private sampledPedestrianHolds = new Map<number, {
     snapshot: PedestrianSnapshot;
     intersectionId: string;
+    committed: boolean;
   }>();
   private backgroundTrafficVisible = true;
   private random: RandomSource;
@@ -568,6 +579,9 @@ export class LiveTrafficSystem {
     vehicles: readonly VehicleSnapshot[],
     pedestrians: readonly PedestrianSnapshot[],
   ): void {
+    const previousPedestrians = new Map(
+      this.sampledPedestrians.map((pedestrian) => [pedestrian.id, pedestrian]),
+    );
     this.sampledVehicles = vehicles.map((vehicle) =>
       this.alignSampledVehicleToLane({
         ...vehicle,
@@ -580,9 +594,17 @@ export class LiveTrafficSystem {
     for (const id of this.sampledPedestrianHolds.keys()) {
       if (!activePedestrianIds.has(id)) this.sampledPedestrianHolds.delete(id);
     }
-    this.sampledPedestrians = pedestrians.map((pedestrian) =>
-      this.alignSampledPedestrianToSidewalk({ ...pedestrian })
-    );
+    this.sampledPedestrians = pedestrians.map((pedestrian) => {
+      const aligned = this.alignSampledPedestrianToSidewalk({ ...pedestrian });
+      const previous = previousPedestrians.get(pedestrian.id);
+      if (!previous) return aligned;
+      const smoothed = smoothSampledPedestrianCorner(previous, aligned);
+      const hold = this.sampledPedestrianHolds.get(pedestrian.id);
+      if (hold) {
+        hold.snapshot = smoothed;
+      }
+      return smoothed;
+    });
   }
 
   setBackgroundTrafficVisible(visible: boolean): void {
@@ -646,8 +668,7 @@ export class LiveTrafficSystem {
   setAllSignalCycles(totalSeconds: number): void {
     const fixed =
       DEFAULT_SIGNAL_TIMING.yellowSeconds * 2 +
-      DEFAULT_SIGNAL_TIMING.allRedSeconds * 3 +
-      DEFAULT_SIGNAL_TIMING.pedestrianSeconds;
+      DEFAULT_SIGNAL_TIMING.allRedSeconds * 2;
     const green = Math.max(10, (Math.max(totalSeconds, fixed + 20) - fixed) / 2);
     for (const controller of this.controllers.values()) {
       controller.setTiming({
@@ -1430,19 +1451,27 @@ export class LiveTrafficSystem {
   ): PedestrianSnapshot {
     const held = this.sampledPedestrianHolds.get(pedestrian.id);
     if (held) {
-      const phase = this.controllers.get(held.intersectionId)?.getSnapshot().phase;
+      const signal = this.controllers.get(held.intersectionId)?.getSnapshot();
       if (
-        !pedestrian.violating
-        && phase !== undefined
-        && !pedestrianMayEnterCrossing(phase, false)
+        !held.committed
+        && !pedestrian.violating
+        && signal !== undefined
+        && !pedestrianMayEnterCrossing(
+          signal.pedestrianState,
+          signal.pedestrianAxis,
+          pedestrianAxisFromHeading(pedestrian.heading),
+          false,
+        )
       ) {
         return { ...held.snapshot, waiting: true };
       }
-      this.sampledPedestrianHolds.delete(pedestrian.id);
+      held.committed = true;
     }
     const segment = this.roadSegments.get(pedestrian.segmentId);
     const geometry = this.segmentGeometry(pedestrian.segmentId);
-    if (!segment || !geometry) return pedestrian;
+    if (!segment || !geometry) {
+      return held ? { ...held.snapshot, waiting: true } : pedestrian;
+    }
     const movementX = Math.sin(pedestrian.heading);
     const movementZ = Math.cos(pedestrian.heading);
     const roadX = geometry.end.x - geometry.start.x;
@@ -1479,14 +1508,23 @@ export class LiveTrafficSystem {
       z: position.z,
       heading: position.heading,
     };
+    if (held) {
+      this.sampledPedestrianHolds.delete(pedestrian.id);
+    }
     const signalNode = length - projection.distanceOnSegment
         <= SAMPLED_PEDESTRIAN_STOP_DISTANCE_METERS
       ? this.nearestSignalNode(end.x, end.z)
       : null;
+    const signal = signalNode
+      ? this.controllers.get(signalNode.id)!.getSnapshot()
+      : null;
     if (
       signalNode
+      && signal
       && !pedestrianMayEnterCrossing(
-        this.controllers.get(signalNode.id)!.getSnapshot().phase,
+        signal.pedestrianState,
+        signal.pedestrianAxis,
+        movementAxis(start, end),
         pedestrian.violating,
       )
     ) {
@@ -1494,6 +1532,7 @@ export class LiveTrafficSystem {
       this.sampledPedestrianHolds.set(pedestrian.id, {
         snapshot: waiting,
         intersectionId: signalNode.id,
+        committed: false,
       });
       return waiting;
     }
@@ -1917,9 +1956,15 @@ export class LiveTrafficSystem {
     if (!finalNode && remaining < 11) {
       const signal = this.controllers.get(end.id)?.getSnapshot();
       if (signal) {
+        const crossingAxis = movementAxis(start, end);
         if (
           pedestrian.committedIntersectionId === null &&
-          pedestrianMayEnterCrossing(signal.phase, false)
+          pedestrianMayEnterCrossing(
+            signal.pedestrianState,
+            signal.pedestrianAxis,
+            crossingAxis,
+            false,
+          )
         ) {
           pedestrian.committedIntersectionId = end.id;
         }
@@ -1927,8 +1972,16 @@ export class LiveTrafficSystem {
           pedestrian.committedIntersectionId === null &&
           !pedestrian.signalViolationUsed &&
           pedestrian.mayCrossAgainstSignal &&
-          pedestrianMayEnterCrossing(signal.phase, true)
-          && signal.phase !== "pedestrian-walk"
+          pedestrianMayEnterCrossing(
+            signal.pedestrianState,
+            signal.pedestrianAxis,
+            crossingAxis,
+            true,
+          )
+          && (
+            signal.pedestrianState !== "walk"
+            || signal.pedestrianAxis !== crossingAxis
+          )
         ) {
           pedestrian.committedIntersectionId = end.id;
           pedestrian.signalViolationUsed = true;
@@ -1939,7 +1992,12 @@ export class LiveTrafficSystem {
         }
         if (
           pedestrian.committedIntersectionId !== end.id &&
-          !pedestrianMayEnterCrossing(signal.phase, false)
+          !pedestrianMayEnterCrossing(
+            signal.pedestrianState,
+            signal.pedestrianAxis,
+            crossingAxis,
+            false,
+          )
         ) {
           targetSpeed = Math.min(
             targetSpeed,
@@ -3031,8 +3089,54 @@ function phaseDuration(
   if (phase === "ns-yellow" || phase === "ew-yellow") {
     return timing.yellowSeconds;
   }
-  if (phase === "pedestrian-walk") return timing.pedestrianSeconds;
   return timing.allRedSeconds;
+}
+
+function pedestrianIndication(
+  phase: SignalPhase,
+  phaseElapsed: number,
+  timing: Readonly<SignalTiming>,
+): {
+  state: PedestrianSignalState;
+  axis: "x" | "z" | null;
+  timeRemainingSeconds: number | null;
+} {
+  const axis = phase === "ns-green"
+    ? "z"
+    : phase === "ew-green"
+      ? "x"
+      : null;
+  if (axis === null) {
+    return {
+      state: "dont-walk",
+      axis: null,
+      timeRemainingSeconds: null,
+    };
+  }
+  const greenSeconds = phase === "ns-green"
+    ? timing.northSouthGreenSeconds
+    : timing.eastWestGreenSeconds;
+  const pedestrianSeconds = Math.min(timing.pedestrianSeconds, greenSeconds);
+  const walkSeconds = Math.min(7, Math.max(3, pedestrianSeconds - 3));
+  if (phaseElapsed < walkSeconds) {
+    return {
+      state: "walk",
+      axis,
+      timeRemainingSeconds: walkSeconds - phaseElapsed,
+    };
+  }
+  if (phaseElapsed < pedestrianSeconds) {
+    return {
+      state: "flashing-dont-walk",
+      axis,
+      timeRemainingSeconds: pedestrianSeconds - phaseElapsed,
+    };
+  }
+  return {
+    state: "dont-walk",
+    axis,
+    timeRemainingSeconds: Math.max(0, greenSeconds - phaseElapsed),
+  };
 }
 
 export function vehicleMayProceed(
@@ -3098,10 +3202,50 @@ export function pedestrianSignalViolationProbability(
 }
 
 export function pedestrianMayEnterCrossing(
-  phase: SignalPhase,
+  state: PedestrianSignalState,
+  signalAxis: "x" | "z" | null,
+  crossingAxis: "x" | "z",
   lawBreaker: boolean,
 ): boolean {
-  return phase === "pedestrian-walk" || lawBreaker;
+  return (state === "walk" && signalAxis === crossingAxis) || lawBreaker;
+}
+
+function movementAxis(
+  start: Pick<PositionedAgent, "x" | "z">,
+  end: Pick<PositionedAgent, "x" | "z">,
+): "x" | "z" {
+  return Math.abs(end.x - start.x) >= Math.abs(end.z - start.z) ? "x" : "z";
+}
+
+function pedestrianAxisFromHeading(heading: number): "x" | "z" {
+  return Math.abs(Math.sin(heading)) >= Math.abs(Math.cos(heading)) ? "x" : "z";
+}
+
+function smoothSampledPedestrianCorner(
+  previous: Readonly<PedestrianSnapshot>,
+  current: Readonly<PedestrianSnapshot>,
+): PedestrianSnapshot {
+  const deltaX = current.x - previous.x;
+  const deltaZ = current.z - previous.z;
+  if (Math.hypot(deltaX, deltaZ) <= 3) return { ...current };
+  const previousAxis = pedestrianAxisFromHeading(previous.heading);
+  const primaryDelta = previousAxis === "x" ? deltaX : deltaZ;
+  const secondaryDelta = previousAxis === "x" ? deltaZ : deltaX;
+  const primaryStep = Math.sign(primaryDelta) * Math.min(1.5, Math.abs(primaryDelta));
+  const remaining = 1.5 - Math.abs(primaryStep);
+  const secondaryStep =
+    Math.sign(secondaryDelta) * Math.min(remaining, Math.abs(secondaryDelta));
+  const movedOnSecondaryAxis = Math.abs(secondaryStep) > 0.001;
+  return {
+    ...current,
+    segmentId: movedOnSecondaryAxis ? current.segmentId : previous.segmentId,
+    x: previous.x + (previousAxis === "x" ? primaryStep : secondaryStep),
+    z: previous.z + (previousAxis === "z" ? primaryStep : secondaryStep),
+    heading: movedOnSecondaryAxis
+      ? current.heading
+      : previous.heading,
+    waiting: false,
+  };
 }
 
 export function pedestrianWalkingSpeedMetersPerSecond(sample: number): number {

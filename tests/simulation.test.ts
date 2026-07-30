@@ -233,7 +233,7 @@ describe("Simulation", () => {
     expect(largestProgressStep).toBeLessThan(0.03);
   });
 
-  it("cycles green, yellow, all-red, and pedestrian signal phases", () => {
+  it("cycles green, yellow, and all-red while coordinating pedestrian signals", () => {
     const simulation = new Simulation();
     simulation.setSignalTiming("30-market", {
       northSouthGreenSeconds: 10,
@@ -254,7 +254,11 @@ describe("Simulation", () => {
     expect(simulation.getState().signalPhase).toBe("ew-green");
 
     simulation.update(12.5);
-    expect(simulation.getState().signalPhase).toBe("pedestrian-walk");
+    expect(simulation.getState().signalPhase).toBe("ns-green");
+    expect(simulation.getState().signals[0]).toMatchObject({
+      pedestrianState: "walk",
+      pedestrianAxis: "z",
+    });
   });
 
   it("restores deterministic starting conditions", () => {

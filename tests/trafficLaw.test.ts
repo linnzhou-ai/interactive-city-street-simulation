@@ -69,7 +69,7 @@ describe("Pennsylvania traffic-law behavior", () => {
     ).toBe(false);
     expect(
       vehicleMayProceedWithBehavior(
-        "pedestrian-walk",
+        "all-red",
         "x",
         3,
         4,
@@ -86,11 +86,18 @@ describe("Pennsylvania traffic-law behavior", () => {
     expect(nighttime).toBeGreaterThan(daytime);
   });
 
-  it("keeps compliant pedestrians at the curb until the walk phase", () => {
-    expect(pedestrianMayEnterCrossing("ns-green", false)).toBe(false);
-    expect(pedestrianMayEnterCrossing("all-red", false)).toBe(false);
-    expect(pedestrianMayEnterCrossing("pedestrian-walk", false)).toBe(true);
-    expect(pedestrianMayEnterCrossing("ns-green", true)).toBe(true);
+  it("allows pedestrians to enter only on the WALK indication for their direction", () => {
+    expect(pedestrianMayEnterCrossing("walk", "z", "z", false)).toBe(true);
+    expect(pedestrianMayEnterCrossing("walk", "z", "x", false)).toBe(false);
+    expect(
+      pedestrianMayEnterCrossing("flashing-dont-walk", "z", "z", false),
+    ).toBe(false);
+    expect(pedestrianMayEnterCrossing("dont-walk", null, "z", false)).toBe(
+      false,
+    );
+    expect(pedestrianMayEnterCrossing("dont-walk", null, "z", true)).toBe(
+      true,
+    );
   });
 
   it("keeps normal walking speed well below vehicle speed", () => {

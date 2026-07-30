@@ -28,8 +28,11 @@ export type SignalPhase =
   | "ns-yellow"
   | "all-red"
   | "ew-green"
-  | "ew-yellow"
-  | "pedestrian-walk";
+  | "ew-yellow";
+export type PedestrianSignalState =
+  | "walk"
+  | "flashing-dont-walk"
+  | "dont-walk";
 export type SignalControlMode = "automatic" | "manual";
 export type ManualSignalTarget = "ns-green" | "ew-green" | "all-red";
 export type FeatureKind = "street" | "intersection";
@@ -163,6 +166,9 @@ export interface SignalSnapshot {
   phase: SignalPhase;
   nextPhase: SignalPhase;
   timeRemainingSeconds: number | null;
+  pedestrianState: PedestrianSignalState;
+  pedestrianAxis: FeatureAxis | null;
+  pedestrianTimeRemainingSeconds: number | null;
   timing: SignalTiming;
 }
 

@@ -1113,7 +1113,7 @@ export class ThreeRenderer {
     this.syncVehicles(state.vehicles, now);
     this.syncPedestrians(state.pedestrians, now);
     this.syncVisiblePeople(state.vehicles, state.pedestrians, now);
-    this.updateSignals(state.signals);
+    this.updateSignals(state.signals, state.elapsedSeconds);
     this.expansionBuilder.setRoadAnalysis(this.mapOverlayMode, state.roadTraffic);
     const signature = overlayStateSignature(this.mapOverlayMode, state);
     if (signature !== this.overlaySignature) {
@@ -3005,7 +3005,10 @@ export class ThreeRenderer {
     }
   }
 
-  private updateSignals(signals: readonly SignalSnapshot[]): void {
+  private updateSignals(
+    signals: readonly SignalSnapshot[],
+    elapsedSeconds: number,
+  ): void {
     const byIntersection = new Map(
       signals.map((signal) => [signal.intersectionId, signal]),
     );
@@ -3021,8 +3024,21 @@ export class ThreeRenderer {
       setSignalLens(assembly.red, !axisGreen && !axisYellow);
       setSignalLens(assembly.yellow, axisYellow);
       setSignalLens(assembly.green, axisGreen);
-      setSignalLens(assembly.walk, phase === "pedestrian-walk");
-      setSignalLens(assembly.dontWalk, phase !== "pedestrian-walk");
+      const pedestrianFacesThisWay =
+        signal?.pedestrianAxis === assembly.axis;
+      const walkActive =
+        pedestrianFacesThisWay && signal?.pedestrianState === "walk";
+      const flashingHandActive =
+        pedestrianFacesThisWay
+        && signal?.pedestrianState === "flashing-dont-walk"
+        && Math.floor(elapsedSeconds * 2) % 2 === 0;
+      setSignalLens(assembly.walk, walkActive);
+      setSignalLens(
+        assembly.dontWalk,
+        signal?.pedestrianState === "dont-walk"
+          || !pedestrianFacesThisWay
+          || flashingHandActive,
+      );
     }
   }
 

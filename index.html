@@ -407,14 +407,14 @@
             <label for="signal-ns-green">
               <span>N/S green</span>
               <span class="number-input-wrap">
-                <input id="signal-ns-green" type="number" min="10" max="120" value="30" />
+                <input id="signal-ns-green" type="number" min="10" max="120" step="0.5" value="37.5" />
                 <span>sec</span>
               </span>
             </label>
             <label for="signal-ew-green">
               <span>E/W green</span>
               <span class="number-input-wrap">
-                <input id="signal-ew-green" type="number" min="10" max="120" value="30" />
+                <input id="signal-ew-green" type="number" min="10" max="120" step="0.5" value="37.5" />
                 <span>sec</span>
               </span>
             </label>
@@ -433,7 +433,7 @@
               </span>
             </label>
             <label for="signal-pedestrian">
-              <span>Pedestrian</span>
+              <span>WALK + clearance</span>
               <span class="number-input-wrap">
                 <input id="signal-pedestrian" type="number" min="5" max="60" value="15" />
                 <span>sec</span>
@@ -443,7 +443,7 @@
           <div class="signal-live-status" aria-live="polite">
             <span>Current <strong id="signal-current-phase">N/S green</strong></span>
             <span>Next <strong id="signal-next-phase">N/S yellow</strong></span>
-            <span>Remaining <strong id="signal-time-remaining">30.0 sec</strong></span>
+            <span>Remaining <strong id="signal-time-remaining">37.5 sec</strong></span>
           </div>
           <div id="manual-signal-controls" class="manual-signal-controls" hidden>
             <button id="manual-ns-button" type="button">N/S green</button>

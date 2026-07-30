@@ -45,6 +45,7 @@ import type {
   PlacedBuilding,
   SceneHoverSelection,
   SignalControlMode,
+  SignalSnapshot,
   SignalTiming,
   VehicleSnapshot,
   WeatherMode,
@@ -2365,7 +2366,7 @@ function updateSelectedSignalStatus(): void {
   if (!signal) return;
   signalModeControl.value = signal.mode;
   manualSignalControls.hidden = signal.mode !== "manual";
-  signalCurrentPhase.textContent = formatSignalPhase(signal.phase);
+  signalCurrentPhase.textContent = formatSignalStatus(signal);
   signalNextPhase.textContent = formatSignalPhase(signal.nextPhase);
   signalTimeRemaining.textContent =
     signal.timeRemainingSeconds === null
@@ -2392,8 +2393,7 @@ function signalCycleSeconds(intersectionId: string): number {
     timing.northSouthGreenSeconds +
     timing.eastWestGreenSeconds +
     timing.yellowSeconds * 2 +
-    timing.allRedSeconds * 3 +
-    timing.pedestrianSeconds
+    timing.allRedSeconds * 2
   );
 }
 
@@ -2526,6 +2526,10 @@ function updateEntityInterface(): void {
   const selectedBuildingTraffic = selectedEntity?.kind === "building"
     ? simulation.getBuildingTrafficAttribution(selectedEntity.id)
     : null;
+  const selectedTrafficSignal =
+    selectedTrafficFeature?.kind === "intersection"
+      ? simulation.getSignal(selectedTrafficFeature.id)
+      : undefined;
   renderer.setTrafficFocusSegments(
     showAffectedRoads
       ? selectedBuildingTraffic?.roads.slice(0, 8).map((road) => road.segmentId) ?? []
@@ -2552,6 +2556,9 @@ function updateEntityInterface(): void {
     selectedEntity?.kind ?? "none",
     selectedEntity?.id ?? "none",
     selectedTrafficFeature?.id ?? "no-road",
+    selectedTrafficSignal
+      ? `${selectedTrafficSignal.phase}-${selectedTrafficSignal.pedestrianState}-${selectedTrafficSignal.pedestrianAxis ?? "none"}`
+      : "no-signal",
     state.roadTraffic.find((road) => road.segmentId === selectedTrafficFeature?.id)?.congestionPercent ?? 0,
     analysisOverlay.value,
     appMode,
@@ -2964,7 +2971,7 @@ function renderTrafficInspector(feature: DistrictFeature): void {
         ["Average speed", `${road.averageSpeedMph.toFixed(1)} mph`, "averageSpeedMph"],
       ]
     : [
-        ["Signal phase", signal ? formatSignalPhase(signal.phase) : "Unsignalized", "signalPhase"],
+        ["Signal phase", signal ? formatSignalStatus(signal) : "Unsignalized", "signalPhase"],
         ["Network congestion", `${city.congestionPercent.toFixed(0)}%`, "networkCongestion"],
         ["Average delay", `${city.averageTrafficDelayMinutes.toFixed(1)} min`, "networkDelay"],
         ["Daily traffic cost", formatDetailedMoney(city.congestionCostDaily), "networkCost"],
@@ -3701,7 +3708,7 @@ function roadTooltip(feature: DistrictFeature): string {
   const buildingImpact = selectedTraffic?.roads.find((impact) => impact.segmentId === feature.id);
   if (!road) {
     const signalValue = signal
-      ? `${formatSignalPhase(signal.phase)} · ${signal.timeRemainingSeconds?.toFixed(0) ?? "manual"} sec remaining`
+      ? `${formatSignalStatus(signal)} · ${signal.timeRemainingSeconds?.toFixed(0) ?? "manual"} sec remaining`
       : "No signal controller";
     return `<strong>${escapeHtml(feature.name)}</strong><span>${escapeHtml(signalValue)}</span><small>${escapeHtml(feature.description)}</small>`;
   }
@@ -4704,8 +4711,22 @@ function formatSignalPhase(phase: ReturnType<Simulation["getState"]>["signalPhas
   if (phase === "ns-yellow") return "N/S yellow";
   if (phase === "ew-green") return "E/W green";
   if (phase === "ew-yellow") return "E/W yellow";
-  if (phase === "pedestrian-walk") return "Pedestrian walk";
   return "All red";
+}
+
+function formatSignalStatus(signal: Readonly<SignalSnapshot>): string {
+  const pedestrianDirection =
+    signal.pedestrianAxis === "z" ? "N/S" : "E/W";
+  if (signal.pedestrianState === "walk" && signal.pedestrianAxis) {
+    return `${formatSignalPhase(signal.phase)} · ${pedestrianDirection} WALK`;
+  }
+  if (
+    signal.pedestrianState === "flashing-dont-walk"
+    && signal.pedestrianAxis
+  ) {
+    return `${formatSignalPhase(signal.phase)} · ${pedestrianDirection} flashing hand`;
+  }
+  return `${formatSignalPhase(signal.phase)} · DON'T WALK`;
 }
 
 function formatSignalMode(mode: SignalControlMode): string {

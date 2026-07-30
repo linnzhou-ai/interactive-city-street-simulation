@@ -15,15 +15,57 @@ import {
 describe("IntersectionSignalController", () => {
   it("runs the configured deterministic phase sequence", () => {
     const controller = new IntersectionSignalController("34-walnut");
+    controller.setTiming({
+      northSouthGreenSeconds: 30,
+      eastWestGreenSeconds: 30,
+    });
 
-    controller.update(30);
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: "ns-green",
+      pedestrianState: "walk",
+      pedestrianAxis: "z",
+    });
+
+    controller.update(7);
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: "ns-green",
+      pedestrianState: "flashing-dont-walk",
+      pedestrianAxis: "z",
+    });
+
+    controller.update(8);
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: "ns-green",
+      pedestrianState: "dont-walk",
+      pedestrianAxis: "z",
+    });
+
+    controller.update(15);
     expect(controller.getSnapshot().phase).toBe("ns-yellow");
 
     controller.update(3);
     expect(controller.getSnapshot().phase).toBe("all-red");
 
     controller.update(1);
-    expect(controller.getSnapshot().phase).toBe("ew-green");
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: "ew-green",
+      pedestrianState: "walk",
+      pedestrianAxis: "x",
+    });
+  });
+
+  it("holds vehicle green manually without leaving WALK active forever", () => {
+    const controller = new IntersectionSignalController("34-walnut");
+
+    controller.requestManualPhase("ns-green");
+    controller.update(15);
+
+    expect(controller.getSnapshot()).toMatchObject({
+      mode: "manual",
+      phase: "ns-green",
+      pedestrianState: "dont-walk",
+      timeRemainingSeconds: null,
+    });
   });
 
   it("uses yellow and all-red before an opposing manual green", () => {
