@@ -483,6 +483,10 @@ export class ThreeRenderer {
 
   setExpansionMode(enabled: boolean): void {
     this.expansionBuilder.setEnabled(enabled);
+    if (!enabled && this.cameraMode === "orbit") {
+      this.controls.enabled = true;
+      this.canvas.style.cursor = "grab";
+    }
   }
 
   setExpansionSelectionEnabled(enabled: boolean): void {
@@ -2100,6 +2104,14 @@ export class ThreeRenderer {
       if (this.cameraMode === "walk") return;
       if (clicked) this.pickFeature(event.clientX, event.clientY);
     });
+    const releaseInterruptedEdit = (event: PointerEvent) => {
+      if (this.cameraMode !== "orbit" || this.controls.enabled) return;
+      this.expansionBuilder.pointerUp(event.clientX, event.clientY, false);
+      this.controls.enabled = true;
+      this.canvas.style.cursor = "grab";
+    };
+    window.addEventListener("pointerup", releaseInterruptedEdit);
+    window.addEventListener("pointercancel", releaseInterruptedEdit);
     this.canvas.addEventListener(
       "wheel",
       (event) => {

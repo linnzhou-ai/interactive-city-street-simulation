@@ -64,6 +64,15 @@ describe("ExpansionBuilder crosswalk sets", () => {
     expectBlackAsphalt();
   });
 
+  it("releases a dragged street-tool interaction without placing anything", () => {
+    const expansion = builder(new THREE.Scene());
+    expansion.setEnabled(true);
+    expansion.setRoadDrawEnabled(true);
+
+    expect(expansion.pointerDown(100, 100)).toBe(true);
+    expect(expansion.pointerUp(120, 120, false)).toBe(true);
+  });
+
   it("snaps one placement to a junction and renders all four crosswalks", () => {
     const scene = new THREE.Scene();
     const expansion = builder(scene);

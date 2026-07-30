@@ -549,7 +549,7 @@ export class ExpansionBuilder {
       this.draggingBuildingId = null;
       return true;
     }
-    if (!clicked) return false;
+    if (!clicked) return this.isEditing;
     const hit = this.pickTarget(clientX, clientY);
     if (this.roadEraseEnabled) {
       const roadHit = this.pickTarget(clientX, clientY, true);
