@@ -41,6 +41,7 @@ import {
   ROAD_ASPHALT_COLOR,
   type PlacementResult,
 } from "./expansionBuilder";
+import { vehicleLengthMeters } from "../core/vehicleDimensions";
 import { projectPointToRoad } from "../core/expansionLayout";
 import type {
   BuildingConnectionKind,
@@ -58,6 +59,7 @@ const ROAD_WIDTH = 15;
 const MAJOR_ROAD_WIDTH = 22;
 const SIDEWALK_WIDTH = 6;
 const SIDEWALK_INTERSECTION_CLEARANCE = 14;
+const ROAD_MARKING_INTERSECTION_CLEARANCE = (MAJOR_ROAD_WIDTH + 0.8) / 2;
 const WORLD_SIZE = 5_200;
 const CAMERA_FAR = 16_000;
 const SKY_RADIUS = 5_500;
@@ -2918,6 +2920,7 @@ export class ThreeRenderer {
         0.24,
         0.025,
         this.materials.yellowLine,
+        ROAD_MARKING_INTERSECTION_CLEARANCE,
       );
       centerLine.position.y = y;
       group.add(centerLine);
@@ -2938,8 +2941,9 @@ export class ThreeRenderer {
           0.13,
           0.022,
           this.materials.whiteLine,
+          ROAD_MARKING_INTERSECTION_CLEARANCE,
         );
-        divider.scale.x = 0.94;
+        divider.scale.x *= 0.94;
         divider.position.y = y + 0.006;
         group.add(divider);
       }
@@ -2951,6 +2955,7 @@ export class ThreeRenderer {
         lane.widthMeters,
         0.018,
         this.materials.bikeLane,
+        ROAD_MARKING_INTERSECTION_CLEARANCE,
       );
       bikeSurface.position.y = y - 0.003;
       group.add(bikeSurface);
@@ -3334,13 +3339,25 @@ function createOffsetSegmentMesh(
   width: number,
   height: number,
   material: THREE.Material,
+  endpointInset = 0,
 ): THREE.Mesh {
   const object = createSegmentMesh(feature, width, height, material);
   const [start, end] = feature.path.map(geoToWorld);
-  const direction = end.clone().sub(start).normalize();
+  const segment = end.clone().sub(start);
+  const segmentLength = segment.length();
+  const direction = segment.normalize();
   const normal = new THREE.Vector3(-direction.z, 0, direction.x);
   object.position.addScaledVector(normal, offset);
+  object.scale.x = insetSegmentLength(segmentLength, endpointInset)
+    / Math.max(0.01, segmentLength);
   return object;
+}
+
+export function insetSegmentLength(
+  segmentLength: number,
+  endpointInset: number,
+): number {
+  return Math.max(0.01, segmentLength - Math.max(0, endpointInset) * 2);
 }
 
 function segmentCenter(feature: DistrictFeature): THREE.Vector3 {
@@ -3400,18 +3417,19 @@ export function fitObjectToFootprint(
 function vehicleScale(
   kind: VehicleKind,
 ): readonly [number, number, number] {
+  const lengthScale = vehicleLengthMeters(kind) / 4.2;
   return (
     kind === "compact"
-      ? [0.92, 0.9, 0.86]
+      ? [0.92, 0.9, lengthScale]
       : kind === "suv"
-        ? [1.06, 1.2, 1.12]
+        ? [1.03, 1.16, lengthScale]
         : kind === "van"
-          ? [1.08, 1.28, 1.28]
+          ? [1.06, 1.24, lengthScale]
         : kind === "bus"
-            ? [1.15, 1.35, 2.2]
+            ? [1.15, 1.35, lengthScale]
             : kind === "truck"
-              ? [1.12, 1.25, 1.9]
-            : [1, 1, 1]
+              ? [1.1, 1.22, lengthScale]
+            : [1, 1, lengthScale]
   );
 }
 

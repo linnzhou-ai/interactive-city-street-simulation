@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   IntersectionSignalController,
   LiveTrafficSystem,
+  vehicleStopCenterDistance,
 } from "../src/core/liveTraffic";
+import { vehicleLengthMeters } from "../src/core/vehicleDimensions";
 import {
   PENN_AVENUES,
   PENN_CENTER,
@@ -312,6 +314,54 @@ describe("LiveTrafficSystem", () => {
     expect(
       traffic.getVehicles().some((vehicle) => vehicle.kind === "truck"),
     ).toBe(true);
+  });
+
+  it("keeps visible trips on streets instead of drawing diagonal building connectors", () => {
+    const traffic = new LiveTrafficSystem(20260730);
+    const origin = { x: -73, z: 41 };
+    const destination = { x: 428, z: -317 };
+
+    for (const mode of ["car", "walk"] as const) {
+      const route = traffic.getRoutePath(origin, destination, mode);
+      expect(route.points).not.toContainEqual(origin);
+      expect(route.points).not.toContainEqual(destination);
+      expect(route.points.length).toBeGreaterThan(1);
+      expect(route.points.slice(1).every((point, index) => {
+        const previous = route.points[index];
+        return Math.abs(point.x - previous.x) < 0.01
+          || Math.abs(point.z - previous.z) < 0.01;
+      })).toBe(true);
+      expect(route.segmentIds).toHaveLength(route.points.length - 1);
+      route.segmentIds.forEach((segmentId, index) => {
+        const feature = PENN_ROAD_GRAPH.find((candidate) =>
+          candidate.kind === "street" && candidate.id === segmentId
+        );
+        expect(feature).toBeDefined();
+        if (!feature) return;
+        const endpoints = feature.path.map((point) => ({
+          x: (point.longitude - PENN_CENTER.longitude)
+            * 111_320 * Math.cos((PENN_CENTER.latitude * Math.PI) / 180),
+          z: -(point.latitude - PENN_CENTER.latitude) * 111_320,
+        }));
+        for (const point of route.points.slice(index, index + 2)) {
+          expect(Math.min(...endpoints.map((endpoint) =>
+            Math.hypot(point.x - endpoint.x, point.z - endpoint.z)
+          ))).toBeLessThan(0.01);
+        }
+      });
+    }
+  });
+
+  it("keeps front bumpers behind the intersection stop line", () => {
+    expect(vehicleStopCenterDistance(vehicleLengthMeters("sedan"))).toBe(16.2);
+    expect(vehicleStopCenterDistance(vehicleLengthMeters("bus"))).toBe(18.3);
+  });
+
+  it("keeps passenger vehicles within realistic urban lengths", () => {
+    expect(vehicleLengthMeters("compact")).toBeGreaterThanOrEqual(3.5);
+    expect(vehicleLengthMeters("sedan")).toBeLessThanOrEqual(4.6);
+    expect(vehicleLengthMeters("suv")).toBeLessThanOrEqual(4.8);
+    expect(vehicleLengthMeters("van")).toBeLessThanOrEqual(5.1);
   });
 
   it("routes economic trips over connected expansion roads", () => {

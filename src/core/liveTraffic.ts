@@ -38,6 +38,7 @@ import type {
 } from "../models/types";
 import type { TravelMode } from "../models/entityTypes";
 import { expansionRoadDisplayName } from "./expansionRoadNaming";
+import { vehicleLengthMeters } from "./vehicleDimensions";
 
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 const METERS_PER_DEGREE_LONGITUDE =
@@ -63,6 +64,7 @@ const PEDESTRIAN_COLORS = [
   "#39684e",
 ] as const;
 const VIOLATION_FLASH_SECONDS = 2;
+const INTERSECTION_STOP_LINE_DISTANCE_METERS = 14;
 const VEHICLE_KINDS: readonly VehicleKind[] = [
   "sedan",
   "sedan",
@@ -135,6 +137,7 @@ interface VehicleAgent {
   aggressiveYellow: boolean;
   mayRunRed: boolean;
   violationIntersectionId: string | null;
+  committedIntersectionId: string | null;
   violatingUntilSeconds: number;
 }
 
@@ -731,8 +734,6 @@ export class LiveTrafficSystem {
         return economicRoutePath(
           this.economicRouteNodes,
           economicRoute,
-          from,
-          to,
         );
       }
     }
@@ -767,10 +768,7 @@ export class LiveTrafficSystem {
         route[index + 1].row,
       ));
     }
-    const points: Array<{ x: number; z: number }> = [];
-    if (typeof from !== "string") points.push({ x: from.x, z: from.z });
-    points.push(...route.map((node) => ({ x: node.x, z: node.z })));
-    if (typeof to !== "string") points.push({ x: to.x, z: to.z });
+    const points = route.map((node) => ({ x: node.x, z: node.z }));
     const deduplicated = points.filter((point, index) =>
       index === 0 || Math.hypot(
         point.x - points[index - 1].x,
@@ -778,9 +776,8 @@ export class LiveTrafficSystem {
       ) > 0.1
     );
     const segmentIds = deduplicated.slice(0, -1).map((_, index) => {
-      const routeOffset = typeof from === "string" ? index : index - 1;
       return routeSegmentIds[
-        Math.max(0, Math.min(routeSegmentIds.length - 1, routeOffset))
+        Math.min(routeSegmentIds.length - 1, index)
       ] ?? "off-network";
     });
     return {
@@ -1154,7 +1151,7 @@ export class LiveTrafficSystem {
           queued: false,
           kind,
           color: this.random.pick(VEHICLE_COLORS),
-          length: vehicleLength(kind),
+          length: vehicleLengthMeters(kind),
           lane: assignment.lane,
           segmentId: assignment.segment.id,
           spawnedAt: this.elapsedSeconds,
@@ -1169,6 +1166,7 @@ export class LiveTrafficSystem {
               violationRiskMultiplier,
             ),
           violationIntersectionId: null,
+          committedIntersectionId: null,
           violatingUntilSeconds:
             speeding ? this.elapsedSeconds + VIOLATION_FLASH_SECONDS : 0,
         });
@@ -1278,6 +1276,7 @@ export class LiveTrafficSystem {
     vehicle.queued = false;
     vehicle.segmentDelaySeconds = 0;
     vehicle.violationIntersectionId = null;
+    vehicle.committedIntersectionId = null;
     return true;
   }
 
@@ -1602,6 +1601,8 @@ export class LiveTrafficSystem {
     if (!start || !end) return;
     const segmentLength = distance(start, end);
     const remaining = segmentLength - vehicle.distanceOnSegment;
+    const stopCenterDistance = vehicleStopCenterDistance(vehicle.length);
+    let mustStopBeforeIntersection = false;
     let targetSpeed = vehicle.desiredSpeed;
     if (leader) {
       const gap =
@@ -1612,7 +1613,7 @@ export class LiveTrafficSystem {
       if (gap < 18) targetSpeed = Math.min(targetSpeed, Math.max(0, gap * 0.55));
     }
     const finalNode = vehicle.segmentIndex + 1 === vehicle.path.length - 1;
-    if (!finalNode && remaining < 34) {
+    if (!finalNode && remaining < 40) {
       const controller = this.controllers.get(end.id);
       const signal = controller?.getSnapshot();
       const axis = Math.abs(end.x - start.x) > Math.abs(end.z - start.z) ? "x" : "z";
@@ -1629,10 +1630,12 @@ export class LiveTrafficSystem {
           vehicle.aggressiveYellow,
           vehicle.mayRunRed,
         );
-      const canProceed =
+      const alreadyCommitted = vehicle.committedIntersectionId === end.id;
+      const canEnter =
         behaviorCanProceed && !this.intersectionHasCrossingPedestrian(end.id);
       if (
-        canProceed &&
+        !alreadyCommitted &&
+        canEnter &&
         !legalCanProceed &&
         vehicle.violationIntersectionId !== end.id
       ) {
@@ -1650,9 +1653,22 @@ export class LiveTrafficSystem {
         (directionBuckets.get(nextKey) ?? []).some(
           (candidate) => candidate.distanceOnSegment < 14,
         );
-      if (!canProceed || downstreamBlocked) {
-        targetSpeed = Math.min(targetSpeed, Math.max(0, (remaining - 6) * 0.7));
+      const entryBlocked =
+        !alreadyCommitted && (!canEnter || downstreamBlocked);
+      if (entryBlocked) {
+        mustStopBeforeIntersection = true;
+        targetSpeed = Math.min(
+          targetSpeed,
+          Math.max(0, (remaining - stopCenterDistance) * 0.7),
+        );
       } else {
+        if (
+          !alreadyCommitted &&
+          remaining <=
+            stopCenterDistance + Math.max(0.5, vehicle.speed * deltaSeconds)
+        ) {
+          vehicle.committedIntersectionId = end.id;
+        }
         targetSpeed = Math.min(
           targetSpeed,
           safeIntersectionApproachSpeed(targetSpeed, remaining),
@@ -1671,6 +1687,12 @@ export class LiveTrafficSystem {
       vehicle.segmentDelaySeconds += deltaSeconds;
     }
     let travel = vehicle.speed * deltaSeconds;
+    if (mustStopBeforeIntersection) {
+      travel = Math.min(
+        travel,
+        Math.max(0, remaining - stopCenterDistance),
+      );
+    }
     while (travel > 0 && vehicle.segmentIndex < vehicle.path.length - 1) {
       const segmentStart = vehicle.path[vehicle.segmentIndex];
       const segmentEnd = vehicle.path[vehicle.segmentIndex + 1];
@@ -1684,6 +1706,7 @@ export class LiveTrafficSystem {
       vehicle.segmentIndex += 1;
       vehicle.distanceOnSegment = 0;
       vehicle.segmentDelaySeconds = 0;
+      vehicle.committedIntersectionId = null;
       if (vehicle.segmentIndex < vehicle.path.length - 1) {
         const assignment = this.laneForPath(
           vehicle.path,
@@ -2611,8 +2634,6 @@ function findEconomicRoute(
 function economicRoutePath(
   nodes: ReadonlyMap<string, EconomicRouteNode>,
   route: Readonly<EconomicRoute>,
-  from: TrafficRouteEndpoint,
-  to: TrafficRouteEndpoint,
 ): TrafficRoutePath {
   const points: Array<{ x: number; z: number }> = [];
   const segmentIds: string[] = [];
@@ -2628,7 +2649,6 @@ function economicRoutePath(
     if (previous) segmentIds.push(segmentId);
     points.push({ x: point.x, z: point.z });
   };
-  if (typeof from !== "string") points.push({ x: from.x, z: from.z });
   for (let index = 0; index < route.nodeIds.length; index += 1) {
     const node = nodes.get(route.nodeIds[index]);
     if (!node) continue;
@@ -2637,12 +2657,6 @@ function economicRoutePath(
       route.segmentIds[Math.max(0, index - 1)]
         ?? route.segmentIds[0]
         ?? "off-network",
-    );
-  }
-  if (typeof to !== "string") {
-    append(
-      to,
-      route.segmentIds.at(-1) ?? "off-network",
     );
   }
   return {
@@ -2953,6 +2967,11 @@ export function safeIntersectionApproachSpeed(
   return Math.min(desiredSpeed, urbanIntersectionCap * approachFactor);
 }
 
+export function vehicleStopCenterDistance(vehicleLength: number): number {
+  return INTERSECTION_STOP_LINE_DISTANCE_METERS
+    + Math.max(0, vehicleLength) / 2;
+}
+
 export function physicalLaneCount(laneDelta: -1 | 0 | 1): 1 | 2 {
   return laneDelta === 1 ? 2 : 1;
 }
@@ -3076,15 +3095,6 @@ function adjacentNodes(
   return candidates.filter((candidate): candidate is GridNode =>
     Boolean(candidate),
   );
-}
-
-function vehicleLength(kind: VehicleKind): number {
-  if (kind === "compact") return 3.7;
-  if (kind === "suv") return 4.8;
-  if (kind === "van") return 5.4;
-  if (kind === "bus") return 9.8;
-  if (kind === "truck") return 8.4;
-  return 4.4;
 }
 
 function ambientCitizenName(index: number): string {
