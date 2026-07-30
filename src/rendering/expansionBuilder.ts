@@ -34,6 +34,8 @@ const WORLD_LIMIT = EXPANSION_WORLD_LIMIT;
 const CORE_PADDING = 10;
 const SURFACE_HEIGHT = 0.11;
 const ROAD_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.04;
+const JUNCTION_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.17;
+const STREET_OBJECT_SURFACE_HEIGHT = SURFACE_HEIGHT + 0.23;
 
 export interface ExpansionBounds {
   minX: number;
@@ -1117,10 +1119,10 @@ function createRoadJunctionMesh(junction: Readonly<RoadJunction>): THREE.Group {
   const group = new THREE.Group();
   const size = (junction.radius + 4.2) * 2;
   const surface = new THREE.Mesh(
-    new THREE.BoxGeometry(size, 0.2, size),
+    new THREE.BoxGeometry(size, 0.08, size),
     new THREE.MeshStandardMaterial({ color: "#071417", roughness: 0.92 }),
   );
-  surface.position.set(junction.x, ROAD_SURFACE_HEIGHT, junction.z);
+  surface.position.set(junction.x, JUNCTION_SURFACE_HEIGHT, junction.z);
   surface.receiveShadow = true;
   group.add(surface);
   return group;
@@ -1218,7 +1220,7 @@ function addRoadBoxSegments(
 
 function createStreetObjectMesh(object: ExpansionStreetObject): THREE.Group {
   const group = targetGroup("street-object", object.id);
-  group.position.set(object.x, SURFACE_HEIGHT + 0.18, object.z);
+  group.position.set(object.x, STREET_OBJECT_SURFACE_HEIGHT, object.z);
   group.rotation.y = object.rotation;
   if (object.kind === "crosswalk") {
     const material = new THREE.MeshBasicMaterial({ color: "#f4f1e7" });

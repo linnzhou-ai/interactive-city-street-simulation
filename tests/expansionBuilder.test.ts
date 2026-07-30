@@ -96,15 +96,23 @@ describe("ExpansionBuilder crosswalk sets", () => {
 
     expansion.setStreetObjects([{ id: "crosswalk-set", ...placement! }]);
     let stripeCount = 0;
+    let lowestStripeTop = Number.POSITIVE_INFINITY;
     scene.traverse((object) => {
       if (
         object.parent?.userData.expansionId === "crosswalk-set"
         && object instanceof THREE.Mesh
       ) {
         stripeCount += 1;
+        const position = object.getWorldPosition(new THREE.Vector3());
+        lowestStripeTop = Math.min(
+          lowestStripeTop,
+          position.y
+            + (object.geometry as THREE.BoxGeometry).parameters.height / 2,
+        );
       }
     });
     expect(stripeCount).toBe(28);
+    expect(lowestStripeTop).toBeGreaterThan(0.32);
   });
 
   it("does not place an isolated one-sided crosswalk away from a junction", () => {

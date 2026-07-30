@@ -56,6 +56,7 @@ const METERS_PER_DEGREE_LONGITUDE =
 const ROAD_WIDTH = 15;
 const MAJOR_ROAD_WIDTH = 22;
 const SIDEWALK_WIDTH = 6;
+const SIDEWALK_INTERSECTION_CLEARANCE = 14;
 const WORLD_SIZE = 5_200;
 const CAMERA_FAR = 16_000;
 const SKY_RADIUS = 5_500;
@@ -1218,7 +1219,7 @@ export class ThreeRenderer {
       const sidewalkOffset = width / 2 + SIDEWALK_WIDTH / 2 + 0.65;
       for (const side of [-1, 1]) {
         const sidewalk = box(
-          length,
+          Math.max(1, length - SIDEWALK_INTERSECTION_CLEARANCE * 2),
           0.28,
           SIDEWALK_WIDTH,
           this.materials.sidewalk,
