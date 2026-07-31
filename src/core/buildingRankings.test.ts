@@ -29,6 +29,11 @@ function pair(before: number, after: number): ImpactMetricPair {
     after,
     delta,
     percentDelta: before === 0 ? null : delta / before * 100,
+    deltaRange: {
+      median: delta,
+      minimum: delta,
+      maximum: delta,
+    },
   };
 }
 

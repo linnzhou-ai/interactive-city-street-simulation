@@ -56,6 +56,10 @@ import {
   formatLongDate,
 } from "./timeScale";
 import { SampledMobilitySystem } from "./sampledMobility";
+import {
+  EMPTY_TRIP_LEDGER,
+  TripLedgerSystem,
+} from "./tripLedger";
 
 export const DEFAULT_SETTINGS: ScenarioSettings = {
   simulationSpeed: 1,
@@ -127,6 +131,7 @@ export function createInitialState(
     cityActivity: calculateCityActivity(city, 0),
     cityEvents: [],
     entities: createDetailedEntityState(buildingDefinitions, city),
+    tripLedger: EMPTY_TRIP_LEDGER,
   };
 }
 
@@ -134,6 +139,7 @@ export class Simulation {
   private settings: ScenarioSettings = { ...DEFAULT_SETTINGS };
   private readonly traffic = new LiveTrafficSystem(this.settings.simulationSeed);
   private readonly sampledMobility = new SampledMobilitySystem();
+  private readonly tripLedger = new TripLedgerSystem();
   private state: SimulationState;
   private mobilityOutcomes: ReadonlyMap<string, PersonMobilityOutcome> = new Map();
   private designImpact: DesignImpact = { ...EMPTY_DESIGN_IMPACT };
@@ -237,6 +243,7 @@ export class Simulation {
       activity.vehicleDemandLevel,
       activity.pedestrianDemandLevel,
     );
+    this.tripLedger.reset();
     const definitions = this.activeBuildingDefinitions();
     this.state = createInitialState(this.traffic, city, definitions);
     this.traffic.setExpansionNetwork(
@@ -400,6 +407,12 @@ export class Simulation {
     roads: readonly ExpansionRoad[],
     streetObjects: readonly ExpansionStreetObject[],
   ): void {
+    const nextRoadIds = new Set(roads.map((road) => road.id));
+    this.tripLedger.markRoadsRemoved(
+      this.expansionRoads
+        .filter((road) => !nextRoadIds.has(road.id))
+        .map((road) => road.id),
+    );
     this.expansionBuildings = buildings.map((building) => ({ ...building }));
     this.expansionRoads = roads.map((road) => ({ ...road }));
     this.expansionStreetObjects = streetObjects.map((object) => ({ ...object }));
@@ -431,15 +444,32 @@ export class Simulation {
   }
 
   private trafficBuildingDestinations(): Array<{
+    id: string;
+    name: string;
     kind: PlacedBuilding["kind"];
     x: number;
     z: number;
+    demandWeight: number;
   }> {
-    return this.activeBuildingDefinitions().map((building) => ({
-      kind: building.zone === "park" ? "civic" : building.zone,
-      x: building.x,
-      z: building.z,
-    }));
+    const detailedById = new Map(
+      this.state.entities.buildings.map((building) => [building.id, building]),
+    );
+    return this.activeBuildingDefinitions().map((building) => {
+      const detailed = detailedById.get(building.id);
+      const externalDemand =
+        (detailed?.accounting.externalCustomers ?? 0) +
+        (detailed?.accounting.importedSupplies ?? 0) / 18 +
+        Math.max(0, (detailed?.accounting.requiredWorkers ?? 0) -
+          (detailed?.employeeIds.length ?? 0));
+      return {
+        id: building.id,
+        name: building.name,
+        kind: building.zone === "park" ? "civic" : building.zone,
+        x: building.x,
+        z: building.z,
+        demandWeight: Math.max(1, externalDemand),
+      };
+    });
   }
 
   update(deltaSeconds: number): void {
@@ -794,6 +824,16 @@ export class Simulation {
     this.state.pedestrians = this.traffic.getPedestrians();
     this.state.roadTraffic = this.traffic.getRoadTraffic();
     this.updateMetrics();
+    this.state.tripLedger = this.tripLedger.update({
+      minute: START_MINUTE + this.state.cityElapsedMinutes,
+      people: this.state.entities.people,
+      buildings: this.state.entities.buildings,
+      households: this.state.entities.households,
+      vehicles: this.state.vehicles,
+      pedestrians: this.state.pedestrians,
+      trafficMetrics: this.state.metrics,
+      city: this.state.city,
+    });
   }
 
   private updateMetrics(): void {

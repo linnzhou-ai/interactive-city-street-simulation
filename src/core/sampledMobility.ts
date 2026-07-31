@@ -41,6 +41,7 @@ interface ActiveTrip {
   delayMinutes: number;
   route: TrafficRoutePath;
   violationEventId?: string;
+  tripId?: string;
 }
 
 export const LAW_VIOLATION_PROBABILITY = 0.15;
@@ -188,7 +189,11 @@ export class SampledMobilitySystem {
       && lawViolationForSample(sample)
         ? key
         : undefined;
-    const stable = { ...trip, violationEventId };
+    const stable = {
+      ...trip,
+      violationEventId,
+      tripId: `resident:${key}`,
+    };
     this.activeTripCache.set(key, stable);
     return stable;
   }
@@ -266,6 +271,8 @@ export class SampledMobilitySystem {
       segmentId: routePosition.segmentId,
       vehicleId,
       violationEventId: trip.violationEventId,
+      tripId: trip.tripId,
+      plannedRouteSegmentIds: trip.route.segmentIds,
       x: routePosition.x,
       z: routePosition.z,
       heading: routePosition.heading,

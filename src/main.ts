@@ -65,6 +65,7 @@ import type {
   DetailedPerson,
   EntitySelection,
   PersonHistoryPoint,
+  TripRecord,
 } from "./models/entityTypes";
 import type { TimeHorizon } from "./models/cityTypes";
 import type {
@@ -186,6 +187,18 @@ const throughput = requireElement<HTMLElement>("throughput");
 const buildingArrivals = requireElement<HTMLElement>("building-arrivals");
 const trafficViolations = requireElement<HTMLElement>("traffic-violations");
 const jaywalkingViolations = requireElement<HTMLElement>("jaywalking-violations");
+const simulationIntegrityStatus = requireElement<HTMLElement>(
+  "simulation-integrity-status",
+);
+const simulationTripSummary = requireElement<HTMLElement>(
+  "simulation-trip-summary",
+);
+const simulationIntegrityChecks = requireElement<HTMLElement>(
+  "simulation-integrity-checks",
+);
+const simulationTripBreakdown = requireElement<HTMLElement>(
+  "simulation-trip-breakdown",
+);
 const cityOutput = requireElement<HTMLElement>("city-output");
 const cityUnemployment = requireElement<HTMLElement>("city-unemployment");
 const cityTrafficCost = requireElement<HTMLElement>("city-traffic-cost");
@@ -2222,12 +2235,13 @@ function requestImpactProjection(
   impactProjectionError = "";
   impactEditLabel.textContent = context.editLabel;
   impactProjectionStatus.textContent =
-    "Projecting matched cities at 30, 90, and 365 days…";
+    "Running six matched control/intervention pairs at 30, 90, and 365 days…";
   setImpactMetricPending();
   const request: ImpactProjectionRequest = {
     ...context,
     requestId: impactRequestId,
     trackedBuildingIds: [...trackedBuildingIds],
+    projectionRuns: 6,
   };
   impactWorker.terminate();
   impactWorker = createImpactWorker();
@@ -2637,6 +2651,7 @@ function updateMetrics(): void {
   buildingArrivals.textContent = metrics.buildingArrivals.toLocaleString();
   trafficViolations.textContent = metrics.trafficViolations.toLocaleString();
   jaywalkingViolations.textContent = metrics.jaywalkingViolations.toLocaleString();
+  renderSimulationIntegrity(state);
   signalPhase.textContent = formatSignalPhase(state.signalPhase);
   cityDate.textContent = state.cityActivity.dateLabel;
   cityClock.textContent = state.cityActivity.clockLabel;
@@ -2663,6 +2678,45 @@ function updateMetrics(): void {
   updateEntityInterface();
 }
 
+function renderSimulationIntegrity(
+  state: Readonly<ReturnType<Simulation["getState"]>>,
+): void {
+  const ledger = state.tripLedger;
+  const status = ledger.integrity.status;
+  simulationIntegrityStatus.dataset.status = status;
+  simulationIntegrityStatus.textContent =
+    status === "verified"
+      ? "Verified"
+      : status === "warning"
+        ? "Warning"
+        : "Mismatch";
+  simulationTripSummary.textContent =
+    `${ledger.summary.activeTrips.toLocaleString()} active · ` +
+    `${ledger.summary.completedTrips.toLocaleString()} recent · ` +
+    `${ledger.summary.externalTrips.toLocaleString()} external`;
+  simulationTripBreakdown.innerHTML = `
+    <span>Active<b>${ledger.summary.activeTrips.toLocaleString()}</b></span>
+    <span>Completed<b>${ledger.summary.completedTrips.toLocaleString()}</b></span>
+    <span>Walk / car / transit<b>${ledger.summary.byMode.walk.toLocaleString()} / ${ledger.summary.byMode.car.toLocaleString()} / ${ledger.summary.byMode.transit.toLocaleString()}</b></span>
+    <span>Local / external<b>${ledger.summary.localTrips.toLocaleString()} / ${ledger.summary.externalTrips.toLocaleString()}</b></span>
+    <span>Work / visits<b>${ledger.summary.byPurpose.work.toLocaleString()} / ${(ledger.summary.byPurpose.shopping + ledger.summary.byPurpose.service + ledger.summary.byPurpose.recreation).toLocaleString()}</b></span>
+    <span>Freight / through<b>${ledger.summary.byPurpose.delivery.toLocaleString()} / ${ledger.summary.byPurpose.through.toLocaleString()}</b></span>`;
+  simulationIntegrityChecks.innerHTML = ledger.integrity.checks
+    .map((check) => `
+      <article data-status="${check.status}">
+        <span><b>${escapeHtml(check.label)}</b><small>${escapeHtml(check.subsystem)} · tolerance ${formatIntegrityNumber(check.tolerance)}</small></span>
+        <strong>${formatIntegrityNumber(check.observed)} / ${formatIntegrityNumber(check.expected)}</strong>
+        <p>${escapeHtml(check.detail)}${Math.abs(check.difference) > check.tolerance ? ` Difference: ${formatSigned(check.difference)}.` : ""}</p>
+      </article>`)
+    .join("");
+}
+
+function formatIntegrityNumber(value: number): string {
+  return Number.isInteger(value)
+    ? value.toLocaleString()
+    : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 function renderImpactProjection(): void {
   for (const button of impactHorizonSelector.querySelectorAll<HTMLButtonElement>(
     "[data-impact-horizon]",
@@ -2682,7 +2736,7 @@ function renderImpactProjection(): void {
   }
   impactEditLabel.textContent = impact.editLabel;
   impactProjectionStatus.textContent =
-    `Controlled ${selectedImpactHorizon}-day projection · same time, demand, weather, and random seed`;
+    `Controlled ${selectedImpactHorizon}-day projection · ${impact.projectionRuns} paired runs with matched conditions`;
   setImpactMetric(
     impactCityOutput,
     horizon.metrics.dailyOutput,
@@ -2730,7 +2784,9 @@ function setImpactMetric(
   lowerIsBetter = false,
   neutral = false,
 ): void {
-  element.textContent = `${selectedImpactHorizon}d ${formatImpactDelta(metric.delta, metric.percentDelta, format)}`;
+  element.textContent =
+    `${selectedImpactHorizon}d ${formatImpactDelta(metric.delta, metric.percentDelta, format)} · ` +
+    `range ${formatImpactRange(metric, format)}`;
   const beneficial = lowerIsBetter ? metric.delta < 0 : metric.delta > 0;
   element.dataset.tone =
     neutral || Math.abs(metric.delta) < 0.005
@@ -2739,7 +2795,7 @@ function setImpactMetric(
         ? "good"
         : "bad";
   element.title =
-    `${formatImpactValue(metric.before, format)} before → ${formatImpactValue(metric.after, format)} after`;
+    `${formatImpactValue(metric.before, format)} before → ${formatImpactValue(metric.after, format)} after. Six-run delta range ${formatImpactRange(metric, format)}.`;
 }
 
 function setImpactMetricPending(): void {
@@ -2808,6 +2864,26 @@ function formatImpactValue(
     return `${Math.round(value).toLocaleString()}/yr`;
   }
   return `${value.toFixed(2)} points`;
+}
+
+function formatImpactRange(
+  metric: Readonly<ImpactMetricPair>,
+  format:
+    | "currency"
+    | "currency-per-day"
+    | "number-per-year"
+    | "points"
+    | "number",
+): string {
+  const value = (amount: number): string => {
+    if (format === "currency" || format === "currency-per-day") {
+      return formatSignedMoney(amount);
+    }
+    if (format === "number-per-year") return `${formatSigned(amount)}/yr`;
+    if (format === "points") return `${formatSigned(amount)} pts`;
+    return formatSigned(amount);
+  };
+  return `${value(metric.deltaRange.minimum)}–${value(metric.deltaRange.maximum)}`;
 }
 
 function formatDriverDelta(
@@ -3075,6 +3151,16 @@ function updateEntityInterface(): void {
   const selectedBuildingTraffic = selectedEntity?.kind === "building"
     ? simulation.getBuildingTrafficAttribution(selectedEntity.id)
     : null;
+  const selectedBuildingTrips = selectedEntity?.kind === "building"
+    ? state.tripLedger.buildingSummaries.find(
+        (summary) => summary.buildingId === selectedEntity?.id,
+      )
+    : undefined;
+  const selectedPersonTrips = selectedEntity?.kind === "person"
+    ? state.tripLedger.records.filter(
+        (record) => record.travelerId === selectedEntity?.id,
+      ).length
+    : 0;
   const selectedTrafficSignal =
     selectedTrafficFeature?.kind === "intersection"
       ? simulation.getSignal(selectedTrafficFeature.id)
@@ -3117,6 +3203,10 @@ function updateEntityInterface(): void {
     showAffectedRoads,
     comparedBuildingIds.join(","),
     trafficSignature,
+    selectedBuildingTrips
+      ? `${selectedBuildingTrips.activeTrips}-${selectedBuildingTrips.workerArrivals}-${selectedBuildingTrips.customerVisits}-${selectedBuildingTrips.deliveries}-${selectedBuildingTrips.missedTrips}`
+      : "no-building-trips",
+    selectedPersonTrips,
     favoriteSignature,
   ].join(":");
   if (signature === entityInterfaceSignature) return;
@@ -3264,6 +3354,7 @@ function renderBuildingInspector(building: DetailedBuilding): void {
   const overview = `
     <div class="inspector-stat-grid">${primaryStats.map(([label, value, key]) => statCell(label, value, "building", key, renderBuildingTrend(building, key))).join("")}</div>
     ${building.developmentStage === "construction" ? `<section class="public-funding-section"><h4>Development</h4><p>${civic ? "Municipal capital funding" : "Private development capital"} pays the ${formatDetailedMoney(building.constructionCost)} project cost. Material deliveries create freight traffic now; occupancy, hiring, services, and sales begin only after opening.</p></section>` : ""}
+    ${renderBuildingTripLedger(building.id)}
     ${renderBuildingImpactDetail(building.id)}
     ${renderBuildingBenchmark(building, state.entities.buildings)}
     ${residentContext}
@@ -3612,6 +3703,7 @@ function renderPersonInspector(person: DetailedPerson): void {
       </section>`;
   const overview = `
     ${mobilityOverview}
+    ${renderPersonTripLedger(person.id)}
     <section class="schedule-section">
       <h4>Daily route</h4>
       <div class="schedule-timeline">${person.schedule.map((item) => {
@@ -3679,6 +3771,84 @@ function renderPersonInspector(person: DetailedPerson): void {
     </article>`;
 }
 
+function renderPersonTripLedger(personId: string): string {
+  const trips = simulation
+    .getState()
+    .tripLedger.records.filter((record) => record.travelerId === personId)
+    .slice(0, 5);
+  if (trips.length === 0) {
+    return `<section class="trip-ledger-section">
+      <h4>Recent recorded trips</h4>
+      <p>No trip has started during the retained two-day window.</p>
+    </section>`;
+  }
+  return `<section class="trip-ledger-section">
+    <h4>Recent recorded trips <strong>${trips.length}</strong></h4>
+    <div class="trip-ledger-list">${trips.map(renderTripLedgerRow).join("")}</div>
+  </section>`;
+}
+
+function renderBuildingTripLedger(buildingId: string): string {
+  const ledger = simulation.getState().tripLedger;
+  const summary = ledger.buildingSummaries.find(
+    (candidate) => candidate.buildingId === buildingId,
+  ) ?? {
+    workerArrivals: 0,
+    customerVisits: 0,
+    deliveries: 0,
+    missedTrips: 0,
+    activeTrips: 0,
+    attributedRevenue: 0,
+  };
+  const recent = ledger.records
+    .filter((record) => record.destination.id === buildingId)
+    .slice(0, 5);
+  return `<section class="trip-ledger-section">
+    <h4>Recorded arrivals <strong>${summary.activeTrips} active</strong></h4>
+    <div class="cost-breakdown">
+      <span>Workers arrived<b>${summary.workerArrivals.toLocaleString()}</b></span>
+      <span>Customer visits<b>${summary.customerVisits.toLocaleString()}</b></span>
+      <span>Delivery units<b>${summary.deliveries.toLocaleString()}</b></span>
+      <span>Missed trips<b>${summary.missedTrips.toLocaleString()}</b></span>
+      <span>Attributed spending<b>${formatDetailedMoney(summary.attributedRevenue)}</b></span>
+    </div>
+    ${recent.length > 0
+      ? `<div class="trip-ledger-list">${recent.map(renderTripLedgerRow).join("")}</div>`
+      : "<p>No recorded arrival is active or retained for this building.</p>"}
+  </section>`;
+}
+
+function renderTripLedgerRow(record: Readonly<TripRecord>): string {
+  return `<article data-trip-status="${record.status}">
+    <span><b>${escapeHtml(formatTripPurpose(record.purpose))}</b><small>${escapeHtml(record.travelerName)} · ${escapeHtml(formatMode(record.mode))}</small></span>
+    <strong>${escapeHtml(capitalize(record.status))}</strong>
+    <p>${escapeHtml(record.origin.name)} → ${escapeHtml(record.destination.name)}</p>
+    <small>${record.delayMinutes.toFixed(1)} min delay · ${formatDetailedMoney(record.cost)} travel cost</small>
+  </article>`;
+}
+
+function renderTripEndpoints(record: Readonly<TripRecord>): string {
+  return `<div class="trip-endpoints">
+    <span><small>Origin</small><b>${escapeHtml(record.origin.name)}</b></span>
+    <i>→</i>
+    <span><small>Destination</small><b>${escapeHtml(record.destination.name)}</b></span>
+  </div>`;
+}
+
+function tripRecordById(id: string | undefined): TripRecord | undefined {
+  return id
+    ? simulation.getState().tripLedger.records.find((record) => record.id === id)
+    : undefined;
+}
+
+function formatTripPurpose(purpose: TripRecord["purpose"]): string {
+  return purpose === "through"
+    ? "Through trip"
+    : purpose === "delivery"
+      ? "Freight delivery"
+      : capitalize(purpose);
+}
+
 function renderAmbientPersonInspector(
   pedestrian: Readonly<PedestrianSnapshot>,
 ): void {
@@ -3689,6 +3859,7 @@ function renderAmbientPersonInspector(
       ?? "University City street";
   const movement = pedestrian.waiting ? "Waiting to cross" : "Walking";
   const compliance = Math.round(pedestrian.complianceProbability * 100);
+  const trip = tripRecordById(pedestrian.tripId);
   entityInspector.innerHTML = `
     <article class="entity-card person-card">
       ${renderInspectorBreadcrumb("Residents", pedestrian.displayName ?? "City traveler")}
@@ -3698,7 +3869,7 @@ function renderAmbientPersonInspector(
           <span>${movement}</span>
         </div>
       </header>
-      <p class="heading-diagnosis">This generated citizen is part of the live ambient population using the expanded street network.</p>
+      <p class="heading-diagnosis">This recorded ${escapeHtml(trip?.travelerCategory ?? "visitor")} is part of the live city trip ledger.</p>
       <section class="accounting-section current-trip-section">
         <h4>Current trip</h4>
         <div class="accounting-flow journey-flow">
@@ -3710,12 +3881,13 @@ function renderAmbientPersonInspector(
           <span>Signal delay<b>${(pedestrian.delaySeconds ?? 0).toFixed(1)} sec</b></span>
           <span>Law compliance<b>${compliance}%</b></span>
           <span>Rule violation<b>${pedestrian.violating ? "Active" : "None"}</b></span>
-          <span>Population role<b>Ambient citizen</b></span>
+          <span>Trip purpose<b>${escapeHtml(formatTripPurpose(trip?.purpose ?? "through"))}</b></span>
         </div>
+        ${trip ? renderTripEndpoints(trip) : ""}
       </section>
       <section class="entity-actions-section">
         <h4>About this citizen</h4>
-        <p>Ambient citizens provide continuous street activity outside scheduled resident trips. Their route follows the same connected roads, sidewalks, crossings, and traffic controls as the rest of the live city.</p>
+        <p>This external trip has a stable identity, purpose, route, delay, and economic attribution. It follows the same connected roads, sidewalks, crossings, and traffic controls as scheduled residents.</p>
       </section>
     </article>`;
 }
@@ -3730,6 +3902,7 @@ function renderAmbientDriverInspector(
       ?? "University City street";
   const movement = vehicle.queued ? "Waiting in traffic" : "Driving";
   const compliance = Math.round(vehicle.complianceProbability * 100);
+  const trip = tripRecordById(vehicle.tripId);
   entityInspector.innerHTML = `
     <article class="entity-card person-card">
       ${renderInspectorBreadcrumb("Residents", vehicle.displayName ?? "City driver")}
@@ -3739,7 +3912,7 @@ function renderAmbientDriverInspector(
           <span>${movement}</span>
         </div>
       </header>
-      <p class="heading-diagnosis">This generated citizen is driving through the live expanded street network.</p>
+      <p class="heading-diagnosis">This recorded ${escapeHtml(trip?.travelerCategory ?? "driver")} is using the shared city trip ledger.</p>
       <section class="accounting-section current-trip-section">
         <h4>Current trip</h4>
         <div class="accounting-flow journey-flow">
@@ -3752,11 +3925,13 @@ function renderAmbientDriverInspector(
           <span>Traffic delay<b>${(vehicle.delaySeconds ?? 0).toFixed(1)} sec</b></span>
           <span>Law compliance<b>${compliance}%</b></span>
           <span>Rule violation<b>${vehicle.violating ? "Active" : "None"}</b></span>
+          <span>Trip purpose<b>${escapeHtml(formatTripPurpose(trip?.purpose ?? "through"))}</b></span>
         </div>
+        ${trip ? renderTripEndpoints(trip) : ""}
       </section>
       <section class="entity-actions-section">
         <h4>About this citizen</h4>
-        <p>Vehicle occupants use the same connected roads, intersections, traffic signals, and rerouting rules as the rest of the live city.</p>
+        <p>This vehicle exists because a recorded trip requested it. Its route, delay, occupancy, and destination feed the same traffic and integrity totals as every other agent.</p>
       </section>
     </article>`;
 }
@@ -3900,6 +4075,7 @@ function renderBuildingImpactDetail(buildingId: string): string {
       <span><small>Net result</small><b>${escapeHtml(formatImpactDelta(profit.delta, profit.percentDelta, "currency"))}</b></span>
       <span><small>Access</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.accessibility.delta, horizon.metrics.accessibility.percentDelta, "points"))}</b></span>
     </div>
+    <p class="impact-range-note">Six-run output range: ${escapeHtml(formatImpactRange(primary, "number"))}.</p>
     <div class="building-impact-chain">${chain}</div>
     <p>${horizon.affectedRoads.length > 0 ? `Affected roads: ${escapeHtml(horizon.affectedRoads.join(", "))}.` : "No routed road changed materially for this building."}</p>
   </section>`;
@@ -3936,6 +4112,7 @@ function renderRemovedBuildingImpact(buildingId: string): void {
           <span><small>Jobs filled</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.staffing.delta, horizon.metrics.staffing.percentDelta, "number"))}</b></span>
           <span><small>Net result</small><b>${escapeHtml(formatImpactDelta(horizon.metrics.profit.delta, horizon.metrics.profit.percentDelta, "currency"))}</b></span>
         </div>
+        <p class="impact-range-note">Six-run output range: ${escapeHtml(formatImpactRange(horizon.metrics.primaryOutput, "number"))}.</p>
         <div class="building-impact-chain">${horizon.drivers.slice(0, 5).map((item) => `<span><small>${escapeHtml(item.label)}</small><b>${escapeHtml(formatDriverDelta(item))}</b></span>`).join("<i>→</i>")}</div>
         <p>${horizon.affectedRoads.length > 0 ? `Previously connected roads: ${escapeHtml(horizon.affectedRoads.join(", "))}.` : "No routed road attribution was available."}</p>
       </section>
@@ -4412,7 +4589,7 @@ function renderLatestImpactRanking(): void {
   );
   const changed = ranking.some((row) => Math.abs(row.output.delta) > 0.005);
   buildingRankingsSummary.textContent =
-    `${impact.editLabel} · controlled ${selectedImpactHorizon}-day projection`;
+    `${impact.editLabel} · ${impact.projectionRuns} paired ${selectedImpactHorizon}-day runs`;
   const noChange = changed
     ? ""
     : `<p class="building-rankings-empty">This edit produced no projected building-output changes at ${selectedImpactHorizon} days.</p>`;
@@ -4450,7 +4627,7 @@ function renderLatestImpactRanking(): void {
             <b>${escapeHtml(row.buildingName)}</b>
             <small>${escapeHtml(formatBuildingFunction(row.buildingFunction))}${status ? ` · ${status}` : ""}</small>
           </span>
-          <strong>${escapeHtml(formatSignedMoney(row.output.delta))}<small>${escapeHtml(percent)}</small></strong>
+          <strong>${escapeHtml(formatSignedMoney(row.output.delta))}<small>${escapeHtml(percent)} · ${escapeHtml(formatImpactRange(row.output, "currency"))}</small></strong>
         </button>`;
     })
     .join("");

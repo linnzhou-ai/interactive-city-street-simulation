@@ -17,6 +17,20 @@ export type BuildingConnectionKind = "work" | "visit" | "delivery";
 export type PersonNeed = "goods" | "health" | "education" | "community" | "recreation";
 export type PersonActivity = "home" | "work" | "school" | "shop" | "library" | "healthcare" | "leisure";
 export type TravelMode = "walk" | "car" | "transit";
+export type TripTravelerCategory =
+  | "resident"
+  | "commuter"
+  | "visitor"
+  | "freight"
+  | "through-traffic";
+export type TripPurpose =
+  | "work"
+  | "shopping"
+  | "service"
+  | "recreation"
+  | "delivery"
+  | "through";
+export type TripStatus = "active" | "completed" | "cancelled" | "rerouting";
 export type HouseholdFinancialStatus = "stable" | "strained" | "distressed" | "crisis";
 export type PersonMobilityPhase =
   | "inside"
@@ -190,9 +204,104 @@ export interface PersonMobilityState {
   segmentId?: string;
   vehicleId?: number;
   violationEventId?: string;
+  tripId?: string;
+  plannedRouteSegmentIds?: readonly string[];
   x: number;
   z: number;
   heading: number;
+}
+
+export interface TripEndpoint {
+  kind: "building" | "boundary";
+  id: string;
+  name: string;
+}
+
+export interface TripEconomicEffect {
+  buildingId?: string;
+  workerArrival: number;
+  customerVisit: number;
+  deliveryUnits: number;
+  localSpending: number;
+  congestionOnly: boolean;
+}
+
+export interface TripRecord {
+  id: string;
+  travelerId: string;
+  travelerName: string;
+  travelerCategory: TripTravelerCategory;
+  purpose: TripPurpose;
+  mode: TravelMode;
+  origin: TripEndpoint;
+  destination: TripEndpoint;
+  plannedRouteSegmentIds: readonly string[];
+  actualRouteSegmentIds: readonly string[];
+  scheduledDepartureMinute: number | null;
+  actualDepartureMinute: number;
+  arrivalMinute: number | null;
+  travelMinutes: number;
+  delayMinutes: number;
+  status: TripStatus;
+  vehicleId?: number;
+  occupancy: number;
+  cost: number;
+  source: "scheduled-resident" | "recorded-external";
+  economicEffect: TripEconomicEffect;
+}
+
+export interface BuildingTripSummary {
+  buildingId: string;
+  workerArrivals: number;
+  customerVisits: number;
+  deliveries: number;
+  missedTrips: number;
+  activeTrips: number;
+  attributedRevenue: number;
+}
+
+export type IntegrityStatus = "verified" | "warning" | "mismatch";
+
+export interface SimulationIntegrityCheck {
+  id: string;
+  label: string;
+  subsystem: "traffic" | "buildings" | "finance" | "government";
+  expected: number;
+  observed: number;
+  difference: number;
+  tolerance: number;
+  status: IntegrityStatus;
+  detail: string;
+}
+
+export interface TripLedgerSummary {
+  activeTrips: number;
+  completedTrips: number;
+  localTrips: number;
+  externalTrips: number;
+  byMode: Record<TravelMode, number>;
+  byPurpose: Record<TripPurpose, number>;
+}
+
+export interface TripLedgerDailyAggregate {
+  day: number;
+  completedTrips: number;
+  cancelledTrips: number;
+  localTrips: number;
+  externalTrips: number;
+  byMode: Record<TravelMode, number>;
+  byPurpose: Record<TripPurpose, number>;
+}
+
+export interface TripLedgerSnapshot {
+  records: readonly TripRecord[];
+  dailyAggregates: readonly TripLedgerDailyAggregate[];
+  buildingSummaries: readonly BuildingTripSummary[];
+  summary: TripLedgerSummary;
+  integrity: {
+    status: IntegrityStatus;
+    checks: readonly SimulationIntegrityCheck[];
+  };
 }
 
 export interface PersonMobilityOutcome {

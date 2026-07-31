@@ -37,7 +37,11 @@ import type {
   VehicleKind,
   VehicleSnapshot,
 } from "../models/types";
-import type { TravelMode } from "../models/entityTypes";
+import type {
+  TravelMode,
+  TripPurpose,
+  TripTravelerCategory,
+} from "../models/entityTypes";
 import { expansionRoadDisplayName } from "./expansionRoadNaming";
 import { vehicleLengthMeters } from "./vehicleDimensions";
 
@@ -145,6 +149,13 @@ interface VehicleAgent {
   id: number;
   driverPersonId?: string;
   displayName?: string;
+  tripId: string;
+  travelerCategory: TripTravelerCategory;
+  tripPurpose: TripPurpose;
+  originBuildingId?: string;
+  originName: string;
+  destinationBuildingId?: string;
+  destinationName: string;
   path: readonly AgentRouteNode[];
   segmentIds: readonly string[];
   segmentIndex: number;
@@ -182,6 +193,13 @@ interface PedestrianAgent {
   id: number;
   personId?: string;
   displayName?: string;
+  tripId: string;
+  travelerCategory: TripTravelerCategory;
+  tripPurpose: TripPurpose;
+  originBuildingId?: string;
+  originName: string;
+  destinationBuildingId?: string;
+  destinationName: string;
   path: readonly AgentRouteNode[];
   segmentIds: readonly string[];
   segmentIndex: number;
@@ -203,8 +221,11 @@ interface PedestrianAgent {
 }
 
 interface BuildingDestination {
+  id: string;
+  name: string;
   kind: BuildingKind;
   node: GridNode;
+  demandWeight: number;
 }
 
 type BuildingDestinationInput = Readonly<{
@@ -212,9 +233,11 @@ type BuildingDestinationInput = Readonly<{
   x: number;
   z: number;
   id?: string;
+  name?: string;
   floors?: number;
   rotation?: number;
   color?: string;
+  demandWeight?: number;
 }>;
 
 interface EconomicRouteEdge {
@@ -420,6 +443,8 @@ export class LiveTrafficSystem {
   private jaywalkingViolations = 0;
   private buildingDestinations: BuildingDestination[] = [];
   private buildingDestinationNodeIds = new Set<string>();
+  private buildingDestinationByNodeId = new Map<string, BuildingDestination>();
+  private buildingDestinationWeightTotal = 0;
   private expansionRoads: ExpansionRoad[] = [];
   private expansionStreetObjects: ExpansionStreetObject[] = [];
   private expansionRoadIds = new Set<string>();
@@ -536,11 +561,22 @@ export class LiveTrafficSystem {
       const node = nearestGridNodeFromWorld(this.nodes, building.x, building.z);
       const existing = destinations.get(node.id);
       if (existing === undefined || building.kind === "industrial") {
-        destinations.set(node.id, { kind: building.kind, node });
+        destinations.set(node.id, {
+          id: building.id ?? node.id,
+          name: building.name ?? building.id ?? "City building",
+          kind: building.kind,
+          node,
+          demandWeight: Math.max(0.1, building.demandWeight ?? 1),
+        });
       }
     }
     this.buildingDestinations = [...destinations.values()];
     this.buildingDestinationNodeIds = new Set(destinations.keys());
+    this.buildingDestinationByNodeId = new Map(destinations);
+    this.buildingDestinationWeightTotal = this.buildingDestinations.reduce(
+      (sum, destination) => sum + destination.demandWeight,
+      0,
+    );
     this.pedestrianDestinations.splice(
       0,
       this.pedestrianDestinations.length,
@@ -1102,6 +1138,14 @@ export class LiveTrafficSystem {
         segmentId: vehicle.segmentId,
         driverPersonId: vehicle.driverPersonId,
         displayName: vehicle.displayName,
+        tripId: vehicle.tripId,
+        travelerCategory: vehicle.travelerCategory,
+        tripPurpose: vehicle.tripPurpose,
+        originBuildingId: vehicle.originBuildingId,
+        originName: vehicle.originName,
+        destinationBuildingId: vehicle.destinationBuildingId,
+        destinationName: vehicle.destinationName,
+        plannedRouteSegmentIds: vehicle.segmentIds,
         laneId: vehicle.lane.id,
         speedMetersPerSecond: vehicle.speed,
         queued: vehicle.queued,
@@ -1135,6 +1179,14 @@ export class LiveTrafficSystem {
         segmentId: pedestrian.segmentId,
         personId: pedestrian.personId,
         displayName: pedestrian.displayName,
+        tripId: pedestrian.tripId,
+        travelerCategory: pedestrian.travelerCategory,
+        tripPurpose: pedestrian.tripPurpose,
+        originBuildingId: pedestrian.originBuildingId,
+        originName: pedestrian.originName,
+        destinationBuildingId: pedestrian.destinationBuildingId,
+        destinationName: pedestrian.destinationName,
+        plannedRouteSegmentIds: pedestrian.segmentIds,
         waiting: pedestrian.waiting,
         color: pedestrian.color,
         variant: pedestrian.variant,
@@ -1407,6 +1459,7 @@ export class LiveTrafficSystem {
       const kind: VehicleKind = freight
         ? "truck"
         : this.random.pick(VEHICLE_KINDS);
+      const trip = this.describeRecordedTrip(route, kind, this.nextVehicleId);
       const assignment = this.laneForPath(
         route.nodes,
         route.segmentIds,
@@ -1425,9 +1478,6 @@ export class LiveTrafficSystem {
           vehicleLengthMeters(kind),
         )
       ) {
-        const expansionDriver = route.segmentIds.some((candidate) =>
-          this.expansionRoadIds.has(candidate)
-        );
         const complianceProbability = sampleComplianceProbability(
           this.random.next(),
         );
@@ -1448,12 +1498,15 @@ export class LiveTrafficSystem {
         if (speeding) this.trafficViolations += 1;
         this.vehicles.push({
           id: this.nextVehicleId,
-          driverPersonId: expansionDriver
-            ? `ambient-driver-${this.nextVehicleId}`
-            : undefined,
-          displayName: expansionDriver
-            ? ambientCitizenName(this.nextVehicleId)
-            : undefined,
+          driverPersonId: `ambient-driver-${this.nextVehicleId}`,
+          displayName: ambientCitizenName(this.nextVehicleId),
+          tripId: `external:vehicle:${this.nextVehicleId}`,
+          travelerCategory: trip.category,
+          tripPurpose: trip.purpose,
+          originBuildingId: trip.origin?.id,
+          originName: trip.origin?.name ?? "District boundary",
+          destinationBuildingId: trip.destination?.id,
+          destinationName: trip.destination?.name ?? "District boundary",
           path: route.nodes,
           segmentIds: route.segmentIds,
           segmentIndex: 0,
@@ -2138,20 +2191,25 @@ export class LiveTrafficSystem {
       const route = this.createPedestrianRoute(level);
       if (this.canSpawnPedestrian(route.nodes)) {
         const segmentId = route.segmentIds[0] ?? "complete";
-        const expansionTraveler = route.segmentIds.some((candidate) =>
-          this.expansionRoadIds.has(candidate)
+        const trip = this.describeRecordedTrip(
+          route,
+          "pedestrian",
+          this.nextPedestrianId,
         );
         const complianceProbability = sampleComplianceProbability(
           this.random.next(),
         );
         this.pedestrians.push({
           id: this.nextPedestrianId,
-          personId: expansionTraveler
-            ? `ambient-person-${this.nextPedestrianId}`
-            : undefined,
-          displayName: expansionTraveler
-            ? ambientCitizenName(this.nextPedestrianId)
-            : undefined,
+          personId: `ambient-person-${this.nextPedestrianId}`,
+          displayName: ambientCitizenName(this.nextPedestrianId),
+          tripId: `external:pedestrian:${this.nextPedestrianId}`,
+          travelerCategory: trip.category,
+          tripPurpose: trip.purpose,
+          originBuildingId: trip.origin?.id,
+          originName: trip.origin?.name ?? "District boundary",
+          destinationBuildingId: trip.destination?.id,
+          destinationName: trip.destination?.name ?? "District boundary",
           path: route.nodes,
           segmentIds: route.segmentIds,
           segmentIndex: 0,
@@ -2631,6 +2689,67 @@ export class LiveTrafficSystem {
     return node !== undefined && this.buildingDestinationNodeIds.has(node.id);
   }
 
+  private describeRecordedTrip(
+    route: Readonly<AgentRoute>,
+    kind: VehicleKind | "pedestrian",
+    travelerNumber: number,
+  ): {
+    category: TripTravelerCategory;
+    purpose: TripPurpose;
+    origin?: BuildingDestination;
+    destination?: BuildingDestination;
+  } {
+    const originNode = route.nodes[0];
+    const destinationNode = route.nodes.at(-1);
+    const origin = originNode
+      ? this.buildingDestinationByNodeId.get(originNode.id)
+      : undefined;
+    const destination = destinationNode
+      ? this.buildingDestinationByNodeId.get(destinationNode.id)
+      : undefined;
+    if (kind === "truck" || destination?.kind === "industrial") {
+      return {
+        category: "freight",
+        purpose: "delivery",
+        origin,
+        destination,
+      };
+    }
+    if (!origin && !destination) {
+      return {
+        category: "through-traffic",
+        purpose: "through",
+      };
+    }
+    if (kind === "pedestrian") {
+      return {
+        category: "visitor",
+        purpose: destination?.kind === "commercial"
+          ? "shopping"
+          : destination?.kind === "civic"
+            ? "service"
+            : "recreation",
+        origin,
+        destination,
+      };
+    }
+    const commuter =
+      kind === "bus" ||
+      travelerNumber % 3 === 0;
+    return {
+      category: commuter ? "commuter" : "visitor",
+      purpose: commuter
+        ? "work"
+        : destination?.kind === "commercial"
+          ? "shopping"
+          : destination?.kind === "civic"
+            ? "service"
+            : "recreation",
+      origin,
+      destination,
+    };
+  }
+
   private createVehicleRoute(demandLevel: number): AgentRoute {
     const corridorBias =
       demandLevel >= 3 ? 1.35 : demandLevel === 2 ? 1 : 0.72;
@@ -2642,7 +2761,7 @@ export class LiveTrafficSystem {
     );
     if (expansionRoute) return expansionRoute;
     if (this.buildingDestinations.length > 0 && this.random.next() < 0.72) {
-      const destination = this.random.pick(this.buildingDestinations).node;
+      const destination = this.pickBuildingDestination().node;
       for (let attempt = 0; attempt < 8; attempt += 1) {
         const origin = this.randomBoundaryNode();
         if (origin.id === destination.id) continue;
@@ -2794,6 +2913,16 @@ export class LiveTrafficSystem {
     return this.nodes[this.random.integer(this.nodes.length)][
       this.nodes[0].length - 1
     ];
+  }
+
+  private pickBuildingDestination(): BuildingDestination {
+    let target =
+      this.random.next() * Math.max(0.1, this.buildingDestinationWeightTotal);
+    for (const destination of this.buildingDestinations) {
+      target -= destination.demandWeight;
+      if (target <= 0) return destination;
+    }
+    return this.buildingDestinations.at(-1)!;
   }
 
   private randomNode(): GridNode {

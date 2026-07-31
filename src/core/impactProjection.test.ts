@@ -38,6 +38,7 @@ function request(
     afterDesign,
     interventionCapitalCost,
     trackedBuildingIds,
+    projectionRuns: 1,
   };
 }
 
@@ -63,7 +64,11 @@ describe("projectCityEditImpact", () => {
             (building) => building.horizons[horizon].delta === 0,
           ),
         ).toBe(true);
+        expect(
+          impact.horizons[horizon].metrics.dailyOutput.deltaRange,
+        ).toEqual({ median: 0, minimum: 0, maximum: 0 });
       }
+      expect(impact.projectionRuns).toBe(1);
     },
     30_000,
   );
@@ -133,6 +138,12 @@ describe("projectCityEditImpact", () => {
       expect(
         impact.horizons[30].metrics.governmentFunds.delta,
       ).toBeLessThan(-capitalCost);
+      expect(impact.projectionRuns).toBe(1);
+      expect(
+        impact.horizons[30].metrics.governmentFunds.deltaRange.minimum,
+      ).toBeLessThanOrEqual(
+        impact.horizons[30].metrics.governmentFunds.deltaRange.maximum,
+      );
     },
     30_000,
   );

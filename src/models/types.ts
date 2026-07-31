@@ -7,6 +7,9 @@ import type {
   BuildingFunction,
   DetailedEntityState,
   EntitySelection,
+  TripLedgerSnapshot,
+  TripPurpose,
+  TripTravelerCategory,
 } from "./entityTypes";
 
 export type AppMode = "build" | "simulate";
@@ -193,6 +196,13 @@ export interface VehicleSnapshot {
   destinationBuildingId?: string;
   purpose?: string;
   delaySeconds?: number;
+  tripId?: string;
+  travelerCategory?: TripTravelerCategory;
+  tripPurpose?: TripPurpose;
+  originBuildingId?: string;
+  originName?: string;
+  destinationName?: string;
+  plannedRouteSegmentIds?: readonly string[];
 }
 
 export interface PedestrianSnapshot {
@@ -213,6 +223,13 @@ export interface PedestrianSnapshot {
   destinationBuildingId?: string;
   purpose?: string;
   delaySeconds?: number;
+  tripId?: string;
+  travelerCategory?: TripTravelerCategory;
+  tripPurpose?: TripPurpose;
+  originBuildingId?: string;
+  originName?: string;
+  destinationName?: string;
+  plannedRouteSegmentIds?: readonly string[];
 }
 
 export interface SimulationMetrics {
@@ -258,4 +275,5 @@ export interface SimulationState {
   cityActivity: CityActivitySnapshot;
   cityEvents: readonly CitySystemEvent[];
   entities: DetailedEntityState;
+  tripLedger: TripLedgerSnapshot;
 }

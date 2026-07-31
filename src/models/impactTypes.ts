@@ -26,6 +26,13 @@ export interface ImpactMetricPair {
   after: number;
   delta: number;
   percentDelta: number | null;
+  deltaRange: ImpactDeltaRange;
+}
+
+export interface ImpactDeltaRange {
+  median: number;
+  minimum: number;
+  maximum: number;
 }
 
 export interface CityImpactMetrics {
@@ -68,6 +75,7 @@ export interface ImpactDriver {
     | "units"
     | "score";
   lowerIsBetter?: boolean;
+  deltaRange?: ImpactDeltaRange;
 }
 
 export interface BuildingImpactMetrics {
@@ -123,6 +131,7 @@ export interface CityEditImpact {
   horizons: Record<ImpactHorizon, CityImpactHorizon>;
   buildings: BuildingImpactProjection[];
   buildingSummaries: BuildingEconomicImpactSummary[];
+  projectionRuns: number;
 }
 
 export interface ImpactProjectionRequest {
@@ -133,6 +142,8 @@ export interface ImpactProjectionRequest {
   afterDesign: EditorSnapshot;
   interventionCapitalCost: number;
   trackedBuildingIds: string[];
+  projectionRuns?: number;
+  projectionRunIndex?: number;
 }
 
 export type ImpactProjectionWorkerResponse =

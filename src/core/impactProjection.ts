@@ -46,6 +46,7 @@ import { LiveTrafficSystem } from "./liveTraffic";
 const ROAD_MAINTENANCE_PER_METER_DAILY = 0.15;
 const SIGNAL_MAINTENANCE_DAILY = 35;
 const CROSSWALK_MAINTENANCE_DAILY = 8;
+export const IMPACT_PROJECTION_RUNS = 6;
 
 interface ProjectionBranch {
   city: CitySectionState;
@@ -61,6 +62,11 @@ interface ProjectionBranch {
   sampleScale: number;
   baselineDetail: DetailTotals;
   publicMaintenanceDaily: number;
+  scenarioVariation: {
+    labor: number;
+    supply: number;
+    traffic: number;
+  };
 }
 
 interface DetailTotals {
@@ -75,6 +81,20 @@ interface DetailTotals {
 }
 
 export function projectCityEditImpact(
+  request: Readonly<ImpactProjectionRequest>,
+): CityEditImpact {
+  const runCount = Math.max(
+    1,
+    Math.min(IMPACT_PROJECTION_RUNS, Math.round(request.projectionRuns ?? IMPACT_PROJECTION_RUNS)),
+  );
+  const runs = Array.from(
+    { length: runCount },
+    (_, index) => projectSingleCityEditImpact(withProjectionSeed(request, index)),
+  );
+  return aggregateProjectionRuns(runs);
+}
+
+function projectSingleCityEditImpact(
   request: Readonly<ImpactProjectionRequest>,
 ): CityEditImpact {
   const control = createBranch(request, request.beforeDesign, 0);
@@ -196,7 +216,197 @@ export function projectCityEditImpact(
     horizons: cityHorizons,
     buildings,
     buildingSummaries,
+    projectionRuns: 1,
   };
+}
+
+function withProjectionSeed(
+  request: Readonly<ImpactProjectionRequest>,
+  runIndex: number,
+): ImpactProjectionRequest {
+  const baseSeed = request.checkpoint.settings.simulationSeed;
+  const simulationSeed =
+    ((baseSeed + (runIndex + 1) * 104_729) % 2_147_483_646) + 1;
+  return {
+    ...request,
+    checkpoint: {
+      ...request.checkpoint,
+      settings: {
+        ...request.checkpoint.settings,
+        simulationSeed,
+      },
+    },
+    projectionRunIndex: runIndex,
+  };
+}
+
+function aggregateProjectionRuns(
+  runs: readonly CityEditImpact[],
+): CityEditImpact {
+  const first = runs[0];
+  if (!first) throw new Error("No projection runs were produced.");
+  const horizons = Object.fromEntries(
+    IMPACT_HORIZONS.map((horizon) => {
+      const samples = runs.map((run) => run.horizons[horizon]);
+      const metricKeys = Object.keys(first.horizons[horizon].metrics) as Array<
+        keyof CityImpactMetrics
+      >;
+      const metrics = Object.fromEntries(
+        metricKeys.map((key) => [
+          key,
+          aggregateMetricPairs(samples.map((sample) => sample.metrics[key])),
+        ]),
+      ) as CityImpactHorizon["metrics"];
+      return [
+        horizon,
+        {
+          horizonDays: horizon,
+          metrics,
+          drivers: aggregateDrivers(samples.map((sample) => sample.drivers)),
+        },
+      ];
+    }),
+  ) as Record<ImpactHorizon, CityImpactHorizon>;
+
+  const buildings = first.buildings
+    .map((building): BuildingImpactProjection => {
+      const samples = runs
+        .map((run) =>
+          run.buildings.find(
+            (candidate) => candidate.buildingId === building.buildingId,
+          )
+        )
+        .filter(
+          (candidate): candidate is BuildingImpactProjection =>
+            candidate !== undefined,
+        );
+      const buildingHorizons = Object.fromEntries(
+        IMPACT_HORIZONS.map((horizon) => {
+          const horizonSamples = samples.map(
+            (sample) => sample.horizons[horizon],
+          );
+          const metricKeys = Object.keys(
+            building.horizons[horizon].metrics,
+          ) as Array<keyof BuildingImpactMetrics>;
+          const metrics = Object.fromEntries(
+            metricKeys.map((key) => [
+              key,
+              aggregateMetricPairs(
+                horizonSamples.map((sample) => sample.metrics[key]),
+              ),
+            ]),
+          ) as BuildingImpactHorizon["metrics"];
+          return [
+            horizon,
+            {
+              horizonDays: horizon,
+              metrics,
+              drivers: aggregateDrivers(
+                horizonSamples.map((sample) => sample.drivers),
+              ),
+              affectedRoads: [
+                ...new Set(
+                  horizonSamples.flatMap((sample) => sample.affectedRoads),
+                ),
+              ].slice(0, 5),
+            },
+          ];
+        }),
+      ) as Record<ImpactHorizon, BuildingImpactHorizon>;
+      return {
+        ...building,
+        horizons: buildingHorizons,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Math.abs(right.horizons[90].metrics.primaryOutput.delta) -
+        Math.abs(left.horizons[90].metrics.primaryOutput.delta),
+    );
+
+  const buildingSummaries = first.buildingSummaries
+    .map((building): BuildingEconomicImpactSummary => {
+      const samples = runs
+        .map((run) =>
+          run.buildingSummaries.find(
+            (candidate) => candidate.buildingId === building.buildingId,
+          )
+        )
+        .filter(
+          (candidate): candidate is BuildingEconomicImpactSummary =>
+            candidate !== undefined,
+        );
+      return {
+        ...building,
+        horizons: Object.fromEntries(
+          IMPACT_HORIZONS.map((horizon) => [
+            horizon,
+            aggregateMetricPairs(
+              samples.map((sample) => sample.horizons[horizon]),
+            ),
+          ]),
+        ) as Record<ImpactHorizon, ImpactMetricPair>,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Math.abs(right.horizons[90].delta) -
+          Math.abs(left.horizons[90].delta) ||
+        left.buildingName.localeCompare(right.buildingName) ||
+        left.buildingId.localeCompare(right.buildingId),
+    );
+
+  return {
+    ...first,
+    horizons,
+    buildings,
+    buildingSummaries,
+    projectionRuns: runs.length,
+  };
+}
+
+function aggregateMetricPairs(
+  pairs: readonly ImpactMetricPair[],
+): ImpactMetricPair {
+  const deltas = pairs.map((pair) => pair.delta);
+  return {
+    before: median(pairs.map((pair) => pair.before)),
+    after: median(pairs.map((pair) => pair.after)),
+    delta: median(deltas),
+    percentDelta: medianNullable(
+      pairs.map((pair) => pair.percentDelta),
+    ),
+    deltaRange: {
+      median: median(deltas),
+      minimum: round(Math.min(...deltas)),
+      maximum: round(Math.max(...deltas)),
+    },
+  };
+}
+
+function aggregateDrivers(
+  driverRuns: readonly (readonly ImpactDriver[])[],
+): ImpactDriver[] {
+  const first = driverRuns[0] ?? [];
+  return first.map((driver) => {
+    const samples = driverRuns
+      .map((drivers) =>
+        drivers.find((candidate) => candidate.label === driver.label)
+      )
+      .filter((candidate): candidate is ImpactDriver => candidate !== undefined);
+    const deltas = samples.map((sample) => sample.delta);
+    return {
+      ...driver,
+      before: median(samples.map((sample) => sample.before)),
+      after: median(samples.map((sample) => sample.after)),
+      delta: median(deltas),
+      deltaRange: {
+        median: median(deltas),
+        minimum: round(Math.min(...deltas)),
+        maximum: round(Math.max(...deltas)),
+      },
+    };
+  });
 }
 
 function buildingEconomicIdentities(
@@ -308,6 +518,9 @@ function createBranch(
       roads,
       streetObjects,
     ),
+    scenarioVariation: request.projectionRunIndex === 0
+      ? { labor: 1, supply: 1, traffic: 1 }
+      : projectionVariation(request.checkpoint.settings.simulationSeed),
   };
   syncBranchTraffic(branch);
   return branch;
@@ -331,14 +544,16 @@ function advanceBranchDay(
         congestionPercent: branch.city.metrics.congestionPercent,
         accessibilityByBuilding: accessibilityProfiles(branch),
         externalJobCapacityScale: clamp(
-          1.04 - branch.city.metrics.congestionPercent * 0.003,
+          (1.04 - branch.city.metrics.congestionPercent * 0.003) *
+            branch.scenarioVariation.labor,
           0.45,
           1.35,
         ),
         externalSupplyScale: clamp(
-          0.72 +
+          (0.72 +
             policy.roadCapacityScale * 0.34 -
-            branch.city.metrics.congestionPercent * 0.0025,
+            branch.city.metrics.congestionPercent * 0.0025) *
+            branch.scenarioVariation.supply,
           0.4,
           1.35,
         ),
@@ -410,7 +625,8 @@ function branchPolicy(branch: Readonly<ProjectionBranch>): CityPolicySettings {
         (1 + laneDelta * 0.025) *
         branch.traffic.getExpansionCapacityScale() *
         signalScale *
-        speedScale,
+        speedScale /
+        branch.scenarioVariation.traffic,
       0.5,
       1.5,
     ),
@@ -984,14 +1200,20 @@ function compareMetricRecords<
 
 function metricPair(before: number, after: number): ImpactMetricPair {
   const delta = after - before;
+  const roundedDelta = round(delta);
   return {
     before: round(before),
     after: round(after),
-    delta: round(delta),
+    delta: roundedDelta,
     percentDelta:
       Math.abs(before) < 1e-6
         ? null
         : round((delta / Math.abs(before)) * 100),
+    deltaRange: {
+      median: roundedDelta,
+      minimum: roundedDelta,
+      maximum: roundedDelta,
+    },
   };
 }
 
@@ -1007,6 +1229,11 @@ function driver(
     before: round(before),
     after: round(after),
     delta: round(after - before),
+    deltaRange: {
+      median: round(after - before),
+      minimum: round(after - before),
+      maximum: round(after - before),
+    },
     unit,
     lowerIsBetter,
   };
@@ -1048,4 +1275,35 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function round(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function projectionVariation(seed: number): ProjectionBranch["scenarioVariation"] {
+  return {
+    labor: 0.97 + seededUnit(seed, 11) * 0.06,
+    supply: 0.96 + seededUnit(seed, 29) * 0.08,
+    traffic: 0.96 + seededUnit(seed, 47) * 0.08,
+  };
+}
+
+function seededUnit(seed: number, salt: number): number {
+  const value = Math.sin((seed + salt * 9_973) * 12.9898) * 43_758.5453;
+  return value - Math.floor(value);
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return round(
+    sorted.length % 2 === 0
+      ? (sorted[middle - 1] + sorted[middle]) / 2
+      : sorted[middle],
+  );
+}
+
+function medianNullable(
+  values: readonly (number | null)[],
+): number | null {
+  const available = values.filter((value): value is number => value !== null);
+  return available.length === 0 ? null : median(available);
 }
